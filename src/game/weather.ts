@@ -112,6 +112,7 @@ export class WeatherSystem {
   private sunbeams: Sunbeam[] = [];
   private muffins: MuffinDrift[] = [];
   private parsedCache: Map<string, RGBA> = new Map();
+  private cachedVig: { w: number; h: number; color: string; canvas: HTMLCanvasElement } | null = null;
 
   constructor() {
     this.weatherTimer = this.weatherList[0].duration;
@@ -359,7 +360,11 @@ export class WeatherSystem {
     globalTime: number,
     lowQuality: boolean = false
   ) {
+    if (!ctx || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return;
+    }
     ctx.save();
+    try {
 
     // 1. Compute Blended Colors (zero allocation when steady-state)
     const tintStr = isSky ? this.currentWeather.skyTint : this.currentWeather.tintColor;
@@ -382,21 +387,41 @@ export class WeatherSystem {
     ctx.fillStyle = finalTint;
     ctx.fillRect(0, 0, width, height);
 
-    // 3. Render Edge Vignette (skipped in Low Graphics Mode)
+    // 3. Cached Edge Vignette (skipped in Low Graphics Mode)
     if (!lowQuality) {
-      const maxDim = Math.max(width, height) * 0.72;
-      const vignette = ctx.createRadialGradient(
-        width / 2,
-        height / 2,
-        maxDim * 0.25,
-        width / 2,
-        height / 2,
-        maxDim
-      );
-      vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-      vignette.addColorStop(1, finalVignette);
-      ctx.fillStyle = vignette;
-      ctx.fillRect(0, 0, width, height);
+      const iw = Math.max(1, Math.round(width));
+      const ih = Math.max(1, Math.round(height));
+      if (
+        !this.cachedVig ||
+        this.cachedVig.w !== iw ||
+        this.cachedVig.h !== ih ||
+        this.cachedVig.color !== finalVignette
+      ) {
+        const vigCanvas = this.cachedVig?.canvas || document.createElement('canvas');
+        vigCanvas.width = iw;
+        vigCanvas.height = ih;
+        const vctx = vigCanvas.getContext('2d');
+        if (vctx) {
+          vctx.clearRect(0, 0, iw, ih);
+          const maxDim = Math.max(2, Math.max(iw, ih) * 0.72);
+          const vignette = vctx.createRadialGradient(
+            iw / 2,
+            ih / 2,
+            maxDim * 0.25,
+            iw / 2,
+            ih / 2,
+            maxDim
+          );
+          vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
+          vignette.addColorStop(1, finalVignette);
+          vctx.fillStyle = vignette;
+          vctx.fillRect(0, 0, iw, ih);
+        }
+        this.cachedVig = { w: iw, h: ih, color: finalVignette, canvas: vigCanvas };
+      }
+      if (this.cachedVig.canvas.width > 0 && this.cachedVig.canvas.height > 0) {
+        ctx.drawImage(this.cachedVig.canvas, 0, 0);
+      }
     }
 
     // 4. Render Weather Specific Effects
@@ -457,9 +482,9 @@ export class WeatherSystem {
       ctx.lineWidth = 1.4;
       for (let i = 0; i < this.ripples.length; i += step) {
         const r = this.ripples[i];
-        ctx.globalAlpha = r.alpha;
+        ctx.globalAlpha = Math.max(0, r.alpha);
         ctx.beginPath();
-        ctx.ellipse(r.x, r.y, r.radius, r.radius * 0.45, 0, 0, Math.PI * 2);
+        ctx.ellipse(r.x, r.y, Math.max(0.1, r.radius), Math.max(0.1, r.radius * 0.45), 0, 0, Math.PI * 2);
         ctx.stroke();
       }
       ctx.restore();
@@ -579,7 +604,9 @@ export class WeatherSystem {
       ctx.restore();
     }
 
-    ctx.restore();
+    } finally {
+      ctx.restore();
+    }
   }
 
   private drawSparkle(

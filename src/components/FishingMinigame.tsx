@@ -56,7 +56,7 @@ export const FishingMinigame: React.FC<FishingMinigameProps> = ({
       // Render canvas (crisp HiDPI backing buffer, logical 320x130 coordinates)
       const canvas = canvasRef.current;
       if (canvas) {
-        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const dpr = Math.min(1.5, window.devicePixelRatio || 1);
         const w = 320;
         const h = 130;
         if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {

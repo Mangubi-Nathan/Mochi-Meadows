@@ -13,6 +13,279 @@ interface SynthNodes {
   noiseBuffer: AudioBuffer;
 }
 
+export interface SongProg {
+  bpm: number;
+  len: number;
+  sw: number;
+  f: number;
+  rv: number;
+  pr: [number, string][];
+  p: (nodes: SynthNodes, b: number, s: number, t: number, c: number[], sd: number) => void;
+}
+
+interface TrackSlot {
+  instanceId: number;
+  programId: number;
+  song: SongProg;
+  dryBus: GainNode;
+  fxBus: GainNode;
+  nodes: SynthNodes;
+  step: number;
+}
+
+interface FadingSlot {
+  dry: GainNode;
+  fx: GainNode;
+  timerId: number;
+}
+
+interface FxBusRefs {
+  delayGain: GainNode | null;
+  reverbGain: GainNode | null;
+  delayL: DelayNode | null;
+  delayR: DelayNode | null;
+}
+
+const GLOBAL_SCHEDULER_KEY = '__mochiMeadows2GlobalAudioScheduler__';
+const GLOBAL_CONTROLLER_KEY = '__mochiMeadows2TrackController__';
+const GLOBAL_MANAGER_KEY = '__mochiMeadows2AudioManager__';
+
+/**
+ * Single-Instance Track Controller:
+ * Enforces that only ONE active biome/theme track instance can exist and play at any moment,
+ * while orchestrating smooth cross-fade transitions and deterministic node cleanup.
+ */
+class SingleInstanceTrackController {
+  private activeSlot: TrackSlot | null = null;
+  private fadingSlots: Map<number, FadingSlot> = new Map();
+  private nextInstanceId: number = 1;
+
+  public static getInstance(): SingleInstanceTrackController {
+    const g = globalThis as Record<string, unknown>;
+    const existing = g[GLOBAL_CONTROLLER_KEY] as SingleInstanceTrackController | undefined;
+    if (existing) return existing;
+    const created = new SingleInstanceTrackController();
+    g[GLOBAL_CONTROLLER_KEY] = created;
+    return created;
+  }
+
+  public getActiveSlot(): TrackSlot | null {
+    return this.activeSlot;
+  }
+
+  public getActiveProgramId(): number {
+    return this.activeSlot ? this.activeSlot.programId : -1;
+  }
+
+  private cleanupFadingSlot(id: number) {
+    const fading = this.fadingSlots.get(id);
+    if (!fading) return;
+    window.clearTimeout(fading.timerId);
+    try {
+      fading.dry.disconnect();
+      fading.fx.disconnect();
+    } catch {
+      // already disconnected
+    }
+    this.fadingSlots.delete(id);
+  }
+
+  private retireActiveSlot(ctx: BaseAudioContext, fadeSec: number) {
+    const old = this.activeSlot;
+    this.activeSlot = null;
+    if (!old) return;
+
+    // Enforce at most one fading tail at a time so rapid zig-zags can never pile up overlapping tracks
+    for (const oldFadeId of Array.from(this.fadingSlots.keys())) {
+      this.cleanupFadingSlot(oldFadeId);
+    }
+
+    const now = ctx.currentTime;
+    try {
+      old.dryBus.gain.cancelScheduledValues(now);
+      old.fxBus.gain.cancelScheduledValues(now);
+      old.dryBus.gain.setValueAtTime(Math.max(0.0001, old.dryBus.gain.value), now);
+      old.fxBus.gain.setValueAtTime(Math.max(0.0001, old.fxBus.gain.value), now);
+      old.dryBus.gain.linearRampToValueAtTime(0.0001, now + fadeSec);
+      old.fxBus.gain.linearRampToValueAtTime(0.0001, now + fadeSec);
+    } catch {
+      // ignore closed context errors
+    }
+
+    const timerId = window.setTimeout(() => {
+      this.cleanupFadingSlot(old.instanceId);
+    }, Math.ceil((fadeSec + 0.14) * 1000));
+
+    this.fadingSlots.set(old.instanceId, {
+      dry: old.dryBus,
+      fx: old.fxBus,
+      timerId,
+    });
+  }
+
+  public transitionTo(
+    ctx: AudioContext,
+    masterDry: GainNode,
+    masterFx: GainNode,
+    noiseBuffer: AudioBuffer,
+    programId: number,
+    song: SongProg,
+    fxRefs: FxBusRefs,
+    crossfadeSec: number = 0.34
+  ): TrackSlot {
+    if (this.activeSlot && this.activeSlot.programId === programId) {
+      return this.activeSlot;
+    }
+
+    const hadActive = this.activeSlot !== null;
+    const now = ctx.currentTime;
+
+    if (hadActive) {
+      this.retireActiveSlot(ctx, crossfadeSec);
+      if (fxRefs.delayGain) {
+        fxRefs.delayGain.gain.setTargetAtTime(0.01, now, 0.06);
+        fxRefs.delayGain.gain.setTargetAtTime(song.f, now + Math.max(0.14, crossfadeSec * 0.7), 0.18);
+      }
+    } else if (fxRefs.delayGain) {
+      fxRefs.delayGain.gain.setTargetAtTime(song.f, now, 0.22);
+    }
+
+    if (fxRefs.reverbGain) fxRefs.reverbGain.gain.setTargetAtTime(song.rv, now, 0.22);
+    if (fxRefs.delayL) fxRefs.delayL.delayTime.setTargetAtTime((60 / song.bpm) * 0.75, now, 0.15);
+    if (fxRefs.delayR) fxRefs.delayR.delayTime.setTargetAtTime((60 / song.bpm) * 1.125, now, 0.15);
+
+    const fadeInSec = hadActive ? Math.min(0.28, crossfadeSec * 0.85) : 0.09;
+    const dryBus = ctx.createGain();
+    const fxBus = ctx.createGain();
+    dryBus.gain.setValueAtTime(0.001, now);
+    fxBus.gain.setValueAtTime(0.001, now);
+    dryBus.gain.linearRampToValueAtTime(1, now + fadeInSec);
+    fxBus.gain.linearRampToValueAtTime(1, now + fadeInSec);
+    dryBus.connect(masterDry);
+    fxBus.connect(masterFx);
+
+    const slot: TrackSlot = {
+      instanceId: this.nextInstanceId++,
+      programId,
+      song,
+      dryBus,
+      fxBus,
+      nodes: {
+        ctx,
+        dryBus,
+        fxGain: fxBus,
+        noiseBuffer,
+      },
+      step: 0,
+    };
+
+    this.activeSlot = slot;
+    return slot;
+  }
+
+  public fadeOutActive(ctx: AudioContext | null, fadeSec: number = 0.24) {
+    if (!this.activeSlot) return;
+    if (!ctx) {
+      this.stopAllImmediate();
+      return;
+    }
+    this.retireActiveSlot(ctx, fadeSec);
+  }
+
+  public stopAllImmediate() {
+    if (this.activeSlot) {
+      try {
+        this.activeSlot.dryBus.gain.value = 0;
+        this.activeSlot.fxBus.gain.value = 0;
+        this.activeSlot.dryBus.disconnect();
+        this.activeSlot.fxBus.disconnect();
+      } catch {
+        // ignore disconnected nodes
+      }
+      this.activeSlot = null;
+    }
+    for (const id of Array.from(this.fadingSlots.keys())) {
+      this.cleanupFadingSlot(id);
+    }
+  }
+}
+
+/**
+ * Global Audio Scheduler:
+ * Owns the single lookahead scheduling timer across the entire application runtime,
+ * enforcing drift/anti-flood protection and background suspend/resume recovery.
+ */
+class GlobalAudioScheduler {
+  private timerId: number | null = null;
+  private nextNoteTime: number = 0;
+  private tickCallback: ((now: number, getNextTime: () => number, advanceTime: (dt: number) => void) => void) | null = null;
+  private activeCtx: AudioContext | null = null;
+
+  public static acquire(): GlobalAudioScheduler {
+    const g = globalThis as Record<string, unknown>;
+    const existing = g[GLOBAL_SCHEDULER_KEY] as GlobalAudioScheduler | undefined;
+    if (existing) {
+      existing.stop();
+      return existing;
+    }
+    const created = new GlobalAudioScheduler();
+    g[GLOBAL_SCHEDULER_KEY] = created;
+    return created;
+  }
+
+  public start(
+    ctx: AudioContext,
+    onTick: (now: number, getNextTime: () => number, advanceTime: (dt: number) => void) => void
+  ) {
+    this.stop();
+    this.activeCtx = ctx;
+    this.tickCallback = onTick;
+    this.nextNoteTime = ctx.currentTime + 0.06;
+    this.timerId = window.setInterval(() => this.tick(), 60);
+  }
+
+  public stop() {
+    if (this.timerId !== null) {
+      window.clearInterval(this.timerId);
+      this.timerId = null;
+    }
+    this.tickCallback = null;
+  }
+
+  public reanchor(offsetSec: number = 0.05) {
+    if (!this.activeCtx) return;
+    this.nextNoteTime = Math.max(this.nextNoteTime, this.activeCtx.currentTime + offsetSec);
+    if (this.nextNoteTime < this.activeCtx.currentTime - 0.12) {
+      this.nextNoteTime = this.activeCtx.currentTime + offsetSec;
+    }
+  }
+
+  public resetToNow(offsetSec: number = 0.04) {
+    if (!this.activeCtx) return;
+    this.nextNoteTime = this.activeCtx.currentTime + offsetSec;
+  }
+
+  private tick() {
+    const ctx = this.activeCtx;
+    if (!ctx || ctx.state !== 'running') return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (!this.tickCallback) return;
+
+    const now = ctx.currentTime;
+    if (this.nextNoteTime < now - 0.12) {
+      this.nextNoteTime = now + 0.04;
+    }
+
+    this.tickCallback(
+      now,
+      () => this.nextNoteTime,
+      (stepDur: number) => {
+        this.nextNoteTime += stepDur;
+      }
+    );
+  }
+}
+
 class AudioManager {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
@@ -24,13 +297,16 @@ class AudioManager {
   private delayR: DelayNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
 
+  private readonly trackController: SingleInstanceTrackController = SingleInstanceTrackController.getInstance();
+  private readonly scheduler: GlobalAudioScheduler = GlobalAudioScheduler.acquire();
+
   private currentTrack: number = 0;
   private activeBiome: number = 3;
+  private pendingBiome: number = -1;
+  private pendingBiomeAt: number = 0;
   private volume: number = 0.8;
-  private schedTimer: number | null = null;
-  private nextNoteTime: number = 0;
-  private step: number = 0;
-  private prevProgram: number = -1;
+  private visibilityBound: boolean = false;
+  private wasCustomPlayingBeforeHide: boolean = false;
 
   // Custom User Audio
   public customTracks: { name: string; url: string; file: File }[] = [];
@@ -38,6 +314,15 @@ class AudioManager {
   private customAudio: HTMLAudioElement = new Audio();
   private customSource: AudioBufferSourceNode | null = null;
   public isCustomPlaying: boolean = false;
+
+  public static getInstance(): AudioManager {
+    const g = globalThis as Record<string, unknown>;
+    const existing = g[GLOBAL_MANAGER_KEY] as AudioManager | undefined;
+    if (existing) return existing;
+    const created = new AudioManager();
+    g[GLOBAL_MANAGER_KEY] = created;
+    return created;
+  }
 
   private chordTypes: Record<string, number[]> = {
     M: [0, 4, 7, 12],
@@ -52,7 +337,7 @@ class AudioManager {
     sus4: [0, 5, 7, 12],
   };
 
-  // Maps all 21 biomes (constants.ts BIOME_NAMES 0..20) to tracks 1..14
+  // Maps all 21 surface biomes (0..20) + 4 realm layers (21..24) to tracks 1..14
   private biomeTracks: number[] = [
     7,  // 0 Deep Sea -> Tide Waltz
     7,  // 1 Shallows -> Tide Waltz
@@ -75,6 +360,10 @@ class AudioManager {
     11, // 18 Bellwood Floor -> Chimewood
     11, // 19 Chime Canopy -> Chimewood
     14, // 20 Dawn Spire -> The Dawn Duet
+    4,  // 21 Cirrus Sky Kingdom -> Dreamy Echoes
+    12, // 22 Glowdeep Caverns -> Glowdeep Caverns
+    13, // 23 The Moon Road -> The Moon Road
+    7,  // 24 Undersea Coral Reef -> Tide Waltz
   ];
 
   constructor() {
@@ -112,7 +401,12 @@ class AudioManager {
     return buf;
   }
 
-  private buildAudioChain(ctx: BaseAudioContext, destination: AudioNode, masterVolume: number) {
+  private buildAudioChain(
+    ctx: BaseAudioContext,
+    destination: AudioNode,
+    masterVolume: number,
+    reverbSeconds: number = 2.9
+  ) {
     const masterGain = ctx.createGain();
     masterGain.gain.value = masterVolume;
 
@@ -164,9 +458,9 @@ class AudioManager {
     delayR.connect(merger, 0, 1);
     merger.connect(warmthFilter);
 
-    // Lush Stereo Hall Convolution Reverb
+    // Lush Stereo Hall Convolution Reverb (lighter IR in live mobile playback)
     const convolver = ctx.createConvolver();
-    convolver.buffer = this.createImpulseBuffer(ctx, 2.9);
+    convolver.buffer = this.createImpulseBuffer(ctx, reverbSeconds);
     const reverbGain = ctx.createGain();
     reverbGain.gain.value = 0.42;
     fxGain.connect(convolver);
@@ -190,15 +484,25 @@ class AudioManager {
   public init() {
     if (this.ctx) {
       if (this.ctx.state === 'suspended') {
-        this.ctx.resume();
+        this.ctx.resume().then(() => {
+          this.scheduler.reanchor(0.05);
+        }).catch(() => {});
       }
       return;
     }
 
     const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
     this.ctx = new AudioContextClass();
 
-    const chain = this.buildAudioChain(this.ctx, this.ctx.destination, this.volume);
+    // Lighter reverb IR on live playback significantly saves mobile audio CPU while remaining lush
+    const isSmallViewport = typeof window !== 'undefined' && Math.min(window.innerWidth, window.innerHeight) <= 768;
+    const chain = this.buildAudioChain(
+      this.ctx,
+      this.ctx.destination,
+      this.volume,
+      isSmallViewport ? 1.45 : 2.1
+    );
     this.masterGain = chain.masterGain;
     this.fxGain = chain.fxGain;
     this.dryBus = chain.dryBus;
@@ -208,14 +512,46 @@ class AudioManager {
     this.delayR = chain.delayR;
     this.noiseBuffer = chain.noiseBuffer;
 
-    this.nextNoteTime = this.ctx.currentTime + 0.08;
-    this.schedTimer = window.setInterval(() => this.scheduleNotes(), 80);
+    this.trackController.stopAllImmediate();
+
+    this.ctx.onstatechange = () => {
+      if (this.ctx && this.ctx.state === 'running') {
+        this.scheduler.reanchor(0.05);
+      }
+    };
+
+    if (!this.visibilityBound && typeof document !== 'undefined') {
+      this.visibilityBound = true;
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          this.wasCustomPlayingBeforeHide = this.isCustomPlaying && !this.customAudio.paused;
+          if (this.wasCustomPlayingBeforeHide) {
+            this.customAudio.pause();
+          }
+        } else {
+          if (this.ctx) {
+            if (this.ctx.state === 'suspended') {
+              this.ctx.resume().catch(() => {});
+            }
+            this.scheduler.resetToNow(0.06);
+          }
+          if (this.wasCustomPlayingBeforeHide && this.currentTrack === 16) {
+            this.wasCustomPlayingBeforeHide = false;
+            this.customAudio.play().catch(() => {});
+          }
+        }
+      });
+    }
+
+    this.scheduler.start(this.ctx, (now, getNextTime, advanceTime) =>
+      this.runGlobalScheduleStep(now, getNextTime, advanceTime)
+    );
   }
 
   public setVolume(vol: number) {
     this.volume = Math.max(0, Math.min(1, vol));
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(this.volume, this.ctx.currentTime);
+      this.masterGain.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.03);
     }
     this.customAudio.volume = this.volume * 0.85;
   }
@@ -226,9 +562,11 @@ class AudioManager {
 
   public setTrack(trk: number) {
     this.init();
+    const activeProgram = this.trackController.getActiveProgramId();
+    if (this.currentTrack === trk && (trk === 16 || activeProgram >= 0)) return;
     this.currentTrack = trk;
-    this.step = 0;
-    this.prevProgram = -1;
+    this.trackController.fadeOutActive(this.ctx, 0.28);
+    this.scheduler.resetToNow(0.05);
 
     if (trk === 16) {
       this.playCustomTrack();
@@ -241,8 +579,37 @@ class AudioManager {
     return this.currentTrack;
   }
 
+  public getActiveProgramId(): number {
+    return this.trackController.getActiveProgramId();
+  }
+
   public setBiome(b: number) {
-    this.activeBiome = b;
+    const idx = Math.max(0, Math.min(this.biomeTracks.length - 1, b | 0));
+    if (idx === this.activeBiome) {
+      this.pendingBiome = -1;
+      return;
+    }
+
+    // Immediate switch for cold start, realm transitions, or biomes sharing the same soundtrack
+    const isRealmChange = idx >= 21 || this.activeBiome >= 21;
+    const sameSoundtrack = this.biomeTracks[idx] === this.biomeTracks[this.activeBiome];
+    if (this.trackController.getActiveProgramId() < 0 || isRealmChange || sameSoundtrack) {
+      this.activeBiome = idx;
+      this.pendingBiome = -1;
+      return;
+    }
+
+    // Debounce surface biome borders so zig-zagging across terrain edges won't stutter/crossfade repeatedly
+    const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (this.pendingBiome !== idx) {
+      this.pendingBiome = idx;
+      this.pendingBiomeAt = nowMs;
+      return;
+    }
+    if (nowMs - this.pendingBiomeAt >= 420) {
+      this.activeBiome = idx;
+      this.pendingBiome = -1;
+    }
   }
 
   public midiToFreq(m: number): number {
@@ -434,33 +801,41 @@ class AudioManager {
   }
 
   private stringsPadWith(nodes: SynthNodes, ms: number[], t: number, d: number, v: number) {
-    ms.forEach((m) => {
-      const f = this.midiToFreq(m);
-      const lp = nodes.ctx.createBiquadFilter();
-      const g = nodes.ctx.createGain();
-      lp.type = 'lowpass';
-      lp.frequency.setValueAtTime(550, t);
-      lp.frequency.linearRampToValueAtTime(1150, t + d * 0.45);
-      lp.frequency.linearRampToValueAtTime(620, t + d);
+    if (!ms || ms.length === 0) return;
+    // Share 1 lowpass filter & 1 gain envelope across all voices in the chord (cuts node overhead by ~70% on mobile)
+    const lp = nodes.ctx.createBiquadFilter();
+    const g = nodes.ctx.createGain();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(550, t);
+    lp.frequency.linearRampToValueAtTime(1150, t + d * 0.45);
+    lp.frequency.linearRampToValueAtTime(620, t + d);
 
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.linearRampToValueAtTime(v, t + Math.min(0.45, d * 0.35));
-      g.gain.setValueAtTime(v * 0.88, t + Math.max(0.46, d * 0.72));
-      g.gain.linearRampToValueAtTime(0.0001, t + d);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(v, t + Math.min(0.45, d * 0.35));
+    g.gain.setValueAtTime(v * 0.88, t + Math.max(0.46, d * 0.72));
+    g.gain.linearRampToValueAtTime(0.0001, t + d);
 
-      lp.connect(g);
-      g.connect(nodes.fxGain);
+    lp.connect(g);
+    g.connect(nodes.fxGain);
 
-      [-9, 0, 9].forEach((dt) => {
-        const o = nodes.ctx.createOscillator();
-        o.type = dt === 0 ? 'triangle' : 'sawtooth';
-        o.frequency.setValueAtTime(f, t);
-        o.detune.setValueAtTime(dt, t);
-        o.connect(lp);
-        o.start(t);
-        o.stop(t + d + 0.06);
-      });
-    });
+    for (let i = 0; i < ms.length; i++) {
+      const f = this.midiToFreq(ms[i]);
+      const o1 = nodes.ctx.createOscillator();
+      o1.type = 'triangle';
+      o1.frequency.setValueAtTime(f, t);
+      o1.detune.setValueAtTime(-6, t);
+      o1.connect(lp);
+      o1.start(t);
+      o1.stop(t + d + 0.06);
+
+      const o2 = nodes.ctx.createOscillator();
+      o2.type = 'sawtooth';
+      o2.frequency.setValueAtTime(f, t);
+      o2.detune.setValueAtTime(6, t);
+      o2.connect(lp);
+      o2.start(t);
+      o2.stop(t + d + 0.06);
+    }
   }
 
   private bassWith(nodes: SynthNodes, m: number, t: number, d: number, v: number) {
@@ -562,17 +937,7 @@ class AudioManager {
 
   // ==================== 14 RICH COMPOSED MUSICAL THEMES ====================
 
-  private getSongProgram(trackId: number) {
-    type SongProg = {
-      bpm: number;
-      len: number;
-      sw: number;
-      f: number;
-      rv: number;
-      pr: [number, string][];
-      p: (nodes: SynthNodes, b: number, s: number, t: number, c: number[], sd: number) => void;
-    };
-
+  private getSongProgram(trackId: number): { programId: number; song: SongProg } {
     const songs: Record<number, SongProg> = {
       // 1: Music Box Waltz (3/4, delicate celesta + harp + warm strings)
       1: {
@@ -1041,37 +1406,55 @@ class AudioManager {
     return { programId: resolveProgram, song: songs[resolveProgram] || songs[3] };
   }
 
-  private scheduleNotes() {
-    if (!this.ctx) return;
-    while (this.nextNoteTime < this.ctx.currentTime + 0.38) {
-      // Track 15 = Mute Music, Track 16 = Custom Audio
-      if (this.currentTrack >= 15) {
-        this.nextNoteTime += 0.2;
-        continue;
+  private runGlobalScheduleStep(
+    now: number,
+    getNextTime: () => number,
+    advanceTime: (stepDur: number) => void
+  ) {
+    if (!this.ctx || !this.dryBus || !this.fxGain || !this.noiseBuffer) return;
+
+    // Mute (15) or Custom Audio (16): fade out active track instance cleanly & do not accumulate scheduler debt
+    if (this.currentTrack >= 15) {
+      this.trackController.fadeOutActive(this.ctx, 0.24);
+      this.scheduler.resetToNow(0.16);
+      return;
+    }
+
+    let stepsScheduled = 0;
+    while (getNextTime() < now + 0.28 && stepsScheduled < 6) {
+      stepsScheduled++;
+
+      const { programId, song } = this.getSongProgram(this.currentTrack);
+      const slot = this.trackController.transitionTo(
+        this.ctx,
+        this.dryBus,
+        this.fxGain,
+        this.noiseBuffer,
+        programId,
+        song,
+        {
+          delayGain: this.delayGain,
+          reverbGain: this.reverbGain,
+          delayL: this.delayL,
+          delayR: this.delayR,
+        },
+        0.34
+      );
+
+      const isNewSlot = slot.step === 0;
+      if (isNewSlot) {
+        this.scheduler.resetToNow(0.04);
       }
 
-      const nodes = this.getLiveNodes();
-      if (!nodes) break;
-
-      const { programId, song: g } = this.getSongProgram(this.currentTrack);
-      if (this.prevProgram < 0 || (programId !== this.prevProgram && this.step % g.len === 0)) {
-        this.prevProgram = programId;
-        this.step = 0;
-        if (this.delayGain) this.delayGain.gain.setTargetAtTime(g.f, this.ctx.currentTime, 0.25);
-        if (this.reverbGain) this.reverbGain.gain.setTargetAtTime(g.rv, this.ctx.currentTime, 0.25);
-        if (this.delayL) this.delayL.delayTime.setTargetAtTime((60 / g.bpm) * 0.75, this.ctx.currentTime, 0.15);
-        if (this.delayR) this.delayR.delayTime.setTargetAtTime((60 / g.bpm) * 1.125, this.ctx.currentTime, 0.15);
-      }
-
-      const sd = 60 / g.bpm / 4;
-      const s = this.step % g.len;
-      const b = (this.step / g.len) | 0;
-      const pr = g.pr[b % g.pr.length];
+      const sd = 60 / slot.song.bpm / 4;
+      const s = slot.step % slot.song.len;
+      const b = (slot.step / slot.song.len) | 0;
+      const pr = slot.song.pr[b % slot.song.pr.length];
       const chord = (this.chordTypes[pr[1]] || this.chordTypes.M).map((x: number) => pr[0] + x);
 
-      g.p(nodes, b, s, this.nextNoteTime + (s % 2 ? sd * g.sw : 0), chord, sd);
-      this.nextNoteTime += sd;
-      this.step++;
+      slot.song.p(slot.nodes, b, s, getNextTime() + (s % 2 ? sd * slot.song.sw : 0), chord, sd);
+      advanceTime(sd);
+      slot.step++;
     }
   }
 
@@ -1604,6 +1987,7 @@ class AudioManager {
     const trk = this.customTracks[this.customIndex];
     if (!trk) return;
     this.stopCustomTrack();
+    this.trackController.fadeOutActive(this.ctx, 0.22);
     this.isCustomPlaying = true;
     this.customAudio.src = trk.url;
     this.customAudio.play().catch(() => {});
@@ -1627,4 +2011,4 @@ class AudioManager {
   }
 }
 
-export const audio = new AudioManager();
+export const audio = AudioManager.getInstance();

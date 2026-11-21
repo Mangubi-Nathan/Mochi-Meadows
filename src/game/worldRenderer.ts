@@ -69,6 +69,310 @@ const TOWN_ROOF_PALETTES = [
   { roof: '#57b181', roofDark: '#358459', roofHi: '#85d6a9', trim: '#e2faec', wall: '#fcfaf0', trimWood: '#735743' }, // Moss Mint
 ];
 
+// ==================== RENDER SAFETY & OFFSCREEN BITMAP CACHES ====================
+let rendererErrorWarnedAt = 0;
+
+function logRendererWarning(context: string, err: unknown): void {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  if (now - rendererErrorWarnedAt > 5000) {
+    rendererErrorWarnedAt = now;
+    console.warn(`[Renderer] Recovered from ${context} error:`, err);
+  }
+}
+
+interface ClampedTileRange {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  valid: boolean;
+}
+
+function clampTileRange(
+  startX: number,
+  endX: number,
+  startY: number,
+  endY: number,
+  padX: number = 0,
+  padY: number = 0
+): ClampedTileRange {
+  if (
+    !Number.isFinite(startX) ||
+    !Number.isFinite(endX) ||
+    !Number.isFinite(startY) ||
+    !Number.isFinite(endY)
+  ) {
+    return { minX: 0, maxX: -1, minY: 0, maxY: -1, valid: false };
+  }
+  const minX = Math.max(0, Math.floor(startX) - padX);
+  const maxX = Math.min(N - 1, Math.ceil(endX) + padX);
+  const minY = Math.max(0, Math.floor(startY) - padY);
+  const maxY = Math.min(N - 1, Math.ceil(endY) + padY);
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    valid: minX <= maxX && minY <= maxY,
+  };
+}
+
+function safeDrawImage(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLCanvasElement,
+  dx: number,
+  dy: number,
+  dw?: number,
+  dh?: number
+): void {
+  if (!img || img.width <= 0 || img.height <= 0) return;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+  if (dw !== undefined && dh !== undefined) {
+    if (!Number.isFinite(dw) || !Number.isFinite(dh) || dw <= 0 || dh <= 0) return;
+    ctx.drawImage(img, dx, dy, dw, dh);
+    return;
+  }
+  ctx.drawImage(img, dx, dy);
+}
+
+/**
+ * Safely sorts and executes Y-sorted 2.5D drawables with strict per-item Canvas state
+ * isolation so no drawable can leak transform/alpha/dash state or crash the frame loop.
+ */
+export function executeYRenderQueue(ctx: CanvasRenderingContext2D, items: YSortableItem[]): void {
+  if (!ctx || !items || items.length === 0) return;
+  items.sort(
+    (a, b) =>
+      (Number.isFinite(a.sortY) ? a.sortY : 0) - (Number.isFinite(b.sortY) ? b.sortY : 0)
+  );
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    ctx.save();
+    try {
+      item.draw();
+    } catch (err) {
+      logRendererWarning('drawable', err);
+    } finally {
+      ctx.restore();
+    }
+  }
+}
+
+const glowStampCache = new Map<string, HTMLCanvasElement>();
+
+function getGlowStamp(rgb: string): HTMLCanvasElement {
+  let c = glowStampCache.get(rgb);
+  if (c) return c;
+  c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 64;
+  const gctx = c.getContext('2d');
+  if (gctx) {
+    const grad = gctx.createRadialGradient(32, 32, 2, 32, 32, 32);
+    grad.addColorStop(0, `rgba(${rgb}, 0.82)`);
+    grad.addColorStop(0.55, `rgba(${rgb}, 0.28)`);
+    grad.addColorStop(1, `rgba(${rgb}, 0)`);
+    gctx.fillStyle = grad;
+    gctx.fillRect(0, 0, 64, 64);
+  }
+  if (glowStampCache.size > 48) {
+    glowStampCache.clear();
+  }
+  glowStampCache.set(rgb, c);
+  return c;
+}
+
+export function drawGlowHalo(
+  ctx: CanvasRenderingContext2D,
+  rgb: string,
+  x: number,
+  y: number,
+  r: number,
+  alpha: number = 0.7
+): void {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(r) || r <= 0.5) return;
+  if (!Number.isFinite(alpha) || alpha <= 0) return;
+  const stamp = getGlowStamp(rgb);
+  const prevAlpha = ctx.globalAlpha;
+  ctx.globalAlpha = Math.max(0, Math.min(1, prevAlpha * alpha));
+  safeDrawImage(ctx, stamp, x - r, y - r, r * 2, r * 2);
+  ctx.globalAlpha = prevAlpha;
+}
+
+const backdropStripCache = new Map<string, HTMLCanvasElement>();
+
+function getBackdropGradientStrip(
+  layerKey: string,
+  h: number,
+  stops: ReadonlyArray<readonly [number, string]>
+): HTMLCanvasElement {
+  const ih = Math.max(16, Math.round(h));
+  const cacheKey = `${layerKey}:${ih}`;
+  let c = backdropStripCache.get(cacheKey);
+  if (c) return c;
+  c = document.createElement('canvas');
+  c.width = 8;
+  c.height = ih;
+  const bctx = c.getContext('2d');
+  if (bctx) {
+    const grad = bctx.createLinearGradient(0, 0, 0, ih);
+    for (let i = 0; i < stops.length; i++) {
+      grad.addColorStop(stops[i][0], stops[i][1]);
+    }
+    bctx.fillStyle = grad;
+    bctx.fillRect(0, 0, 8, ih);
+  }
+  if (backdropStripCache.size > 12) {
+    backdropStripCache.clear();
+  }
+  backdropStripCache.set(cacheKey, c);
+  return c;
+}
+
+let cachedReefBeamCanvas: HTMLCanvasElement | null = null;
+
+function getReefBeamStampCanvas(): HTMLCanvasElement {
+  if (cachedReefBeamCanvas) return cachedReefBeamCanvas;
+  const c = document.createElement('canvas');
+  c.width = 48;
+  c.height = 256;
+  const bctx = c.getContext('2d');
+  if (bctx) {
+    const g = bctx.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0, 'rgba(135, 242, 255, 0.16)');
+    g.addColorStop(0.7, 'rgba(90, 210, 240, 0.045)');
+    g.addColorStop(1, 'rgba(60, 180, 220, 0)');
+    bctx.fillStyle = g;
+    bctx.fillRect(0, 0, 48, 256);
+  }
+  cachedReefBeamCanvas = c;
+  return c;
+}
+
+const atmosphereOverlayCache = new Map<string, HTMLCanvasElement>();
+
+function getAtmosphereOverlayCanvas(
+  key: 'glowdeep' | 'moonroad' | 'sky',
+  w: number,
+  h: number
+): HTMLCanvasElement {
+  const iw = Math.max(1, Math.round(w));
+  const ih = Math.max(1, Math.round(h));
+  const cacheKey = `${key}:${iw}x${ih}`;
+  let c = atmosphereOverlayCache.get(cacheKey);
+  if (c) return c;
+  c = document.createElement('canvas');
+  c.width = iw;
+  c.height = ih;
+  const actx = c.getContext('2d');
+  if (actx) {
+    if (key === 'glowdeep') {
+      const g = actx.createRadialGradient(
+        iw * 0.5,
+        ih * 0.5,
+        40,
+        iw * 0.5,
+        ih * 0.5,
+        Math.max(iw, ih) * 0.65
+      );
+      g.addColorStop(0, 'rgba(100, 245, 200, 0.05)');
+      g.addColorStop(0.6, 'rgba(92, 62, 165, 0.08)');
+      g.addColorStop(1, 'rgba(14, 7, 26, 0.35)');
+      actx.fillStyle = g;
+      actx.fillRect(0, 0, iw, ih);
+    } else if (key === 'moonroad') {
+      const g = actx.createRadialGradient(
+        iw * 0.5,
+        ih * 0.12,
+        20,
+        iw * 0.5,
+        ih * 0.12,
+        Math.max(iw, ih) * 0.72
+      );
+      g.addColorStop(0, 'rgba(255, 234, 155, 0.12)');
+      g.addColorStop(0.5, 'rgba(165, 130, 255, 0.06)');
+      g.addColorStop(1, 'rgba(10, 5, 28, 0.22)');
+      actx.fillStyle = g;
+      actx.fillRect(0, 0, iw, ih);
+    } else {
+      const g = actx.createRadialGradient(
+        iw * 0.85,
+        ih * 0.1,
+        20,
+        iw * 0.85,
+        ih * 0.1,
+        Math.max(iw, ih) * 0.68
+      );
+      g.addColorStop(0, 'rgba(255, 244, 195, 0.25)');
+      g.addColorStop(0.45, 'rgba(255, 225, 165, 0.08)');
+      g.addColorStop(1, 'rgba(255, 225, 165, 0)');
+      actx.fillStyle = g;
+      actx.fillRect(0, 0, iw, ih);
+    }
+  }
+  if (atmosphereOverlayCache.size > 6) {
+    atmosphereOverlayCache.clear();
+  }
+  atmosphereOverlayCache.set(cacheKey, c);
+  return c;
+}
+
+const cobbleTileCache: (HTMLCanvasElement | null)[] = [null, null];
+
+function getCobbleTileCanvas(variant: 0 | 1): HTMLCanvasElement {
+  const cached = cobbleTileCache[variant];
+  if (cached) return cached;
+  const c = document.createElement('canvas');
+  c.width = T + 1;
+  c.height = T + 1;
+  const tctx = c.getContext('2d');
+  if (tctx) {
+    tctx.fillStyle = '#dfd2bc';
+    tctx.fillRect(0, 0, T + 1, T + 1);
+    tctx.fillStyle = variant === 0 ? '#ede2ce' : '#d0c0a5';
+    tctx.beginPath();
+    tctx.roundRect(2.5, 2.5, 16.5, 15.5, 5);
+    tctx.roundRect(21, 4, 16.5, 14.5, 5);
+    tctx.roundRect(4, 20.5, 15.5, 16, 5);
+    tctx.roundRect(21.5, 20.5, 16, 16, 5);
+    tctx.fill();
+    tctx.strokeStyle = 'rgba(130, 112, 92, 0.32)';
+    tctx.lineWidth = 1;
+    tctx.stroke();
+  }
+  cobbleTileCache[variant] = c;
+  return c;
+}
+
+let cachedWorldVig: { w: number; h: number; edgeColor: string; canvas: HTMLCanvasElement } | null = null;
+
+function getWorldVignetteCanvas(w: number, h: number, edgeColor: string): HTMLCanvasElement {
+  const iw = Math.max(1, Math.round(Number.isFinite(w) ? w : 1));
+  const ih = Math.max(1, Math.round(Number.isFinite(h) ? h : 1));
+  if (
+    cachedWorldVig &&
+    cachedWorldVig.w === iw &&
+    cachedWorldVig.h === ih &&
+    cachedWorldVig.edgeColor === edgeColor
+  ) {
+    return cachedWorldVig.canvas;
+  }
+  const c = document.createElement('canvas');
+  c.width = iw;
+  c.height = ih;
+  const vctx = c.getContext('2d');
+  if (vctx) {
+    const maxR = Math.max(2, Math.hypot(iw * 0.5, ih * 0.5));
+    const vig = vctx.createRadialGradient(iw * 0.5, ih * 0.5, maxR * 0.62, iw * 0.5, ih * 0.5, maxR * 1.04);
+    vig.addColorStop(0, 'rgba(24, 14, 38, 0)');
+    vig.addColorStop(1, edgeColor);
+    vctx.fillStyle = vig;
+    vctx.fillRect(0, 0, iw, ih);
+  }
+  cachedWorldVig = { w: iw, h: ih, edgeColor, canvas: c };
+  return c;
+}
+
 /**
  * Draws lush animated sky or underwater backdrop before world tiles.
  */
@@ -84,32 +388,38 @@ export function renderLayerBackdrop(
   isGlowdeep: boolean = false,
   isMoonRoad: boolean = false
 ): void {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+  const safeCx = Number.isFinite(cx) ? cx : 0;
+  const safeCy = Number.isFinite(cy) ? cy : 0;
+
+  ctx.save();
   if (isMoonRoad) {
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, '#070417');
-    grad.addColorStop(0.5, '#120a2e');
-    grad.addColorStop(1, '#1c1042');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
+    const strip = getBackdropGradientStrip('moonroad', h, [
+      [0, '#070417'],
+      [0.5, '#120a2e'],
+      [1, '#1c1042'],
+    ]);
+    safeDrawImage(ctx, strip, 0, 0, w, h);
 
     // Parallax aurora nebula ribbons & constellations in the cosmic void
-    ctx.save();
     for (let i = 0; i < 4; i++) {
-      const rx = w * (0.2 + i * 0.22) + Math.sin(t * 0.25 + i) * 45 - (cx * 0.08) % 240;
-      const ry = h * (0.25 + (i % 2) * 0.4) + Math.cos(t * 0.2 + i) * 30 - (cy * 0.08) % 180;
-      const neb = ctx.createRadialGradient(rx, ry, 20, rx, ry, 260);
-      neb.addColorStop(0, i % 2 === 0 ? 'rgba(180, 140, 255, 0.16)' : 'rgba(255, 175, 215, 0.12)');
-      neb.addColorStop(1, 'rgba(20, 10, 48, 0)');
-      ctx.fillStyle = neb;
-      ctx.beginPath();
-      ctx.arc(rx, ry, 260, 0, Math.PI * 2);
-      ctx.fill();
+      const rx = w * (0.2 + i * 0.22) + Math.sin(t * 0.25 + i) * 45 - (safeCx * 0.08) % 240;
+      const ry = h * (0.25 + (i % 2) * 0.4) + Math.cos(t * 0.2 + i) * 30 - (safeCy * 0.08) % 180;
+      drawGlowHalo(
+        ctx,
+        i % 2 === 0 ? '180, 140, 255' : '255, 175, 215',
+        rx,
+        ry,
+        260,
+        i % 2 === 0 ? 0.2 : 0.15
+      );
     }
     for (let i = 0; i < 65; i++) {
-      const sx = (((hash(i, 11, 881) * 2400 - cx * 0.16) % (w + 100)) + (w + 100)) % (w + 100) - 50;
-      const sy = (((hash(i, 12, 881) * 1600 - cy * 0.16) % (h + 100)) + (h + 100)) % (h + 100) - 50;
+      const sx = (((hash(i, 11, 881) * 2400 - safeCx * 0.16) % (w + 100)) + (w + 100)) % (w + 100) - 50;
+      const sy = (((hash(i, 12, 881) * 1600 - safeCy * 0.16) % (h + 100)) + (h + 100)) % (h + 100) - 50;
       const tw = 0.35 + 0.55 * Math.abs(Math.sin(t * (1.2 + (i % 4) * 0.4) + i));
-      ctx.fillStyle = i % 5 === 0 ? `rgba(255, 224, 130, ${tw.toFixed(2)})` : `rgba(235, 240, 255, ${tw.toFixed(2)})`;
+      ctx.fillStyle =
+        i % 5 === 0 ? `rgba(255, 224, 130, ${tw.toFixed(2)})` : `rgba(235, 240, 255, ${tw.toFixed(2)})`;
       ctx.beginPath();
       ctx.arc(sx, sy, i % 7 === 0 ? 2.1 : 1.3, 0, Math.PI * 2);
       ctx.fill();
@@ -119,20 +429,20 @@ export function renderLayerBackdrop(
   }
 
   if (isGlowdeep) {
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, '#100720');
-    grad.addColorStop(0.55, '#190c30');
-    grad.addColorStop(1, '#22103d');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
+    const strip = getBackdropGradientStrip('glowdeep', h, [
+      [0, '#100720'],
+      [0.55, '#190c30'],
+      [1, '#22103d'],
+    ]);
+    safeDrawImage(ctx, strip, 0, 0, w, h);
 
     // Soft distant bioluminescent cavern bokeh
-    ctx.save();
     for (let i = 0; i < 18; i++) {
-      const bx = (((hash(i, 5, 771) * 2200 - cx * 0.15) % (w + 160)) + (w + 160)) % (w + 160) - 80;
-      const by = (((hash(i, 6, 771) * 1500 - cy * 0.15) % (h + 160)) + (h + 160)) % (h + 160) - 80;
+      const bx = (((hash(i, 5, 771) * 2200 - safeCx * 0.15) % (w + 160)) + (w + 160)) % (w + 160) - 80;
+      const by = (((hash(i, 6, 771) * 1500 - safeCy * 0.15) % (h + 160)) + (h + 160)) % (h + 160) - 80;
       const pulse = 0.08 + 0.06 * Math.sin(t * 1.4 + i);
-      ctx.fillStyle = i % 2 === 0 ? `rgba(69, 227, 245, ${pulse.toFixed(2)})` : `rgba(180, 140, 255, ${pulse.toFixed(2)})`;
+      ctx.fillStyle =
+        i % 2 === 0 ? `rgba(69, 227, 245, ${pulse.toFixed(2)})` : `rgba(180, 140, 255, ${pulse.toFixed(2)})`;
       ctx.beginPath();
       ctx.arc(bx, by, 38 + (i % 3) * 18, 0, Math.PI * 2);
       ctx.fill();
@@ -142,21 +452,21 @@ export function renderLayerBackdrop(
   }
 
   if (isSky) {
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, '#4691e2');
-    grad.addColorStop(0.5, '#7cc6f6');
-    grad.addColorStop(1, '#c5ecff');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
+    const strip = getBackdropGradientStrip('sky', h, [
+      [0, '#4691e2'],
+      [0.5, '#7cc6f6'],
+      [1, '#c5ecff'],
+    ]);
+    safeDrawImage(ctx, strip, 0, 0, w, h);
 
     // Slow parallax soft cloud banks drifting far below
-    ctx.save();
     for (let i = 0; i < 20; i++) {
       const seedX = hash(i, 1, 801) * 2800;
       const seedY = hash(i, 2, 801) * 1700;
       const rad = 52 + hash(i, 3, 801) * 72;
-      const px = ((((seedX - cx * 0.22 + t * (7 + (i % 4) * 2.2)) % (w + 420)) + (w + 420)) % (w + 420)) - 210;
-      const py = ((((seedY - cy * 0.22) % (h + 320)) + (h + 320)) % (h + 320)) - 160;
+      const px =
+        ((((seedX - safeCx * 0.22 + t * (7 + (i % 4) * 2.2)) % (w + 420)) + (w + 420)) % (w + 420)) - 210;
+      const py = ((((seedY - safeCy * 0.22) % (h + 320)) + (h + 320)) % (h + 320)) - 160;
 
       ctx.fillStyle = 'rgba(255, 255, 255, 0.36)';
       ctx.beginPath();
@@ -170,21 +480,23 @@ export function renderLayerBackdrop(
   }
 
   if (isDive) {
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, '#135f9c');
-    grad.addColorStop(0.55, '#0b3e72');
-    grad.addColorStop(1, '#072448');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
+    const strip = getBackdropGradientStrip('dive', h, [
+      [0, '#135f9c'],
+      [0.55, '#0b3e72'],
+      [1, '#072448'],
+    ]);
+    safeDrawImage(ctx, strip, 0, 0, w, h);
+    ctx.restore();
     return;
   }
 
   // Deep ocean base with gentle depth gradient
-  const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, '#2e7cb6');
-  grad.addColorStop(1, '#3b8ec9');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, w, h);
+  const strip = getBackdropGradientStrip('surface', h, [
+    [0, '#2e7cb6'],
+    [1, '#3b8ec9'],
+  ]);
+  safeDrawImage(ctx, strip, 0, 0, w, h);
+  ctx.restore();
 }
 
 /**
@@ -200,57 +512,32 @@ export function renderLayerAtmosphereOverlay(
   isGlowdeep: boolean = false,
   isMoonRoad: boolean = false
 ): void {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+
   if (isGlowdeep) {
-    ctx.save();
-    const g = ctx.createRadialGradient(w * 0.5, h * 0.5, 40, w * 0.5, h * 0.5, Math.max(w, h) * 0.65);
-    g.addColorStop(0, 'rgba(100, 245, 200, 0.05)');
-    g.addColorStop(0.6, 'rgba(92, 62, 165, 0.08)');
-    g.addColorStop(1, 'rgba(14, 7, 26, 0.35)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
-    ctx.restore();
+    safeDrawImage(ctx, getAtmosphereOverlayCanvas('glowdeep', w, h), 0, 0);
     return;
   }
   if (isMoonRoad) {
-    ctx.save();
-    const g = ctx.createRadialGradient(w * 0.5, h * 0.12, 20, w * 0.5, h * 0.12, Math.max(w, h) * 0.72);
-    g.addColorStop(0, 'rgba(255, 234, 155, 0.12)');
-    g.addColorStop(0.5, 'rgba(165, 130, 255, 0.06)');
-    g.addColorStop(1, 'rgba(10, 5, 28, 0.22)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
-    ctx.restore();
+    safeDrawImage(ctx, getAtmosphereOverlayCanvas('moonroad', w, h), 0, 0);
     return;
   }
   if (isDive) {
+    const beam = getReefBeamStampCanvas();
     ctx.save();
     for (let i = 0; i < 6; i++) {
       const sway = Math.sin(t * 0.7 + i * 1.4) * 38;
       const baseX = (w / 5) * i + sway;
       const bw = 72 + (i % 3) * 30;
-      const g = ctx.createLinearGradient(baseX, 0, baseX - 115, h);
-      g.addColorStop(0, 'rgba(135, 242, 255, 0.15)');
-      g.addColorStop(0.7, 'rgba(90, 210, 240, 0.04)');
-      g.addColorStop(1, 'rgba(60, 180, 220, 0)');
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.moveTo(baseX, 0);
-      ctx.lineTo(baseX + bw, 0);
-      ctx.lineTo(baseX + bw - 140, h);
-      ctx.lineTo(baseX - 140, h);
-      ctx.closePath();
-      ctx.fill();
+      ctx.save();
+      ctx.translate(baseX, 0);
+      ctx.transform(1, 0, -140 / h, 1, 0, 0);
+      safeDrawImage(ctx, beam, 0, 0, bw, h);
+      ctx.restore();
     }
     ctx.restore();
   } else if (isSky) {
-    ctx.save();
-    const g = ctx.createRadialGradient(w * 0.85, h * 0.1, 20, w * 0.85, h * 0.1, Math.max(w, h) * 0.68);
-    g.addColorStop(0, 'rgba(255, 244, 195, 0.25)');
-    g.addColorStop(0.45, 'rgba(255, 225, 165, 0.08)');
-    g.addColorStop(1, 'rgba(255, 225, 165, 0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
-    ctx.restore();
+    safeDrawImage(ctx, getAtmosphereOverlayCanvas('sky', w, h), 0, 0);
   }
 }
 
@@ -266,10 +553,13 @@ export function renderTerrainLayer(
   startY: number,
   endY: number
 ): void {
+  const bounds = clampTileRange(startX, endX, startY, endY);
+  if (!bounds.valid) return;
   const t = W.time;
 
-  for (let y = startY; y <= endY; y++) {
-    for (let x = startX; x <= endX; x++) {
+  ctx.save();
+  for (let y = bounds.minY; y <= bounds.maxY; y++) {
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const i = y * N + x;
       const b = W.B[i];
       const sx = x * T;
@@ -468,19 +758,7 @@ export function renderTerrainLayer(
           ctx.fill();
         }
       } else if (W.TW[i] === 2) {
-        ctx.fillStyle = '#dfd2bc';
-        ctx.fillRect(sx, sy, T + 1, T + 1);
-        // Rounded masonry cobblestones with highlight rim
-        ctx.fillStyle = h1 > 0.5 ? '#d0c0a5' : '#ede2ce';
-        ctx.beginPath();
-        ctx.roundRect(sx + 2.5, sy + 2.5, 16.5, 15.5, 5);
-        ctx.roundRect(sx + 21, sy + 4, 16.5, 14.5, 5);
-        ctx.roundRect(sx + 4, sy + 20.5, 15.5, 16, 5);
-        ctx.roundRect(sx + 21.5, sy + 20.5, 16, 16, 5);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(130, 112, 92, 0.32)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
+        ctx.drawImage(getCobbleTileCanvas(h1 > 0.5 ? 1 : 0), sx, sy);
 
         // Warm cobblestone curb against lawn
         if (y > 0 && W.TW[(y - 1) * N + x] !== 2) {
@@ -505,6 +783,7 @@ export function renderTerrainLayer(
       }
     }
   }
+  ctx.restore();
 }
 
 /**
@@ -518,9 +797,12 @@ export function renderSkyTerrain(
   startY: number,
   endY: number
 ): void {
+  const bounds = clampTileRange(startX, endX, startY, endY);
+  if (!bounds.valid) return;
   const t = W.time;
-  for (let y = startY; y <= endY; y++) {
-    for (let x = startX; x <= endX; x++) {
+  ctx.save();
+  for (let y = bounds.minY; y <= bounds.maxY; y++) {
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const i = y * N + x;
       const sb = W.SB[i];
       if (!sb) continue;
@@ -597,6 +879,7 @@ export function renderSkyTerrain(
       }
     }
   }
+  ctx.restore();
 }
 
 /**
@@ -610,9 +893,12 @@ export function renderReefTerrain(
   startY: number,
   endY: number
 ): void {
+  const bounds = clampTileRange(startX, endX, startY, endY);
+  if (!bounds.valid) return;
   const t = W.time;
-  for (let y = startY; y <= endY; y++) {
-    for (let x = startX; x <= endX; x++) {
+  ctx.save();
+  for (let y = bounds.minY; y <= bounds.maxY; y++) {
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const i = y * N + x;
       const b = W.B[i];
       const sx = x * T;
@@ -651,6 +937,7 @@ export function renderReefTerrain(
       }
     }
   }
+  ctx.restore();
 }
 
 /**
@@ -666,13 +953,11 @@ function drawTownFountainWaystone(
   ctx.save();
   // Ground aura when attuned for fast travel
   if (attuned) {
-    const runeGlow = ctx.createRadialGradient(cx, cy + 6, 6, cx, cy + 6, 38);
-    runeGlow.addColorStop(0, 'rgba(122, 228, 255, 0.4)');
-    runeGlow.addColorStop(1, 'rgba(122, 228, 255, 0)');
-    ctx.fillStyle = runeGlow;
-    ctx.beginPath();
-    ctx.ellipse(cx, cy + 8, 38, 18, 0, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.save();
+    ctx.translate(cx, cy + 7);
+    ctx.scale(1, 0.48);
+    drawGlowHalo(ctx, '122, 228, 255', 0, 0, 38, 0.5);
+    ctx.restore();
   }
 
   // Stone step shadow
@@ -717,14 +1002,7 @@ function drawTownFountainWaystone(
   // Floating Crystal Spire
   const bob = attuned ? Math.sin(t * 3.2) * 3.2 : 0;
   if (attuned) {
-    const aura = ctx.createRadialGradient(cx, cy - 12 + bob, 2, cx, cy - 12 + bob, 32);
-    aura.addColorStop(0, 'rgba(130, 240, 255, 0.58)');
-    aura.addColorStop(0.6, 'rgba(255, 210, 90, 0.22)');
-    aura.addColorStop(1, 'rgba(130, 240, 255, 0)');
-    ctx.fillStyle = aura;
-    ctx.beginPath();
-    ctx.arc(cx, cy - 12 + bob, 32, 0, Math.PI * 2);
-    ctx.fill();
+    drawGlowHalo(ctx, '130, 240, 255', cx, cy - 12 + bob, 32, 0.72);
   }
 
   // Faceted Waystone Crystal
@@ -787,13 +1065,11 @@ function drawStorybookCottage(
 
   // Warm window light pools cast onto cobblestone/grass below
   [-34, 34].forEach((ox) => {
-    const lg = ctx.createRadialGradient(cx + ox, baseY - 2, 2, cx + ox, baseY + 6, 26);
-    lg.addColorStop(0, 'rgba(255, 224, 120, 0.36)');
-    lg.addColorStop(1, 'rgba(255, 224, 120, 0)');
-    ctx.fillStyle = lg;
-    ctx.beginPath();
-    ctx.ellipse(cx + ox, baseY + 4, 24, 11, 0, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.save();
+    ctx.translate(cx + ox, baseY + 4);
+    ctx.scale(1, 0.46);
+    drawGlowHalo(ctx, '255, 224, 120', 0, 0, 26, 0.46);
+    ctx.restore();
   });
 
   // Brick Chimney + Curling Smoke Puffs
@@ -1032,21 +1308,8 @@ function drawSurfacePropAt(
   if (dk === 13) {
     // Ornate Wrought-Iron Lantern Post with ground pool
     const flicker = 0.92 + Math.sin(t * 7 + x) * 0.08;
-    const groundGlow = ctx.createRadialGradient(cx, cy + 10, 2, cx, cy + 10, 30);
-    groundGlow.addColorStop(0, `rgba(255, 224, 120, ${(0.35 * flicker).toFixed(2)})`);
-    groundGlow.addColorStop(1, 'rgba(255, 224, 120, 0)');
-    ctx.fillStyle = groundGlow;
-    ctx.beginPath();
-    ctx.ellipse(cx, cy + 10, 30, 14, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    const halo = ctx.createRadialGradient(cx + 3, cy - 18, 2, cx + 3, cy - 18, 38);
-    halo.addColorStop(0, `rgba(255, 232, 130, ${(0.55 * flicker).toFixed(2)})`);
-    halo.addColorStop(1, 'rgba(255, 232, 130, 0)');
-    ctx.fillStyle = halo;
-    ctx.beginPath();
-    ctx.arc(cx + 3, cy - 18, 38, 0, Math.PI * 2);
-    ctx.fill();
+    drawGlowHalo(ctx, '255, 224, 120', cx, cy + 10, 26, 0.4 * flicker);
+    drawGlowHalo(ctx, '255, 232, 130', cx + 3, cy - 18, 38, 0.65 * flicker);
 
     // Base plinth + iron post
     ctx.fillStyle = '#3f344c';
@@ -1427,12 +1690,15 @@ export function collectSurfacePropDrawables(
   endY: number
 ): YSortableItem[] {
   const items: YSortableItem[] = [];
+  const bounds = clampTileRange(startX, endX, startY, endY, 4, 4);
+  if (!bounds.valid) return items;
   const t = W.time;
-  const minX = Math.max(0, startX - 4);
-  const maxX = Math.min(N - 1, endX + 4);
-  const minY = Math.max(0, startY - 3);
-  const maxY = Math.min(N - 1, endY + 4);
+  const minX = bounds.minX;
+  const maxX = bounds.maxX;
+  const minY = bounds.minY;
+  const maxY = bounds.maxY;
 
+  ctx.save();
   for (let y = minY; y <= maxY; y++) {
     for (let x = minX; x <= maxX; x++) {
       const dk = W.DK[y * N + x];
@@ -1454,6 +1720,7 @@ export function collectSurfacePropDrawables(
       });
     }
   }
+  ctx.restore();
   return items;
 }
 
@@ -1469,8 +1736,7 @@ export function renderSurfaceDecorations(
   endY: number
 ): void {
   const items = collectSurfacePropDrawables(ctx, W, startX, endX, startY, endY);
-  items.sort((a, b) => a.sortY - b.sortY);
-  for (const it of items) it.draw();
+  executeYRenderQueue(ctx, items);
 }
 
 /**
@@ -1485,9 +1751,11 @@ export function collectSkyPropDrawables(
   endY: number
 ): YSortableItem[] {
   const items: YSortableItem[] = [];
+  const bounds = clampTileRange(startX, endX, startY, endY, 2, 2);
+  if (!bounds.valid) return items;
   const t = W.time;
-  for (let y = Math.max(0, startY - 2); y <= Math.min(N - 1, endY + 2); y++) {
-    for (let x = Math.max(0, startX - 2); x <= Math.min(N - 1, endX + 2); x++) {
+  for (let y = bounds.minY; y <= bounds.maxY; y++) {
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const sd = W.SD[y * N + x];
       if (!sd) continue;
 
@@ -1533,13 +1801,7 @@ export function collectSkyPropDrawables(
             ctx.stroke();
           } else if (sd === 3) {
             const bob = Math.sin(t * 2.5 + x) * 3.5;
-            const halo = ctx.createRadialGradient(cx, cy - 10 + bob, 2, cx, cy - 10 + bob, 20);
-            halo.addColorStop(0, 'rgba(255, 236, 138, 0.5)');
-            halo.addColorStop(1, 'rgba(255, 236, 138, 0)');
-            ctx.fillStyle = halo;
-            ctx.beginPath();
-            ctx.arc(cx, cy - 10 + bob, 20, 0, Math.PI * 2);
-            ctx.fill();
+            drawGlowHalo(ctx, '255, 236, 138', cx, cy - 10 + bob, 20, 0.62);
             ctx.fillStyle = '#ffe585';
             ctx.strokeStyle = OUTLINE;
             ctx.lineWidth = 1.1;
@@ -1601,8 +1863,7 @@ export function renderSkyDecorations(
   endY: number
 ): void {
   const items = collectSkyPropDrawables(ctx, W, startX, endX, startY, endY);
-  items.sort((a, b) => a.sortY - b.sortY);
-  for (const it of items) it.draw();
+  executeYRenderQueue(ctx, items);
 }
 
 /**
@@ -1617,9 +1878,11 @@ export function collectReefPropDrawables(
   endY: number
 ): YSortableItem[] {
   const items: YSortableItem[] = [];
+  const bounds = clampTileRange(startX, endX, startY, endY, 3, 3);
+  if (!bounds.valid) return items;
   const t = W.time;
-  for (let y = Math.max(0, startY - 3); y <= Math.min(N - 1, endY + 3); y++) {
-    for (let x = Math.max(0, startX - 3); x <= Math.min(N - 1, endX + 3); x++) {
+  for (let y = bounds.minY; y <= bounds.maxY; y++) {
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const ud = W.UD[y * N + x];
       if (!ud || ud === 6) continue;
 
@@ -1719,13 +1982,7 @@ export function collectReefPropDrawables(
             ctx.arc(bx + 8, by - 4, 4.2, 0, Math.PI * 2);
             ctx.fill();
           } else if (ud === 7) {
-            const glow = ctx.createRadialGradient(cx, cy - 10, 2, cx, cy - 10, 34);
-            glow.addColorStop(0, 'rgba(110, 250, 240, 0.52)');
-            glow.addColorStop(1, 'rgba(110, 250, 240, 0)');
-            ctx.fillStyle = glow;
-            ctx.beginPath();
-            ctx.arc(cx, cy - 10, 34, 0, Math.PI * 2);
-            ctx.fill();
+            drawGlowHalo(ctx, '110, 250, 240', cx, cy - 10, 34, 0.65);
             ctx.fillStyle = '#7bf5ea';
             ctx.strokeStyle = '#ffffff';
             ctx.lineWidth = 1.2;
@@ -1793,8 +2050,7 @@ export function renderReefDecorations(
   endY: number
 ): void {
   const items = collectReefPropDrawables(ctx, W, startX, endX, startY, endY);
-  items.sort((a, b) => a.sortY - b.sortY);
-  for (const it of items) it.draw();
+  executeYRenderQueue(ctx, items);
 }
 
 /**
@@ -1809,9 +2065,12 @@ export function renderGlowdeepTerrain(
   startY: number,
   endY: number
 ): void {
+  const bounds = clampTileRange(startX, endX, startY, endY);
+  if (!bounds.valid) return;
   const t = W.time;
-  for (let y = startY; y <= endY; y++) {
-    for (let x = startX; x <= endX; x++) {
+  ctx.save();
+  for (let y = bounds.minY; y <= bounds.maxY; y++) {
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const cell = getGlowdeepCell(x, y);
       const sx = x * T;
       const sy = y * T;
@@ -1896,6 +2155,7 @@ export function renderGlowdeepTerrain(
       }
     }
   }
+  ctx.restore();
 }
 
 /**
@@ -1911,9 +2171,11 @@ export function collectGlowdeepPropDrawables(
   endY: number
 ): YSortableItem[] {
   const items: YSortableItem[] = [];
+  const bounds = clampTileRange(startX, endX, startY, endY, 2, 2);
+  if (!bounds.valid) return items;
   const t = W.time;
-  for (let y = Math.max(0, startY - 2); y <= Math.min(N - 1, endY + 2); y++) {
-    for (let x = Math.max(0, startX - 2); x <= Math.min(N - 1, endX + 2); x++) {
+  for (let y = bounds.minY; y <= bounds.maxY; y++) {
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const cell = getGlowdeepCell(x, y);
       const h1 = hash(x, y, 731);
       const cx = x * T + T / 2;
@@ -1924,13 +2186,7 @@ export function collectGlowdeepPropDrawables(
         items.push({
           sortY: y * T + T * 0.72,
           draw: () => {
-            const halo = ctx.createRadialGradient(cx, cy - 6, 2, cx, cy - 6, 26);
-            halo.addColorStop(0, isMint ? 'rgba(100, 245, 193, 0.36)' : 'rgba(198, 132, 255, 0.36)');
-            halo.addColorStop(1, 'rgba(100, 245, 193, 0)');
-            ctx.fillStyle = halo;
-            ctx.beginPath();
-            ctx.arc(cx, cy - 6, 26, 0, Math.PI * 2);
-            ctx.fill();
+            drawGlowHalo(ctx, isMint ? '100, 245, 193' : '198, 132, 255', cx, cy - 6, 26, 0.45);
 
             ctx.fillStyle = '#e7e4ff';
             ctx.strokeStyle = OUTLINE;
@@ -1980,13 +2236,7 @@ export function collectGlowdeepPropDrawables(
   items.push({
     sortY: cauldronY + 8,
     draw: () => {
-      const aura = ctx.createRadialGradient(cauldronX, cauldronY - 4, 4, cauldronX, cauldronY - 4, 48);
-      aura.addColorStop(0, 'rgba(255, 212, 92, 0.5)');
-      aura.addColorStop(1, 'rgba(255, 212, 92, 0)');
-      ctx.fillStyle = aura;
-      ctx.beginPath();
-      ctx.arc(cauldronX, cauldronY - 4, 48, 0, Math.PI * 2);
-      ctx.fill();
+      drawGlowHalo(ctx, '255, 212, 92', cauldronX, cauldronY - 4, 48, 0.62);
 
       ctx.fillStyle = '#3f344c';
       ctx.strokeStyle = '#ffd23f';
@@ -2010,14 +2260,7 @@ export function collectGlowdeepPropDrawables(
     sortY: retY + 8,
     draw: () => {
       const pulse = 1 + Math.sin(t * 3.5) * 0.08;
-      const g = ctx.createRadialGradient(retX, retY - 8, 4, retX, retY - 8, 44 * pulse);
-      g.addColorStop(0, 'rgba(125, 235, 165, 0.72)');
-      g.addColorStop(0.6, 'rgba(255, 230, 130, 0.25)');
-      g.addColorStop(1, 'rgba(125, 235, 165, 0)');
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(retX, retY - 8, 44 * pulse, 0, Math.PI * 2);
-      ctx.fill();
+      drawGlowHalo(ctx, '125, 235, 165', retX, retY - 8, 44 * pulse, 0.88);
 
       ctx.strokeStyle = '#7bd88f';
       ctx.lineWidth = 3;
@@ -2055,9 +2298,12 @@ export function renderMoonRoadTerrain(
   startY: number,
   endY: number
 ): void {
+  const bounds = clampTileRange(startX, endX, startY, endY);
+  if (!bounds.valid) return;
   const t = W.time;
-  for (let y = startY; y <= endY; y++) {
-    for (let x = startX; x <= endX; x++) {
+  ctx.save();
+  for (let y = bounds.minY; y <= bounds.maxY; y++) {
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const cell = getMoonRoadCell(x, y);
       const sx = x * T;
       const sy = y * T;
@@ -2105,6 +2351,7 @@ export function renderMoonRoadTerrain(
       }
     }
   }
+  ctx.restore();
 }
 
 /**
@@ -2120,11 +2367,13 @@ export function collectMoonRoadPropDrawables(
   endY: number
 ): YSortableItem[] {
   const items: YSortableItem[] = [];
+  const bounds = clampTileRange(startX, endX, startY, endY, 2, 2);
+  if (!bounds.valid) return items;
   const t = W.time;
 
   // Starlight roadside lanterns every ~7 tiles on road/platform edges
-  for (let y = Math.max(0, startY - 2); y <= Math.min(N - 1, endY + 2); y++) {
-    for (let x = Math.max(0, startX - 2); x <= Math.min(N - 1, endX + 2); x++) {
+  for (let y = bounds.minY; y <= bounds.maxY; y++) {
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const cell = getMoonRoadCell(x, y);
       if (cell === 'road' && hash(x, y, 741) < 0.045) {
         const cx = x * T + T / 2;
@@ -2133,13 +2382,7 @@ export function collectMoonRoadPropDrawables(
           sortY: cy + 6,
           draw: () => {
             const bob = Math.sin(t * 2.5 + x) * 2.5;
-            const halo = ctx.createRadialGradient(cx, cy - 12 + bob, 2, cx, cy - 12 + bob, 26);
-            halo.addColorStop(0, 'rgba(255, 226, 130, 0.55)');
-            halo.addColorStop(1, 'rgba(255, 226, 130, 0)');
-            ctx.fillStyle = halo;
-            ctx.beginPath();
-            ctx.arc(cx, cy - 12 + bob, 26, 0, Math.PI * 2);
-            ctx.fill();
+            drawGlowHalo(ctx, '255, 226, 130', cx, cy - 12 + bob, 26, 0.68);
 
             ctx.fillStyle = '#e5d4ff';
             ctx.fillRect(cx - 1.5, cy - 8, 3, 16);
@@ -2162,13 +2405,7 @@ export function collectMoonRoadPropDrawables(
   items.push({
     sortY: teaY + 14,
     draw: () => {
-      const aura = ctx.createRadialGradient(teaX, teaY - 12, 8, teaX, teaY - 12, 95);
-      aura.addColorStop(0, 'rgba(255, 226, 132, 0.48)');
-      aura.addColorStop(1, 'rgba(255, 226, 132, 0)');
-      ctx.fillStyle = aura;
-      ctx.beginPath();
-      ctx.arc(teaX, teaY - 12, 95, 0, Math.PI * 2);
-      ctx.fill();
+      drawGlowHalo(ctx, '255, 226, 132', teaX, teaY - 12, 95, 0.6);
 
       // Pillars
       ctx.fillStyle = '#f8f2ff';
@@ -2210,13 +2447,7 @@ export function collectMoonRoadPropDrawables(
     sortY: retY + 8,
     draw: () => {
       const pulse = 1 + Math.sin(t * 3.2) * 0.08;
-      const g = ctx.createRadialGradient(retX, retY - 8, 4, retX, retY - 8, 40 * pulse);
-      g.addColorStop(0, 'rgba(180, 225, 255, 0.72)');
-      g.addColorStop(1, 'rgba(180, 225, 255, 0)');
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(retX, retY - 8, 40 * pulse, 0, Math.PI * 2);
-      ctx.fill();
+      drawGlowHalo(ctx, '180, 225, 255', retX, retY - 8, 40 * pulse, 0.88);
 
       ctx.strokeStyle = '#ffd23f';
       ctx.lineWidth = 3;
@@ -2256,14 +2487,7 @@ export function collectGroundPortalDrawables(W: WorldRenderState, ctx: CanvasRen
       draw: () => {
         ctx.save();
         if (open) {
-          const glow = ctx.createRadialGradient(x, y - 6, 4, x, y - 6, 42);
-          glow.addColorStop(0, 'rgba(100, 245, 193, 0.65)');
-          glow.addColorStop(0.6, 'rgba(180, 140, 255, 0.25)');
-          glow.addColorStop(1, 'rgba(180, 140, 255, 0)');
-          ctx.fillStyle = glow;
-          ctx.beginPath();
-          ctx.arc(x, y - 6, 42, 0, Math.PI * 2);
-          ctx.fill();
+          drawGlowHalo(ctx, '100, 245, 193', x, y - 6, 42, 0.8);
         }
         // Wooden & stone root arch
         ctx.fillStyle = open ? '#220f3b' : '#4a3d52';
@@ -2308,14 +2532,7 @@ export function collectGroundPortalDrawables(W: WorldRenderState, ctx: CanvasRen
       draw: () => {
         ctx.save();
         if (open) {
-          const glow = ctx.createRadialGradient(x, y - 12, 4, x, y - 12, 44);
-          glow.addColorStop(0, 'rgba(255, 224, 120, 0.65)');
-          glow.addColorStop(0.55, 'rgba(180, 140, 255, 0.32)');
-          glow.addColorStop(1, 'rgba(180, 140, 255, 0)');
-          ctx.fillStyle = glow;
-          ctx.beginPath();
-          ctx.arc(x, y - 12, 44, 0, Math.PI * 2);
-          ctx.fill();
+          drawGlowHalo(ctx, '255, 224, 120', x, y - 12, 44, 0.8);
         }
         // Silver celestial moon arch pillars
         ctx.fillStyle = open ? '#e8e2ff' : '#9ca3af';
@@ -2370,6 +2587,9 @@ export function renderCollectibles(
   isGlowdeep: boolean = false,
   isMoonRoad: boolean = false
 ): void {
+  if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    return;
+  }
   const t = W.time;
   const pad = 60;
   const minX = cx - pad;
@@ -2377,47 +2597,37 @@ export function renderCollectibles(
   const minY = cy - pad;
   const maxY = cy + h + pad;
 
-  if (isGlowdeep && W.glowSpores) {
-    for (const sp of W.glowSpores) {
-      if (sp.got || sp.x < minX || sp.x > maxX || sp.y < minY || sp.y > maxY) continue;
-      const bob = Math.sin(t * 3 + sp.x) * 3.5;
-      const py = sp.y - 4 + bob;
-      const halo = ctx.createRadialGradient(sp.x, py, 2, sp.x, py, 18);
-      halo.addColorStop(0, 'rgba(100, 245, 193, 0.72)');
-      halo.addColorStop(1, 'rgba(100, 245, 193, 0)');
-      ctx.fillStyle = halo;
-      ctx.beginPath();
-      ctx.arc(sp.x, py, 18, 0, Math.PI * 2);
-      ctx.fill();
+  ctx.save();
+  try {
+    if (isGlowdeep && W.glowSpores) {
+      for (const sp of W.glowSpores) {
+        if (sp.got || sp.x < minX || sp.x > maxX || sp.y < minY || sp.y > maxY) continue;
+        const bob = Math.sin(t * 3 + sp.x) * 3.5;
+        const py = sp.y - 4 + bob;
+        drawGlowHalo(ctx, '100, 245, 193', sp.x, py, 18, 0.85);
 
-      ctx.fillStyle = '#64f5c1';
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.arc(sp.x, py, 6.2, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
+        ctx.fillStyle = '#64f5c1';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(sp.x, py, 6.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
 
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(sp.x - 1.8, py - 2, 1.8, 0, Math.PI * 2);
-      ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(sp.x - 1.8, py - 2, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      return;
     }
-    return;
-  }
 
   if (isMoonRoad && W.moonNotes) {
     for (const mn of W.moonNotes) {
       if (mn.got || mn.x < minX || mn.x > maxX || mn.y < minY || mn.y > maxY) continue;
       const bob = Math.sin(t * 2.8 + mn.x) * 4;
       const py = mn.y - 5 + bob;
-      const halo = ctx.createRadialGradient(mn.x, py, 2, mn.x, py, 18);
-      halo.addColorStop(0, 'rgba(255, 224, 120, 0.72)');
-      halo.addColorStop(1, 'rgba(255, 224, 120, 0)');
-      ctx.fillStyle = halo;
-      ctx.beginPath();
-      ctx.arc(mn.x, py, 18, 0, Math.PI * 2);
-      ctx.fill();
+      drawGlowHalo(ctx, '255, 224, 120', mn.x, py, 18, 0.85);
 
       ctx.fillStyle = '#ffd23f';
       ctx.strokeStyle = '#fff9d6';
@@ -2446,13 +2656,7 @@ export function renderCollectibles(
       ctx.ellipse(s.x, s.y + 7, 6.5, 2.6, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      const halo = ctx.createRadialGradient(s.x, py, 2, s.x, py, 16);
-      halo.addColorStop(0, 'rgba(255, 224, 90, 0.65)');
-      halo.addColorStop(1, 'rgba(255, 224, 90, 0)');
-      ctx.fillStyle = halo;
-      ctx.beginPath();
-      ctx.arc(s.x, py, 16, 0, Math.PI * 2);
-      ctx.fill();
+      drawGlowHalo(ctx, '255, 224, 90', s.x, py, 16, 0.78);
 
       ctx.save();
       ctx.translate(s.x, py);
@@ -2487,13 +2691,7 @@ export function renderCollectibles(
         const bob = Math.sin(t * 3.4 + qi.x) * 3.5;
         const py = qi.y - 6 + bob;
         const isNectar = qi.q.it.toLowerCase().includes('nectar');
-        const halo = ctx.createRadialGradient(qi.x, py, 2, qi.x, py, 19);
-        halo.addColorStop(0, isNectar ? 'rgba(255, 158, 187, 0.72)' : 'rgba(130, 232, 255, 0.72)');
-        halo.addColorStop(1, 'rgba(255, 224, 90, 0)');
-        ctx.fillStyle = halo;
-        ctx.beginPath();
-        ctx.arc(qi.x, py, 19, 0, Math.PI * 2);
-        ctx.fill();
+        drawGlowHalo(ctx, isNectar ? '255, 158, 187' : '130, 232, 255', qi.x, py, 19, 0.85);
 
         ctx.fillStyle = isNectar ? '#ff8fb8' : '#7de0ff';
         ctx.strokeStyle = '#ffffff';
@@ -2514,13 +2712,7 @@ export function renderCollectibles(
       if (p.got || p.x < minX || p.x > maxX || p.y < minY || p.y > maxY) continue;
       const pulse = Math.sin(t * 2.8 + p.x) * 1.5;
 
-      const halo = ctx.createRadialGradient(p.x, p.y - 2, 2, p.x, p.y - 2, 18);
-      halo.addColorStop(0, 'rgba(255, 220, 245, 0.55)');
-      halo.addColorStop(1, 'rgba(255, 220, 245, 0)');
-      ctx.fillStyle = halo;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y - 2, 18, 0, Math.PI * 2);
-      ctx.fill();
+      drawGlowHalo(ctx, '255, 220, 245', p.x, p.y - 2, 18, 0.68);
 
       ctx.fillStyle = '#f5a9cc';
       ctx.beginPath();
@@ -2587,6 +2779,9 @@ export function renderCollectibles(
       ctx.restore();
     }
   }
+  } finally {
+    ctx.restore();
+  }
 }
 
 /**
@@ -2599,22 +2794,18 @@ export function renderGreatLanternTree(
   t: number,
   lit: boolean
 ): void {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
   ctx.save();
 
   const glowRad = lit ? 155 : 75;
-  const aura = ctx.createRadialGradient(x, y - 55, 10, x, y - 55, glowRad);
-  if (lit) {
-    aura.addColorStop(0, 'rgba(255, 228, 120, 0.54)');
-    aura.addColorStop(0.6, 'rgba(130, 240, 180, 0.18)');
-    aura.addColorStop(1, 'rgba(255, 228, 120, 0)');
-  } else {
-    aura.addColorStop(0, 'rgba(130, 175, 235, 0.28)');
-    aura.addColorStop(1, 'rgba(130, 175, 235, 0)');
-  }
-  ctx.fillStyle = aura;
-  ctx.beginPath();
-  ctx.arc(x, y - 55, glowRad, 0, Math.PI * 2);
-  ctx.fill();
+  drawGlowHalo(
+    ctx,
+    lit ? '255, 228, 120' : '130, 175, 235',
+    x,
+    y - 55,
+    glowRad,
+    lit ? 0.68 : 0.36
+  );
 
   ctx.fillStyle = 'rgba(25, 20, 45, 0.28)';
   ctx.beginPath();
@@ -2709,14 +2900,17 @@ export function renderAmbientWorldMotes(
   isMoonRoad: boolean = false,
   lowQuality: boolean = false
 ): void {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+  const safeCx = Number.isFinite(cx) ? cx : 0;
+  const safeCy = Number.isFinite(cy) ? cy : 0;
   ctx.save();
   const count = lowQuality ? 12 : 28;
   for (let i = 0; i < count; i++) {
     const bx = hash(i, 1, 909) * 1600;
     const by = hash(i, 2, 909) * 1000;
     const speedY = isDive ? -18 - (i % 4) * 5 : Math.sin(t * 0.7 + i) * 14;
-    const wx = cx + (((bx - cx + Math.sin(t * 0.6 + i * 1.3) * 26) % (w + 80)) + (w + 80)) % (w + 80) - 40;
-    const wy = cy + (((by - cy + t * speedY) % (h + 80)) + (h + 80)) % (h + 80) - 40;
+    const wx = safeCx + (((bx - safeCx + Math.sin(t * 0.6 + i * 1.3) * 26) % (w + 80)) + (w + 80)) % (w + 80) - 40;
+    const wy = safeCy + (((by - safeCy + t * speedY) % (h + 80)) + (h + 80)) % (h + 80) - 40;
     const alpha = 0.25 + 0.52 * Math.abs(Math.sin(t * 1.8 + i * 2.1));
 
     if (isGlowdeep) {
@@ -2774,6 +2968,9 @@ export function renderWorldLightingAndAtmosphere(
   isMoonRoad: boolean = false,
   lowQuality: boolean = false
 ): void {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+  const safeCx = Number.isFinite(cx) ? cx : 0;
+  const safeCy = Number.isFinite(cy) ? cy : 0;
   // 1. Drifting translucent cloud shadows across surface islands (gives depth without hurting clarity)
   if (!lowQuality && !isDive && !isSky && !isGlowdeep && !isMoonRoad) {
     ctx.save();
@@ -2782,8 +2979,8 @@ export function renderWorldLightingAndAtmosphere(
       const seedY = hash(i, 5, 912) * 1800;
       const rx = 130 + hash(i, 6, 912) * 90;
       const ry = rx * 0.52;
-      const sx = ((((seedX - cx + t * (16 + i * 2.5)) % (w + 600)) + (w + 600)) % (w + 600)) - 300;
-      const sy = ((((seedY - cy + t * 3.5) % (h + 450)) + (h + 450)) % (h + 450)) - 225;
+      const sx = ((((seedX - safeCx + t * (16 + i * 2.5)) % (w + 600)) + (w + 600)) % (w + 600)) - 300;
+      const sy = ((((seedY - safeCy + t * 3.5) % (h + 450)) + (h + 450)) % (h + 450)) - 225;
       ctx.fillStyle = 'rgba(28, 38, 68, 0.045)';
       ctx.beginPath();
       ctx.ellipse(sx, sy, rx, ry, 0.12, 0, Math.PI * 2);
@@ -2826,45 +3023,29 @@ export function renderWorldLightingAndAtmosphere(
       // Luminous warm lantern aura around Mochi & visible Town Waystones during evening/night
       if (nightStrength > 0.15) {
         ctx.globalCompositeOperation = 'lighter';
-        const mochiHalo = ctx.createRadialGradient(w / 2, h / 2, 16, w / 2, h / 2, 170);
-        mochiHalo.addColorStop(0, `rgba(255, 224, 145, ${(0.22 * nightStrength).toFixed(3)})`);
-        mochiHalo.addColorStop(0.55, `rgba(255, 178, 130, ${(0.08 * nightStrength).toFixed(3)})`);
-        mochiHalo.addColorStop(1, 'rgba(255, 178, 130, 0)');
-        ctx.fillStyle = mochiHalo;
-        ctx.beginPath();
-        ctx.arc(w / 2, h / 2, 170, 0, Math.PI * 2);
-        ctx.fill();
+        drawGlowHalo(ctx, '255, 218, 130', w / 2, h / 2, 170, Math.min(0.45, 0.28 * nightStrength));
 
         // Warm town plaza & beacon glows
         for (const town of towns) {
           if ((isSky && town.w !== 2) || (!isSky && town.w !== 0)) continue;
-          const sx = town.x * T - cx;
-          const sy = town.y * T - cy;
+          const sx = town.x * T - safeCx;
+          const sy = town.y * T - safeCy;
           if (sx < -220 || sx > w + 220 || sy < -220 || sy > h + 220) continue;
-          const tg = ctx.createRadialGradient(sx, sy, 12, sx, sy, 195);
-          tg.addColorStop(0, `rgba(255, 218, 120, ${(0.28 * nightStrength).toFixed(3)})`);
-          tg.addColorStop(0.6, `rgba(255, 165, 125, ${(0.1 * nightStrength).toFixed(3)})`);
-          tg.addColorStop(1, 'rgba(255, 165, 125, 0)');
-          ctx.fillStyle = tg;
-          ctx.beginPath();
-          ctx.arc(sx, sy, 195, 0, Math.PI * 2);
-          ctx.fill();
+          drawGlowHalo(ctx, '255, 206, 118', sx, sy, 195, Math.min(0.55, 0.34 * nightStrength));
         }
       }
       ctx.restore();
     }
   }
 
-  // 3. Soft Storybook Edge Vignette (frames the world gently like an illustrated picture-book spread)
+  // 3. Cached Soft Storybook Edge Vignette (zero per-frame gradient allocations)
   if (!lowQuality) {
-    ctx.save();
-    const maxR = Math.hypot(w * 0.5, h * 0.5);
-    const vig = ctx.createRadialGradient(w * 0.5, h * 0.5, maxR * 0.62, w * 0.5, h * 0.5, maxR * 1.04);
-    vig.addColorStop(0, 'rgba(24, 14, 38, 0)');
-    vig.addColorStop(1, isDive ? 'rgba(4, 14, 34, 0.34)' : isGlowdeep || isMoonRoad ? 'rgba(10, 4, 24, 0.36)' : 'rgba(32, 18, 46, 0.16)');
-    ctx.fillStyle = vig;
-    ctx.fillRect(0, 0, w, h);
-    ctx.restore();
+    const edgeColor = isDive
+      ? 'rgba(4, 14, 34, 0.34)'
+      : isGlowdeep || isMoonRoad
+      ? 'rgba(10, 4, 24, 0.36)'
+      : 'rgba(32, 18, 46, 0.16)';
+    safeDrawImage(ctx, getWorldVignetteCanvas(w, h, edgeColor), 0, 0);
   }
 }
 
@@ -2889,16 +3070,15 @@ export function renderPlayerMochiHouse(
   const top = baseY - mainH - 18;
   const cx = left + mainW / 2;
 
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
   ctx.save();
 
   // 1. Cobblestone stepping path leading down to porch doormat
-  const pathGlow = ctx.createRadialGradient(cx, baseY + 14, 3, cx, baseY + 14, 40);
-  pathGlow.addColorStop(0, 'rgba(255, 222, 145, 0.32)');
-  pathGlow.addColorStop(1, 'rgba(255, 222, 145, 0)');
-  ctx.fillStyle = pathGlow;
-  ctx.beginPath();
-  ctx.ellipse(cx, baseY + 14, 40, 18, 0, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.save();
+  ctx.translate(cx, baseY + 14);
+  ctx.scale(1, 0.45);
+  drawGlowHalo(ctx, '255, 222, 145', 0, 0, 40, 0.42);
+  ctx.restore();
 
   const stones = [
     [cx - 5, baseY + 6, 11, 5.5],
@@ -3146,13 +3326,7 @@ export function renderPlayerMochiHouse(
 
   // Glowing Porch Lantern beside door
   const flicker = 0.88 + Math.sin(t * 5.2) * 0.12;
-  const porchHalo = ctx.createRadialGradient(cx + 16, baseY - 28, 1, cx + 16, baseY - 28, 18);
-  porchHalo.addColorStop(0, `rgba(255, 232, 130, ${(0.55 * flicker).toFixed(2)})`);
-  porchHalo.addColorStop(1, 'rgba(255, 232, 130, 0)');
-  ctx.fillStyle = porchHalo;
-  ctx.beginPath();
-  ctx.arc(cx + 16, baseY - 28, 18, 0, Math.PI * 2);
-  ctx.fill();
+  drawGlowHalo(ctx, '255, 232, 130', cx + 16, baseY - 28, 18, 0.68 * flicker);
   ctx.fillStyle = '#ffe682';
   ctx.strokeStyle = OUTLINE;
   ctx.lineWidth = 1.2;

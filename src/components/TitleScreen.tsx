@@ -50,7 +50,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
       if (!canvas) return;
       const vw = Math.max(1, window.visualViewport?.width ?? window.innerWidth);
       const vh = Math.max(1, window.visualViewport?.height ?? window.innerHeight);
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const maxDpr = deviceRef.current.isPhone ? 1.25 : 1.5;
+      const dpr = Math.min(maxDpr, window.devicePixelRatio || 1);
       sizeRef.w = vw;
       sizeRef.h = vh;
       sizeRef.dpr = dpr;
@@ -106,7 +107,23 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
       name: 'Professor Hoot',
     };
 
-    const render = () => {
+    let lastFrameMs = 0;
+    let cachedVig: { w: number; h: number; grad: CanvasGradient } | null = null;
+
+    const render = (now: number) => {
+      if (document.hidden) {
+        animId = requestAnimationFrame(render);
+        return;
+      }
+      const { isLandscapePhone, isPhone } = deviceRef.current;
+      const minDelta = isPhone ? 32 : 16; // ~30fps on phones saves battery & stays silky smooth
+      if (now - lastFrameMs < minDelta) {
+        animId = requestAnimationFrame(render);
+        return;
+      }
+      const dtScale = lastFrameMs ? Math.min(2.5, (now - lastFrameMs) / 16.67) : 1;
+      lastFrameMs = now;
+
       const canvas = canvasRef.current;
       if (canvas) {
         const ctx = canvas.getContext('2d');
@@ -115,8 +132,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           const H = sizeRef.h;
           const dpr = sizeRef.dpr;
           const u = Math.min(W, H);
-          const { isLandscapePhone, isPhone } = deviceRef.current;
-          t += 0.02;
+          t += 0.02 * dtScale;
 
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -151,13 +167,16 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           drawMochi(ctx, xs[2], baseY + H * 0.01, heroScale, Math.sin(t * 2.5) * 2, 1, t % 3 < 0.12, playerLook, false, t);
           drawMochi(ctx, xs[3], baseY - H * 0.03, charScaleBase, Math.sin(t * 2.2) * 1.5, -1, t % 5 < 0.12, owlLook, false, t);
 
-          csFloatingNotes(ctx, W, H, t, isLandscapePhone ? 12 : 18, '#ffe27a', '♪', isPhone ? 14 : 18);
+          csFloatingNotes(ctx, W, H, t, isPhone ? 10 : 18, '#ffe27a', '♪', isPhone ? 14 : 18);
 
-          // Soft atmospheric radial vignette for storybook masthead contrast
-          const vig = ctx.createRadialGradient(W * 0.5, H * 0.42, u * 0.25, W * 0.5, H * 0.5, Math.max(W, H) * 0.85);
-          vig.addColorStop(0, 'rgba(20, 12, 35, 0)');
-          vig.addColorStop(1, 'rgba(18, 10, 32, 0.44)');
-          ctx.fillStyle = vig;
+          // Cached atmospheric radial vignette for storybook masthead contrast
+          if (!cachedVig || cachedVig.w !== W || cachedVig.h !== H) {
+            const vig = ctx.createRadialGradient(W * 0.5, H * 0.42, u * 0.25, W * 0.5, H * 0.5, Math.max(W, H) * 0.85);
+            vig.addColorStop(0, 'rgba(20, 12, 35, 0)');
+            vig.addColorStop(1, 'rgba(18, 10, 32, 0.44)');
+            cachedVig = { w: W, h: H, grad: vig };
+          }
+          ctx.fillStyle = cachedVig.grad;
           ctx.fillRect(0, 0, W, H);
         }
       }

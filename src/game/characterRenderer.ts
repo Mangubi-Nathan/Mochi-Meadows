@@ -8,6 +8,17 @@
 
 import { PlayerLook, shadeColor } from './engine';
 
+const shadeCache = new Map<string, string>();
+function fastShade(hex: string, amt: number): string {
+  const key = `${hex}|${amt}`;
+  let res = shadeCache.get(key);
+  if (!res) {
+    res = shadeColor(hex, amt);
+    if (shadeCache.size < 400) shadeCache.set(key, res);
+  }
+  return res;
+}
+
 export function drawMochi(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -20,12 +31,17 @@ export function drawMochi(
   isMoving: boolean = false,
   time: number = 0
 ) {
+  if (!ctx || !look || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(scale) || scale <= 0) {
+    return;
+  }
+  const safeBob = Number.isFinite(bob) ? bob : 0;
+  const safeTime = Number.isFinite(time) ? time : 0;
   const sp = look.sp || 'cat';
   const bloom = look.hollowColorBloom !== undefined ? look.hollowColorBloom : (look.isHollow ? 0 : 1);
 
   // Color calculation with Hollow grey blending
   let rawCol = look.col || '#ffb3c7';
-  let rawC2 = look.c2 || shadeColor(rawCol, 0.55);
+  let rawC2 = look.c2 || fastShade(rawCol, 0.55);
   let rawAc = look.ac || '#ff7aa8';
 
   if (bloom < 1) {
@@ -40,9 +56,10 @@ export function drawMochi(
   const col = rawCol;
   const c2 = rawC2;
   const ac = rawAc;
-  const dk = shadeColor(col, -0.28);
+  const dk = fastShade(col, -0.28);
+  const hi = fastShade(col, 0.42);
   const ou = '#3b2a45';
-  const sw = isMoving ? Math.sin(time * 12) : 0;
+  const sw = isMoving ? Math.sin(safeTime * 12) : 0;
   const isSlime = sp === 'slime';
   const fy = isSlime ? 5 : 0;
 
@@ -52,23 +69,24 @@ export function drawMochi(
   else if (look.size === 'small') sizeMul = 0.92;
   else if (look.size === 'plump') sizeMul = 1.15;
 
-  const hopBob = isMoving ? Math.sin(time * 12) : Math.sin(time * 2.6);
-  const sqX = isMoving ? 1 + Math.sin(time * 24) * 0.045 : 1 + Math.sin(time * 2.6) * 0.018;
-  const sqY = isMoving ? 1 - Math.sin(time * 24) * 0.045 : 1 - Math.sin(time * 2.6) * 0.018;
+  const hopBob = isMoving ? Math.sin(safeTime * 12) : Math.sin(safeTime * 2.6);
+  const sqX = isMoving ? 1 + Math.sin(safeTime * 24) * 0.045 : 1 + Math.sin(safeTime * 2.6) * 0.018;
+  const sqY = isMoving ? 1 - Math.sin(safeTime * 24) * 0.045 : 1 - Math.sin(safeTime * 2.6) * 0.018;
   void hopBob;
 
   ctx.save();
+  try {
   ctx.translate(x, y);
   ctx.scale(scale * sizeMul * (facing < 0 ? -1 : 1), scale * sizeMul);
 
   // Soft ground shadow (contracts softly when hopping)
-  const liftScale = Math.max(0.75, 1 - Math.abs(bob) * 0.03);
+  const liftScale = Math.max(0.75, 1 - Math.abs(safeBob) * 0.03);
   ctx.fillStyle = 'rgba(28, 16, 48, 0.24)';
   ctx.beginPath();
   ctx.ellipse(0, 15.2, 13.5 * liftScale, 4.6 * liftScale, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.translate(0, bob);
+  ctx.translate(0, safeBob);
   ctx.scale(sqX, sqY);
 
   const ellipse = (
@@ -81,9 +99,11 @@ export function drawMochi(
     strokeCol?: string,
     strokeW: number = 1.25
   ) => {
+    const safeRx = Math.max(0.1, rx);
+    const safeRy = Math.max(0.1, ry);
     ctx.fillStyle = fill;
     ctx.beginPath();
-    ctx.ellipse(a, b, rx, ry, rot, 0, Math.PI * 2);
+    ctx.ellipse(a, b, safeRx, safeRy, rot, 0, Math.PI * 2);
     ctx.fill();
     if (strokeCol) {
       ctx.strokeStyle = strokeCol;
@@ -93,8 +113,9 @@ export function drawMochi(
   };
 
   const grad = (a: number, b: number, r: number) => {
-    const g = ctx.createRadialGradient(a - r * 0.35, b - r * 0.42, r * 0.08, a, b, r * 1.18);
-    g.addColorStop(0, shadeColor(col, 0.42));
+    const safeR = Math.max(0.5, r);
+    const g = ctx.createRadialGradient(a - safeR * 0.35, b - safeR * 0.42, safeR * 0.08, a, b, safeR * 1.18);
+    g.addColorStop(0, hi);
     g.addColorStop(0.58, col);
     g.addColorStop(1, dk);
     return g;
@@ -103,7 +124,7 @@ export function drawMochi(
   const circle = (cx: number, cy: number, r: number, fill: string) => {
     ctx.fillStyle = fill;
     ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.arc(cx, cy, Math.max(0.1, r), 0, Math.PI * 2);
     ctx.fill();
   };
 
@@ -202,12 +223,12 @@ export function drawMochi(
       ctx.restore();
     }
   } else if (sp === 'owl') {
-    const fl = Math.sin(time * (isMoving ? 9 : 2.5)) * 0.25;
+    const fl = Math.sin(safeTime * (isMoving ? 9 : 2.5)) * 0.25;
     for (const k of [-1, 1]) {
       ctx.save();
       ctx.translate(k * 7, -2);
       ctx.rotate(k * (0.4 + fl));
-      ctx.fillStyle = shadeColor(col, -0.15);
+      ctx.fillStyle = fastShade(col, -0.15);
       ctx.beginPath();
       ctx.ellipse(0, 3, 3, 7, k * 0.2, 0, Math.PI * 2);
       ctx.fill();
@@ -221,18 +242,18 @@ export function drawMochi(
     ctx.beginPath();
     ctx.moveTo(-9, -4);
     ctx.lineTo(9, -4);
-    ctx.lineTo(12.5 + Math.sin(time * 3.5) * 2 + (isMoving ? 4 : 0), 13.5);
-    ctx.lineTo(-12.5 + Math.sin(time * 3.5) * 1.2, 13.5);
+    ctx.lineTo(12.5 + Math.sin(safeTime * 3.5) * 2 + (isMoving ? 4 : 0), 13.5);
+    ctx.lineTo(-12.5 + Math.sin(safeTime * 3.5) * 1.2, 13.5);
     ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = shadeColor(ac, -0.25);
+    ctx.strokeStyle = fastShade(ac, -0.25);
     ctx.lineWidth = 0.9;
     ctx.stroke();
   }
 
   if (look.out === 4) {
     // Explorer Pack behind shoulder
-    ctx.fillStyle = shadeColor(ac, -0.18);
+    ctx.fillStyle = fastShade(ac, -0.18);
     ctx.beginPath();
     ctx.roundRect(-15.5, -5, 9.5, 13, 3);
     ctx.fill();
@@ -256,7 +277,7 @@ export function drawMochi(
     ctx.strokeStyle = col;
     ctx.lineWidth = 3.4;
     ctx.stroke();
-    circle(-10.5, -15.5, 1.8, shadeColor(col, 0.35));
+    circle(-10.5, -15.5, 1.8, fastShade(col, 0.35));
   } else if (sp === 'fox') {
     ellipse(-9, -3, 8.6, 5.3, col, -0.55, ou, 1.1);
     ellipse(-14.5, -8, 4.1, 3.1, '#ffffff', -0.55);
@@ -303,14 +324,14 @@ export function drawMochi(
     }
   } else if (sp === 'frog') {
     for (const k of [-1, 1]) {
-      const lf = isMoving ? Math.max(0, Math.sin(time * 12 + (k > 0 ? 0 : Math.PI))) * 3.1 : 0;
-      ellipse(k * 5.2, 13 - lf, 5.2, 2.7, shadeColor(col, -0.15), 0, ou, 1.0);
+      const lf = isMoving ? Math.max(0, Math.sin(safeTime * 12 + (k > 0 ? 0 : Math.PI))) * 3.1 : 0;
+      ellipse(k * 5.2, 13 - lf, 5.2, 2.7, fastShade(col, -0.15), 0, ou, 1.0);
     }
   } else {
     for (const k of [-1, 1]) {
-      const lf = isMoving ? Math.max(0, Math.sin(time * 12 + (k > 0 ? 0 : Math.PI))) * 3.1 : 0;
+      const lf = isMoving ? Math.max(0, Math.sin(safeTime * 12 + (k > 0 ? 0 : Math.PI))) * 3.1 : 0;
       ellipse(k * 3.9, 9.6, 3.2, 4.1, dk);
-      ellipse(k * 4.5, 12.8 - lf, 4.4, 2.8, shadeColor(col, -0.08), 0, ou, 1.05);
+      ellipse(k * 4.5, 12.8 - lf, 4.4, 2.8, fastShade(col, -0.08), 0, ou, 1.05);
     }
   }
 
@@ -321,8 +342,8 @@ export function drawMochi(
     drawPattern(0, -3, 13.2, 14.2);
     // Translucent slime inner shine & floating micro-bubbles
     ellipse(-5.2, -11.5, 3.8, 2.1, 'rgba(255, 255, 255, 0.72)', -0.45);
-    circle(5.5, -5.5 + Math.sin(time * 3) * 1.2, 1.6, 'rgba(255, 255, 255, 0.55)');
-    circle(-4.2, 2.5 + Math.cos(time * 2.5) * 1.1, 1.2, 'rgba(255, 255, 255, 0.45)');
+    circle(5.5, -5.5 + Math.sin(safeTime * 3) * 1.2, 1.6, 'rgba(255, 255, 255, 0.55)');
+    circle(-4.2, 2.5 + Math.cos(safeTime * 2.5) * 1.1, 1.2, 'rgba(255, 255, 255, 0.45)');
   } else {
     ellipse(0, 2, 8.9, 7.8, grad(0, 2, 9.2), 0, ou, 1.25);
     if (sp === 'penguin') {
@@ -330,7 +351,7 @@ export function drawMochi(
     } else if (sp === 'owl') {
       ellipse(0, 3.2, 5.8, 5, c2);
       // Owl chest scallop feather tufts
-      ctx.strokeStyle = shadeColor(col, -0.18);
+      ctx.strokeStyle = fastShade(col, -0.18);
       ctx.lineWidth = 1;
       for (const ox of [-2.4, 0, 2.4]) {
         ctx.beginPath();
@@ -402,7 +423,7 @@ export function drawMochi(
     ctx.fill();
   } else if (look.out === 6) {
     // Blossom Yukata
-    ctx.fillStyle = shadeColor(ac, 0.25);
+    ctx.fillStyle = fastShade(ac, 0.25);
     ctx.beginPath();
     ctx.roundRect(-torsoW / 2, torsoTop - 2, torsoW, 11.5, 3.5);
     ctx.fill();
@@ -444,7 +465,7 @@ export function drawMochi(
     ctx.beginPath();
     ctx.roundRect(-torsoW / 2 + 1.5, torsoTop - 1, torsoW - 3, 10, 2.5);
     ctx.fill();
-    ctx.strokeStyle = shadeColor(ac, -0.1);
+    ctx.strokeStyle = fastShade(ac, -0.1);
     ctx.lineWidth = 1;
     ctx.stroke();
     // Waist ties & pocket in accent color
@@ -473,9 +494,9 @@ export function drawMochi(
       if (sp === 'penguin') {
         ellipse(0, 4, 2.5, 6.2, col, k * 0.2);
       } else {
-        const armColor = look.out === 7 ? ac : look.out === 6 ? shadeColor(ac, 0.25) : col;
+        const armColor = look.out === 7 ? ac : look.out === 6 ? fastShade(ac, 0.25) : col;
         ellipse(0, 3.5, 2.7, 4.6, armColor);
-        ellipse(0, 7.6, 2.9, 2.9, shadeColor(col, -0.06));
+        ellipse(0, 7.6, 2.9, 2.9, fastShade(col, -0.06));
       }
       ctx.restore();
     }
@@ -556,7 +577,7 @@ export function drawMochi(
       ctx.save();
       ctx.translate(k * 7.2, -21);
       ctx.rotate(k * (0.24 + wig));
-      ellipse(0, -4, 2.8, 5.8, shadeColor(col, -0.15), 0, ou, 1.05);
+      ellipse(0, -4, 2.8, 5.8, fastShade(col, -0.15), 0, ou, 1.05);
       ctx.restore();
     }
   } else if (sp === 'frog') {
@@ -580,7 +601,7 @@ export function drawMochi(
   } else if (sp === 'otter') {
     for (const k of [-1, 1]) {
       ellipse(k * 9.5, -19, 3.7, 3.7, col, 0, ou, 1.1);
-      ellipse(k * 9.5, -19, 1.9, 1.9, shadeColor(col, -0.2));
+      ellipse(k * 9.5, -19, 1.9, 1.9, fastShade(col, -0.2));
     }
   } else if (sp === 'deer') {
     for (const k of [-1, 1]) {
@@ -794,7 +815,7 @@ export function drawMochi(
     ctx.lineTo(0, -6 + fy * 0.5);
     ctx.fill();
   } else {
-    const noseColor = look.noseCol || shadeColor(col, -0.35);
+    const noseColor = look.noseCol || fastShade(col, -0.35);
     circle(gz, -8.6 + fy * 0.6, 1.2, noseColor);
   }
 
@@ -917,14 +938,14 @@ export function drawMochi(
     ctx.beginPath();
     ctx.arc(0, hatY + 1, 8.5, Math.PI, 0);
     ctx.fill();
-    ctx.fillStyle = shadeColor(ac, -0.2);
+    ctx.fillStyle = fastShade(ac, -0.2);
     ctx.beginPath();
     ctx.roundRect(-9, hatY - 1, 18, 3.6, 1.8);
     ctx.fill();
     circle(0, hatY - 8.5, 2.5, '#ffffff');
   } else if (hat === 'beret') {
     ellipse(1.5, hatY - 1.5, 10, 4.5, ac, -0.18);
-    ctx.strokeStyle = shadeColor(ac, -0.3);
+    ctx.strokeStyle = fastShade(ac, -0.3);
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(1, hatY - 5.5);
@@ -1085,7 +1106,9 @@ export function drawMochi(
     }
   }
 
-  ctx.restore();
+  } finally {
+    ctx.restore();
+  }
 }
 
 /**
@@ -1098,8 +1121,11 @@ export function drawCompanion(
   companionId: string,
   time: number
 ) {
+  if (!ctx || !Number.isFinite(x) || !Number.isFinite(y)) return;
+  const safeTime = Number.isFinite(time) ? time : 0;
   ctx.save();
-  const hoverY = Math.sin(time * 3.5) * 3;
+  try {
+  const hoverY = Math.sin(safeTime * 3.5) * 3;
   // Soft shadow underneath companion
   ctx.fillStyle = 'rgba(28, 16, 48, 0.2)';
   ctx.beginPath();
@@ -1193,19 +1219,40 @@ export function drawCompanion(
     ctx.fill();
   }
 
-  ctx.restore();
+  } finally {
+    ctx.restore();
+  }
+}
+
+function parseColorRgb(col: string, fallback: [number, number, number]): [number, number, number] {
+  if (!col) return fallback;
+  const rgbMatch = col.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (rgbMatch) {
+    return [
+      parseInt(rgbMatch[1], 10) || fallback[0],
+      parseInt(rgbMatch[2], 10) || fallback[1],
+      parseInt(rgbMatch[3], 10) || fallback[2],
+    ];
+  }
+  let hex = col.replace('#', '').trim();
+  if (hex.length === 3) {
+    hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+  }
+  if (hex.length < 6) return fallback;
+  const r = parseInt(hex.substring(0, 2), 16);
+  const g = parseInt(hex.substring(2, 4), 16);
+  const b = parseInt(hex.substring(4, 6), 16);
+  return [
+    Number.isFinite(r) ? r : fallback[0],
+    Number.isFinite(g) ? g : fallback[1],
+    Number.isFinite(b) ? b : fallback[2],
+  ];
 }
 
 function interpolateColor(c1: string, c2: string, factor: number): string {
-  const f = Math.max(0, Math.min(1, factor));
-  const hex1 = c1.replace('#', '');
-  const hex2 = c2.replace('#', '');
-  const r1 = parseInt(hex1.substring(0, 2), 16) || 150;
-  const g1 = parseInt(hex1.substring(2, 4), 16) || 150;
-  const b1 = parseInt(hex1.substring(4, 6), 16) || 160;
-  const r2 = parseInt(hex2.substring(0, 2), 16) || 255;
-  const g2 = parseInt(hex2.substring(2, 4), 16) || 200;
-  const b2 = parseInt(hex2.substring(4, 6), 16) || 200;
+  const f = Number.isFinite(factor) ? Math.max(0, Math.min(1, factor)) : 1;
+  const [r1, g1, b1] = parseColorRgb(c1, [150, 150, 160]);
+  const [r2, g2, b2] = parseColorRgb(c2, [255, 200, 200]);
   const r = Math.round(r1 + (r2 - r1) * f);
   const g = Math.round(g1 + (g2 - g1) * f);
   const b = Math.round(b1 + (b2 - b1) * f);

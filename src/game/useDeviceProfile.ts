@@ -24,7 +24,7 @@ function computeProfile(): DeviceProfile {
   const vv = isClient ? window.visualViewport : null;
   const width = isClient ? Math.round(vv?.width || window.innerWidth) : 1280;
   const height = isClient ? Math.round(vv?.height || window.innerHeight) : 800;
-  const pixelRatio = isClient ? Math.min(window.devicePixelRatio || 1, 2) : 1;
+  const rawDpr = isClient ? window.devicePixelRatio || 1 : 1;
   const ua = isClient ? navigator.userAgent || '' : '';
 
   const isIOS = /iPad|iPhone|iPod/.test(ua);
@@ -52,6 +52,15 @@ function computeProfile(): DeviceProfile {
   }
 
   const isCompactPhone = (screenType === 'phone' && width < 395) || (isLandscapePhone && height <= 430);
+
+  // Adaptive DPR cap: keeps phones cool & smooth by avoiding 2x-3x redundant pixel fill on small screens
+  const pixelRatio = isClient
+    ? screenType === 'phone'
+      ? Math.min(rawDpr, isCompactPhone ? 1.25 : 1.35)
+      : screenType === 'tablet'
+      ? Math.min(rawDpr, 1.5)
+      : Math.min(rawDpr, 1.75)
+    : 1;
 
   // Proportional world camera zoom so phones aren't cramped, tablets are balanced,
   // and wide/4K desktop monitors don't make Mochi microscopic or stretch sprites.

@@ -93,6 +93,8 @@ import {
   renderPlayerMochiHouse,
   renderAmbientWorldMotes,
   renderWorldLightingAndAtmosphere,
+  drawGlowHalo,
+  executeYRenderQueue,
   YSortableItem,
 } from './game/worldRenderer';
 import {
@@ -3048,7 +3050,7 @@ export default function App() {
     let lastTime = performance.now();
 
     const loop = (now: number) => {
-      if (document.hidden) {
+      if (document.hidden || gameStateRef.current !== 'playing') {
         lastTime = now;
         animId = requestAnimationFrame(loop);
         return;
@@ -3061,6 +3063,7 @@ export default function App() {
       const liveSettings = settingsRef.current;
       const lowQ = Boolean(liveSettings.low);
       const liveDevice = deviceRef.current;
+      const isPhone = liveDevice.isPhone;
       const dpr = lowQ ? 1 : liveDevice.pixelRatio || 1;
       const viewScale = liveDevice.viewScale || 1;
       W.time += dt;
@@ -3087,14 +3090,20 @@ export default function App() {
         curB = W.B[tileY * N + tileX];
         let nextBiome: string;
         if (W.player.glowdeep) {
-          audio.setBiome(8);
+          audio.setBiome(22);
           nextBiome = 'Glowdeep Caverns';
         } else if (W.player.moonroad) {
-          audio.setBiome(7);
+          audio.setBiome(23);
           nextBiome = 'The Moon Road';
+        } else if (W.player.dive) {
+          audio.setBiome(24);
+          nextBiome = 'Undersea Reef';
+        } else if (W.player.sky) {
+          audio.setBiome(21);
+          nextBiome = 'Cirrus Sky Kingdom';
         } else {
-          audio.setBiome(W.player.sky ? 2 : curB);
-          nextBiome = W.player.sky ? 'Cirrus Sky Kingdom' : BIOME_NAMES[curB];
+          audio.setBiome(curB);
+          nextBiome = BIOME_NAMES[curB] || 'Sunny Meadow';
         }
         if (hudSyncRef.current.biome !== nextBiome) {
           hudSyncRef.current.biome = nextBiome;
@@ -3680,28 +3689,36 @@ export default function App() {
       }
       hudSyncRef.current.lastModalDrawMs = now;
 
-      // 3. Render Canvas
+      // 3. Render Canvas (with resilient dimension, camera, and transform guards)
       const canvas = canvasRef.current;
       if (canvas) {
-        const w = canvas.clientWidth || logicalW;
-        const h = canvas.clientHeight || logicalH;
-        const bw = Math.max(1, Math.round(w * dpr));
-        const bh = Math.max(1, Math.round(h * dpr));
+        const rawW = canvas.clientWidth || logicalW;
+        const rawH = canvas.clientHeight || logicalH;
+        const w = Number.isFinite(rawW) && rawW > 0 ? rawW : 320;
+        const h = Number.isFinite(rawH) && rawH > 0 ? rawH : 240;
+        const safeDpr = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+        const safeScale = Number.isFinite(viewScale) && viewScale > 0 ? viewScale : 1;
+        const bw = Math.max(1, Math.round(w * safeDpr));
+        const bh = Math.max(1, Math.round(h * safeDpr));
         if (canvas.width !== bw) canvas.width = bw;
         if (canvas.height !== bh) canvas.height = bh;
 
         const ctx = canvas.getContext('2d', { alpha: false });
         if (ctx) {
-          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          if (!Number.isFinite(W.camera.x)) W.camera.x = Number.isFinite(W.player.x) ? W.player.x : (N * T) / 2;
+          if (!Number.isFinite(W.camera.y)) W.camera.y = Number.isFinite(W.player.y) ? W.player.y : (N * T) / 2;
 
-          const vw = w / viewScale;
-          const vh = h / viewScale;
+          ctx.setTransform(safeDpr, 0, 0, safeDpr, 0, 0);
+
+          const vw = w / safeScale;
+          const vh = h / safeScale;
           const cx = W.camera.x - vw / 2;
           const cy = W.camera.y - vh / 2;
 
           // Scaled World-Viewport Camera Frame (keeps proportions consistent from phones to ultrawides)
           ctx.save();
-          ctx.scale(viewScale, viewScale);
+          try {
+          ctx.scale(safeScale, safeScale);
 
           // Rich Layer Backdrop (Ocean / Stratosphere / Abyssal Reef / Glowdeep / Moon Road)
           renderLayerBackdrop(
@@ -3718,6 +3735,7 @@ export default function App() {
           );
 
           ctx.save();
+          try {
           ctx.translate(-cx, -cy);
 
           // Visible Tile Bounds
@@ -3727,25 +3745,24 @@ export default function App() {
           const endY = Math.min(N - 1, Math.ceil((cy + vh) / T));
 
           // 1. Rich Terrain Layer + Collect Y-sorted Props across all 5 Realms
-          let propItems: YSortableItem[] = [];
+          let yQueue: YSortableItem[] = [];
           if (W.player.sky) {
             renderSkyTerrain(ctx, W, startX, endX, startY, endY);
-            propItems = collectSkyPropDrawables(ctx, W, startX, endX, startY, endY);
+            yQueue = collectSkyPropDrawables(ctx, W, startX, endX, startY, endY);
           } else if (W.player.dive) {
             renderReefTerrain(ctx, W, startX, endX, startY, endY);
-            propItems = collectReefPropDrawables(ctx, W, startX, endX, startY, endY);
+            yQueue = collectReefPropDrawables(ctx, W, startX, endX, startY, endY);
           } else if (W.player.glowdeep) {
             renderGlowdeepTerrain(ctx, W, startX, endX, startY, endY);
-            propItems = collectGlowdeepPropDrawables(ctx, W, startX, endX, startY, endY);
+            yQueue = collectGlowdeepPropDrawables(ctx, W, startX, endX, startY, endY);
           } else if (W.player.moonroad) {
             renderMoonRoadTerrain(ctx, W, startX, endX, startY, endY);
-            propItems = collectMoonRoadPropDrawables(ctx, W, startX, endX, startY, endY);
+            yQueue = collectMoonRoadPropDrawables(ctx, W, startX, endX, startY, endY);
           } else {
             renderTerrainLayer(ctx, W, startX, endX, startY, endY);
-            propItems = [
-              ...collectSurfacePropDrawables(ctx, W, startX, endX, startY, endY),
-              ...collectGroundPortalDrawables(W, ctx),
-            ];
+            yQueue = collectSurfacePropDrawables(ctx, W, startX, endX, startY, endY);
+            const portals = collectGroundPortalDrawables(W, ctx);
+            for (let pi = 0; pi < portals.length; pi++) yQueue.push(portals[pi]);
           }
 
           // Click-to-move destination marker on ground
@@ -3768,14 +3785,7 @@ export default function App() {
           // 2. Active Spell Auras around Player (Dawn Break / Warmth / Dreamwalk / Tide / Moon Pull)
           if (W.dawnTimer > 0) {
             ctx.save();
-            const grad = ctx.createRadialGradient(W.player.x, W.player.y, 12, W.player.x, W.player.y, 210);
-            grad.addColorStop(0, 'rgba(255, 232, 128, 0.38)');
-            grad.addColorStop(0.7, 'rgba(255, 178, 122, 0.16)');
-            grad.addColorStop(1, 'rgba(255, 210, 63, 0)');
-            ctx.fillStyle = grad;
-            ctx.beginPath();
-            ctx.arc(W.player.x, W.player.y, 210, 0, Math.PI * 2);
-            ctx.fill();
+            drawGlowHalo(ctx, '255, 224, 120', W.player.x, W.player.y, 210, 0.46);
             ctx.strokeStyle = 'rgba(255, 215, 90, 0.7)';
             ctx.lineWidth = 2.5;
             ctx.beginPath();
@@ -3785,15 +3795,7 @@ export default function App() {
           }
 
           if (W.warmthTimer > 0) {
-            ctx.save();
-            const grad = ctx.createRadialGradient(W.player.x, W.player.y, 10, W.player.x, W.player.y, 145);
-            grad.addColorStop(0, 'rgba(255, 160, 75, 0.36)');
-            grad.addColorStop(1, 'rgba(255, 107, 107, 0)');
-            ctx.fillStyle = grad;
-            ctx.beginPath();
-            ctx.arc(W.player.x, W.player.y, 145, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
+            drawGlowHalo(ctx, '255, 160, 75', W.player.x, W.player.y, 145, 0.44);
           }
 
           if (W.dreamwalkTimer > 0) {
@@ -3884,20 +3886,25 @@ export default function App() {
             W.player.dive,
             W.player.glowdeep,
             W.player.moonroad,
-            lowQ
+            lowQ || isPhone
           );
 
-          // 6. Build Y-Sorted 2.5D Render Queue (Props, Cottages, Mochi's House, Trees, NPCs, Hollows, Companion, Player)
-          const yQueue: YSortableItem[] = [...propItems];
+          // 6. Build Y-Sorted 2.5D Render Queue (Viewport-culled Props, Cottages, Mochi's House, Trees, NPCs, Hollows, Companion, Player)
+          const cullMinX = cx - 120;
+          const cullMaxX = cx + vw + 120;
+          const cullMinY = cy - 120;
+          const cullMaxY = cy + vh + 180;
 
           if (isSurface && W.playerHomePortal) {
             const home = W.playerHomePortal;
-            const ownerName = playerLookRef.current.name || 'Mochi';
-            const fireLit = cottageStateRef.current.fireplaceLit !== false;
-            yQueue.push({
-              sortY: home.y + 4,
-              draw: () => renderPlayerMochiHouse(ctx, home.x, home.y, W.time, ownerName, fireLit),
-            });
+            if (home.x >= cullMinX - 80 && home.x <= cullMaxX + 80 && home.y >= cullMinY && home.y <= cullMaxY + 60) {
+              const ownerName = playerLookRef.current.name || 'Mochi';
+              const fireLit = cottageStateRef.current.fireplaceLit !== false;
+              yQueue.push({
+                sortY: home.y + 4,
+                draw: () => renderPlayerMochiHouse(ctx, home.x, home.y, W.time, ownerName, fireLit),
+              });
+            }
           }
 
           const liveLullabyDone = lullabyDoneRef.current;
@@ -3915,12 +3922,19 @@ export default function App() {
               : !npc.sky && !npc.sea && !npc.glowdeep && !npc.moonroad;
             if (!sameLayer) return;
 
+            // Frustum cull offscreen trees and residents to save huge mobile CPU/GPU work
             if (npc.tree) {
+              if (npc.x < cullMinX - 100 || npc.x > cullMaxX + 100 || npc.y < cullMinY || npc.y > cullMaxY + 80) {
+                return;
+              }
               yQueue.push({
                 sortY: npc.y + 8,
                 draw: () => renderGreatLanternTree(ctx, npc.x, npc.y, W.time, liveLullabyDone),
               });
             } else {
+              if (npc.x < cullMinX || npc.x > cullMaxX || npc.y < cullMinY || npc.y > cullMaxY) {
+                return;
+              }
               const isTargeted = nearest === npc && !modalCovering && gameStateRef.current === 'playing';
               yQueue.push({
                 sortY: npc.y + 8,
@@ -4238,8 +4252,7 @@ export default function App() {
             },
           });
 
-          yQueue.sort((a, b) => a.sortY - b.sortY);
-          for (const item of yQueue) item.draw();
+          executeYRenderQueue(ctx, yQueue);
 
           // Expanding Magic Rings & Sparkle Particles
           for (let i = W.magicRings.length - 1; i >= 0; i--) {
@@ -4373,7 +4386,9 @@ export default function App() {
             }
           }
 
-          ctx.restore();
+          } finally {
+            ctx.restore();
+          }
 
           // Subtle Sky Sun-Rays, Reef Light Shafts, Glowdeep Cavern Glow & Moon Road Veil
           renderLayerAtmosphereOverlay(
@@ -4406,7 +4421,7 @@ export default function App() {
 
           // Render Global Weather System atmospheric tint, vignette, and ambient particles (surface / sky)
           if (!W.player.glowdeep && !W.player.moonroad) {
-            weatherRef.current.render(ctx, vw, vh, W.player.sky, W.player.dive, W.time, lowQ);
+            weatherRef.current.render(ctx, vw, vh, W.player.sky, W.player.dive, W.time, lowQ || isPhone);
           }
 
           // Realm Transition Soft Shimmer Overlay
@@ -4561,15 +4576,21 @@ export default function App() {
             ctx.restore();
           }
 
-          // Close scaled camera frame
-          ctx.restore();
+          } catch (err) {
+            console.warn('[Renderer] Frame pass recovered cleanly:', err);
+          } finally {
+            ctx.restore();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+          }
 
           // Cached Offscreen Minimap (builds terrain once per realm layer + redraws blips at ~20Hz)
           const mm = minimapRef.current;
-          if (mm && !modalCovering && now - hudSyncRef.current.lastMinimapMs >= 50) {
+          if (mm && mm.width > 0 && mm.height > 0 && !modalCovering && now - hudSyncRef.current.lastMinimapMs >= 50) {
             hudSyncRef.current.lastMinimapMs = now;
             const mCtx = mm.getContext('2d');
             if (mCtx) {
+              mCtx.save();
+              try {
               if (!minimapCacheRef.current || minimapCacheRef.current.layer !== layerKey) {
                 const offCanvas = minimapCacheRef.current?.canvas ?? document.createElement('canvas');
                 offCanvas.width = 128;
@@ -4642,7 +4663,10 @@ export default function App() {
                 minimapCacheRef.current = { layer: layerKey, canvas: offCanvas };
               }
 
-              mCtx.drawImage(minimapCacheRef.current.canvas, 0, 0);
+              const cachedMini = minimapCacheRef.current.canvas;
+              if (cachedMini.width > 0 && cachedMini.height > 0) {
+                mCtx.drawImage(cachedMini, 0, 0);
+              }
 
               // NPC blips on current layer
               W.npcs.forEach((n) => {
@@ -4688,8 +4712,8 @@ export default function App() {
               }
 
               // Player blip
-              const px = (W.player.x / (N * T)) * 128;
-              const py = (W.player.y / (N * T)) * 128;
+              const px = Math.max(2, Math.min(126, (W.player.x / (N * T)) * 128));
+              const py = Math.max(2, Math.min(126, (W.player.y / (N * T)) * 128));
               mCtx.fillStyle = '#ff7aa8';
               mCtx.strokeStyle = '#ffffff';
               mCtx.lineWidth = 1.5;
@@ -4697,6 +4721,9 @@ export default function App() {
               mCtx.arc(px, py, 3.8, 0, Math.PI * 2);
               mCtx.fill();
               mCtx.stroke();
+              } finally {
+                mCtx.restore();
+              }
             }
           }
         }

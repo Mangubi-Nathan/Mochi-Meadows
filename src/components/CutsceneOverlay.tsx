@@ -43,7 +43,8 @@ export const CutsceneOverlay: React.FC<CutsceneOverlayProps> = ({
       if (!canvas) return;
       const vw = Math.max(1, window.visualViewport?.width ?? window.innerWidth);
       const vh = Math.max(1, window.visualViewport?.height ?? window.innerHeight);
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const maxDpr = Math.min(vw, vh) <= 520 ? 1.3 : 1.6;
+      const dpr = Math.min(maxDpr, window.devicePixelRatio || 1);
       sizeRef.current = { w: vw, h: vh, dpr };
       canvas.width = Math.floor(vw * dpr);
       canvas.height = Math.floor(vh * dpr);
