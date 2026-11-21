@@ -1,0 +1,6 @@
+{
+  "name": "Mochi Meadows",
+  "description": "A cozy, story-driven open-world exploration adventure. Roam sunny biomes, dive into glowing coral reefs, fly to the floating Sky Kingdom, and restore the Moon's forgotten Lullaby.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
