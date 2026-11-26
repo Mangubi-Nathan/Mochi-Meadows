@@ -93,6 +93,67 @@ interface MuffinDrift {
   scale: number;
 }
 
+export function getScheduledWeatherState(nowMs: number = Date.now()): {
+  index: number;
+  remainingSeconds: number;
+} {
+  const totalSec = WEATHER_TYPES.reduce((sum, w) => sum + w.duration, 0);
+  const nowSec = Math.floor(nowMs / 1000);
+  let posSec = ((nowSec % totalSec) + totalSec) % totalSec;
+  for (let i = 0; i < WEATHER_TYPES.length; i++) {
+    const dur = WEATHER_TYPES[i].duration;
+    if (posSec < dur) {
+      return { index: i, remainingSeconds: Math.max(1, dur - posSec) };
+    }
+    posSec -= dur;
+  }
+  return { index: 0, remainingSeconds: WEATHER_TYPES[0].duration };
+}
+
+export interface WeatherForecastEntry {
+  weather: WeatherConfig;
+  startsInSec: number;
+  durationSec: number;
+  explorationTip: string;
+}
+
+const WEATHER_EXPLORATION_TIPS: Record<WeatherId, string> = {
+  sunny: 'Great for long overland treks & Dawn Chimes — sprints recover rapidly!',
+  drizzle: 'Ideal for marathon sprinting (-25% cost) & rainy fishing; pace turns on wet paths.',
+  stardust: 'Prime spellcasting window (+45% MP regen) for Dreamwalk, Star Sense & Echo Call.',
+  snowy: 'Pack the Cozy Scarf to negate snow drag, or explore cozy towns & Glowdeep caverns.',
+  aurora: 'Peak endurance & magic balance — venture to far islands or soar the Sky Kingdom!',
+  muffin_rain: 'Fastest travel breeze (+12% speed, +50% stamina regen) — dash across islands effortlessly!',
+};
+
+export function getWeatherForecast(
+  currentWeatherId: WeatherId | undefined,
+  remainingSeconds: number,
+  count: number = 3
+): WeatherForecastEntry[] {
+  const curIdx = Math.max(
+    0,
+    WEATHER_TYPES.findIndex((w) => w.id === currentWeatherId)
+  );
+  const clampedRem = Math.max(1, Math.round(remainingSeconds));
+  const forecast: WeatherForecastEntry[] = [];
+  let offsetSec = clampedRem;
+
+  for (let step = 1; step <= count; step++) {
+    const idx = (curIdx + step) % WEATHER_TYPES.length;
+    const weather = WEATHER_TYPES[idx];
+    forecast.push({
+      weather,
+      startsInSec: offsetSec,
+      durationSec: weather.duration,
+      explorationTip: WEATHER_EXPLORATION_TIPS[weather.id],
+    });
+    offsetSec += weather.duration;
+  }
+
+  return forecast;
+}
+
 export class WeatherSystem {
   public weatherList: WeatherConfig[] = WEATHER_TYPES;
   public currentIndex: number = 0;
@@ -112,10 +173,14 @@ export class WeatherSystem {
   private sunbeams: Sunbeam[] = [];
   private muffins: MuffinDrift[] = [];
   private parsedCache: Map<string, RGBA> = new Map();
-  private cachedVig: { w: number; h: number; color: string; canvas: HTMLCanvasElement } | null = null;
+  private cachedVigA: { w: number; h: number; color: string; canvas: HTMLCanvasElement } | null = null;
+  private cachedVigB: { w: number; h: number; color: string; canvas: HTMLCanvasElement } | null = null;
 
   constructor() {
-    this.weatherTimer = this.weatherList[0].duration;
+    const scheduled = getScheduledWeatherState(Date.now());
+    this.currentIndex = scheduled.index;
+    this.targetIndex = scheduled.index;
+    this.weatherTimer = scheduled.remainingSeconds;
     this.initParticles();
   }
 
@@ -126,6 +191,42 @@ export class WeatherSystem {
       this.parsedCache.set(str, cached);
     }
     return cached;
+  }
+
+  private getOrBuildVignette(
+    slot: 'a' | 'b',
+    iw: number,
+    ih: number,
+    color: string
+  ): HTMLCanvasElement {
+    const existing = slot === 'a' ? this.cachedVigA : this.cachedVigB;
+    if (existing && existing.w === iw && existing.h === ih && existing.color === color) {
+      return existing.canvas;
+    }
+    const vigCanvas = existing?.canvas || document.createElement('canvas');
+    if (vigCanvas.width !== iw) vigCanvas.width = iw;
+    if (vigCanvas.height !== ih) vigCanvas.height = ih;
+    const vctx = vigCanvas.getContext('2d');
+    if (vctx) {
+      vctx.clearRect(0, 0, iw, ih);
+      const maxDim = Math.max(2, Math.max(iw, ih) * 0.72);
+      const vignette = vctx.createRadialGradient(
+        iw / 2,
+        ih / 2,
+        maxDim * 0.25,
+        iw / 2,
+        ih / 2,
+        maxDim
+      );
+      vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
+      vignette.addColorStop(1, color);
+      vctx.fillStyle = vignette;
+      vctx.fillRect(0, 0, iw, ih);
+    }
+    const entry = { w: iw, h: ih, color, canvas: vigCanvas };
+    if (slot === 'a') this.cachedVigA = entry;
+    else this.cachedVigB = entry;
+    return vigCanvas;
   }
 
   private initParticles() {
@@ -237,6 +338,40 @@ export class WeatherSystem {
     this.setWeather(next);
   }
 
+  /**
+   * Advances weather timers cleanly even when no user is playing
+   * (on Title Screen, paused menus, or returning after tab sleep).
+   */
+  public advanceClock(elapsedSec: number) {
+    if (!Number.isFinite(elapsedSec) || elapsedSec <= 0) return;
+
+    // Large background sleep (> 20s): snap directly to scheduled wall-clock weather state
+    if (elapsedSec > 20) {
+      const scheduled = getScheduledWeatherState(Date.now());
+      this.weatherTimer = scheduled.remainingSeconds;
+      if (scheduled.index !== this.currentIndex && scheduled.index !== this.targetIndex) {
+        this.setWeather(scheduled.index);
+        this.weatherTimer = scheduled.remainingSeconds;
+      }
+      return;
+    }
+
+    let rem = elapsedSec;
+    if (this.isTransitioning) {
+      this.transitionProgress += rem / this.transitionDuration;
+      if (this.transitionProgress >= 1) {
+        this.transitionProgress = 1;
+        this.isTransitioning = false;
+        this.currentIndex = this.targetIndex;
+      }
+    } else {
+      this.weatherTimer -= rem;
+      if (this.weatherTimer <= 0) {
+        this.cycleNextWeather();
+      }
+    }
+  }
+
   public update(dt: number, viewportWidth: number, viewportHeight: number, isDiving: boolean) {
     const w = Math.max(viewportWidth, 800);
     const h = Math.max(viewportHeight, 600);
@@ -279,8 +414,8 @@ export class WeatherSystem {
           drop.y = -drop.length;
           drop.x = Math.random() * (w + 200);
 
-          // Spawn ground splash ripple occasionally
-          if (this.ripples.length < 35 && Math.random() < 0.22) {
+          // Spawn ground splash ripple occasionally (tightly capped for mobile GPU budget)
+          if (this.ripples.length < 24 && Math.random() < 0.2) {
             this.ripples.push({
               x: drop.x,
               y: h - Math.random() * (h * 0.8),
@@ -358,7 +493,8 @@ export class WeatherSystem {
     isSky: boolean,
     isDiving: boolean,
     globalTime: number,
-    lowQuality: boolean = false
+    lowQuality: boolean = false,
+    skipParticles: boolean = false
   ) {
     if (!ctx || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
       return;
@@ -366,62 +502,55 @@ export class WeatherSystem {
     ctx.save();
     try {
 
-    // 1. Compute Blended Colors (zero allocation when steady-state)
+    // 1. Compute Blended Tint Color (zero allocation when steady-state)
     const tintStr = isSky ? this.currentWeather.skyTint : this.currentWeather.tintColor;
     let finalTint: string;
-    let finalVignette: string;
 
     if (this.isTransitioning) {
       const curTint = this.getParsedRgba(tintStr);
-      const curVignette = this.getParsedRgba(this.currentWeather.vignetteColor);
       const tgtTint = this.getParsedRgba(isSky ? this.targetWeather.skyTint : this.targetWeather.tintColor);
-      const tgtVignette = this.getParsedRgba(this.targetWeather.vignetteColor);
       finalTint = lerpRgba(curTint, tgtTint, this.transitionProgress);
-      finalVignette = lerpRgba(curVignette, tgtVignette, this.transitionProgress);
     } else {
       finalTint = tintStr;
-      finalVignette = this.currentWeather.vignetteColor;
     }
 
-    // 2. Render Global Atmosphere Color Tint
-    ctx.fillStyle = finalTint;
-    ctx.fillRect(0, 0, width, height);
+    // 2. Render Global Atmosphere Color Tint (lighter in 3D overlay mode)
+    if (!skipParticles) {
+      ctx.fillStyle = finalTint;
+      ctx.fillRect(0, 0, width, height);
+    }
 
-    // 3. Cached Edge Vignette (skipped in Low Graphics Mode)
+    // 3. Cached Dual-Slot Edge Vignette (smooth alpha crossfade during transitions, zero per-frame rebuilds)
     if (!lowQuality) {
       const iw = Math.max(1, Math.round(width));
       const ih = Math.max(1, Math.round(height));
-      if (
-        !this.cachedVig ||
-        this.cachedVig.w !== iw ||
-        this.cachedVig.h !== ih ||
-        this.cachedVig.color !== finalVignette
-      ) {
-        const vigCanvas = this.cachedVig?.canvas || document.createElement('canvas');
-        vigCanvas.width = iw;
-        vigCanvas.height = ih;
-        const vctx = vigCanvas.getContext('2d');
-        if (vctx) {
-          vctx.clearRect(0, 0, iw, ih);
-          const maxDim = Math.max(2, Math.max(iw, ih) * 0.72);
-          const vignette = vctx.createRadialGradient(
-            iw / 2,
-            ih / 2,
-            maxDim * 0.25,
-            iw / 2,
-            ih / 2,
-            maxDim
-          );
-          vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-          vignette.addColorStop(1, finalVignette);
-          vctx.fillStyle = vignette;
-          vctx.fillRect(0, 0, iw, ih);
+      if (this.isTransitioning && this.currentIndex !== this.targetIndex) {
+        const p = Math.max(0, Math.min(1, this.transitionProgress));
+        const vigA = this.getOrBuildVignette('a', iw, ih, this.currentWeather.vignetteColor);
+        const vigB = this.getOrBuildVignette('b', iw, ih, this.targetWeather.vignetteColor);
+        const prevAlpha = ctx.globalAlpha;
+        if (1 - p > 0.01 && vigA.width > 0 && vigA.height > 0) {
+          ctx.globalAlpha = prevAlpha * (1 - p) * (skipParticles ? 0.65 : 1);
+          ctx.drawImage(vigA, 0, 0);
         }
-        this.cachedVig = { w: iw, h: ih, color: finalVignette, canvas: vigCanvas };
+        if (p > 0.01 && vigB.width > 0 && vigB.height > 0) {
+          ctx.globalAlpha = prevAlpha * p * (skipParticles ? 0.65 : 1);
+          ctx.drawImage(vigB, 0, 0);
+        }
+        ctx.globalAlpha = prevAlpha;
+      } else {
+        const vigA = this.getOrBuildVignette('a', iw, ih, this.currentWeather.vignetteColor);
+        if (vigA.width > 0 && vigA.height > 0) {
+          const prevAlpha = ctx.globalAlpha;
+          if (skipParticles) ctx.globalAlpha = prevAlpha * 0.65;
+          ctx.drawImage(vigA, 0, 0);
+          ctx.globalAlpha = prevAlpha;
+        }
       }
-      if (this.cachedVig.canvas.width > 0 && this.cachedVig.canvas.height > 0) {
-        ctx.drawImage(this.cachedVig.canvas, 0, 0);
-      }
+    }
+
+    if (skipParticles) {
+      return;
     }
 
     // 4. Render Weather Specific Effects

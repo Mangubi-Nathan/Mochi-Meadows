@@ -3,6 +3,8 @@ import { drawMochi } from '../game/characterRenderer';
 import { PlayerLook } from '../game/engine';
 import { csStage, csLitTree, csFloatingNotes } from '../game/cutscenes';
 import { audio } from '../game/audio';
+import { SeasonId, WeatherConfig } from '../game/constants';
+import { SEASON_THEMES, WEATHER_UI_THEMES, normalizeSeasonId } from '../game/seasons';
 import { useDeviceProfile } from '../game/useDeviceProfile';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -10,6 +12,8 @@ interface TitleScreenProps {
   hasSavedGame: boolean;
   playerLook: PlayerLook;
   currentSlot: number;
+  season: SeasonId;
+  weather: WeatherConfig;
   onSelectSlot: (slot: number) => void;
   onContinue: () => void;
   onNewGame: () => void;
@@ -18,12 +22,15 @@ interface TitleScreenProps {
   onOpenCredits: () => void;
   onOpenGazette: () => void;
   onCarryOverMM1: (mm1SaveCode?: string) => void;
+  is3DBackdrop?: boolean;
 }
 
 export const TitleScreen: React.FC<TitleScreenProps> = ({
   hasSavedGame,
   playerLook,
   currentSlot,
+  season,
+  weather,
   onSelectSlot,
   onContinue,
   onNewGame,
@@ -32,6 +39,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   onOpenCredits,
   onOpenGazette,
   onCarryOverMM1,
+  is3DBackdrop = false,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [showCarryOverModal, setShowCarryOverModal] = useState(false);
@@ -39,8 +47,13 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   const device = useDeviceProfile();
   const deviceRef = useRef(device);
   deviceRef.current = device;
+  const seasonRef = useRef(season);
+  seasonRef.current = season;
+  const weatherRef = useRef(weather);
+  weatherRef.current = weather;
 
   useEffect(() => {
+    if (is3DBackdrop) return;
     let animId: number;
     let t = 0;
     const sizeRef = { w: window.innerWidth || 800, h: window.innerHeight || 600, dpr: 1 };
@@ -136,14 +149,16 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-          // Animated cycle through daytime stages (Dawn to Starlight)
+          // Animated cycle through daytime stages (Dawn to Starlight) with live season & weather
+          const activeSeason = normalizeSeasonId(seasonRef.current);
+          const activeWeather = weatherRef.current;
           const cycle = Math.floor(t / 8) % 4;
-          csStage(ctx, W, H, t, cycle);
+          csStage(ctx, W, H, t, cycle, activeSeason);
 
           const treeX = isLandscapePhone ? W * 0.44 : W * 0.86;
           const treeY = isLandscapePhone ? H * 0.74 : H * 0.72;
           const treeScale = Math.max(0.55, u / 800);
-          csLitTree(ctx, treeX, treeY, treeScale, 0);
+          csLitTree(ctx, treeX, treeY, treeScale, 0, activeSeason);
 
           // Adapt character placement so portrait, landscape phone, tablet, and desktop frame the cast cleanly
           const charScaleBase = isLandscapePhone
@@ -167,7 +182,118 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           drawMochi(ctx, xs[2], baseY + H * 0.01, heroScale, Math.sin(t * 2.5) * 2, 1, t % 3 < 0.12, playerLook, false, t);
           drawMochi(ctx, xs[3], baseY - H * 0.03, charScaleBase, Math.sin(t * 2.2) * 1.5, -1, t % 5 < 0.12, owlLook, false, t);
 
-          csFloatingNotes(ctx, W, H, t, isPhone ? 10 : 18, '#ffe27a', '♪', isPhone ? 14 : 18);
+          const seasonNoteColor =
+            activeSeason === 'winter'
+              ? '#d8eeff'
+              : activeSeason === 'autumn'
+              ? '#ffd685'
+              : activeSeason === 'summer'
+              ? '#fff185'
+              : '#ffe27a';
+          const noteCount = isPhone ? 10 : 18;
+          csFloatingNotes(ctx, W, H, t, noteCount, seasonNoteColor, '♪', isPhone ? 14 : 18);
+
+          // Seasonal ambient title motes (cherry petals, summer sunbeams, autumn leaves, snowflakes)
+          const seasonalParticleCount = isPhone ? 8 : 16;
+          const particlePalette = SEASON_THEMES[activeSeason].world.moteColors;
+          ctx.save();
+          for (let i = 0; i < seasonalParticleCount; i++) {
+            const prog = ((t * 0.12 + (i * 0.137)) % 1 + 1) % 1;
+            const px =
+              ((i * 0.173 + (activeSeason === 'winter' ? Math.sin(t * 0.9 + i) * 0.02 : Math.sin(t * 0.7 + i) * 0.035)) % 1) * W;
+            const py =
+              activeSeason === 'summer'
+                ? H * (0.9 - prog * 0.85)
+                : H * (prog * 0.96);
+            ctx.globalAlpha = Math.sin(prog * Math.PI) * 0.78;
+            ctx.fillStyle = particlePalette[i % particlePalette.length];
+            ctx.beginPath();
+            if (activeSeason === 'autumn') {
+              ctx.ellipse(px, py, 4.2, 2.4, t * 1.6 + i, 0, Math.PI * 2);
+            } else if (activeSeason === 'spring') {
+              ctx.ellipse(px, py, 3.6, 2.2, t * 1.4 + i, 0, Math.PI * 2);
+            } else {
+              ctx.arc(px, py, activeSeason === 'winter' ? 2.6 : 3, 0, Math.PI * 2);
+            }
+            ctx.fill();
+          }
+          ctx.restore();
+
+          // Live Weather Atmosphere Overlay on Title Screen (keeps changing even when nobody plays)
+          if (activeWeather) {
+            ctx.save();
+            ctx.fillStyle = activeWeather.tintColor;
+            ctx.fillRect(0, 0, W, H);
+            if (activeWeather.particleType === 'rain') {
+              ctx.strokeStyle = 'rgba(185, 222, 255, 0.55)';
+              ctx.lineWidth = 1.4;
+              const dropCount = isPhone ? 24 : 48;
+              ctx.beginPath();
+              for (let i = 0; i < dropCount; i++) {
+                const prog = ((t * 1.6 + i * 0.19) % 1 + 1) % 1;
+                const rx = ((i * 97.3 - prog * 90) % (W + 80) + (W + 80)) % (W + 80) - 40;
+                const ry = prog * (H + 40) - 20;
+                ctx.moveTo(rx, ry);
+                ctx.lineTo(rx - 4, ry + 13);
+              }
+              ctx.stroke();
+            } else if (activeWeather.particleType === 'snow') {
+              ctx.fillStyle = 'rgba(245, 252, 255, 0.88)';
+              const flakeCount = isPhone ? 20 : 40;
+              for (let i = 0; i < flakeCount; i++) {
+                const prog = ((t * 0.18 + i * 0.17) % 1 + 1) % 1;
+                const sx = ((i * 0.131 + Math.sin(t * 1.2 + i) * 0.025) % 1) * W;
+                const sy = prog * H;
+                ctx.beginPath();
+                ctx.arc(sx, sy, 1.5 + (i % 3) * 0.8, 0, Math.PI * 2);
+                ctx.fill();
+              }
+            } else if (activeWeather.particleType === 'stardust') {
+              const starCount = isPhone ? 16 : 32;
+              for (let i = 0; i < starCount; i++) {
+                const prog = ((t * 0.14 + i * 0.23) % 1 + 1) % 1;
+                const sx = ((i * 0.193 + Math.cos(t * 0.9 + i) * 0.03) % 1) * W;
+                const sy = prog * H;
+                ctx.globalAlpha = 0.4 + 0.55 * Math.abs(Math.sin(t * 2.5 + i));
+                ctx.fillStyle = i % 2 === 0 ? '#ffe89a' : '#d8b4ff';
+                ctx.beginPath();
+                ctx.arc(sx, sy, 2 + (i % 2), 0, Math.PI * 2);
+                ctx.fill();
+              }
+            } else if (activeWeather.particleType === 'aurora') {
+              const bands = ['#64f5c1', '#b48cff'];
+              bands.forEach((col, bi) => {
+                ctx.fillStyle = col;
+                ctx.globalAlpha = 0.09 + 0.04 * Math.sin(t + bi);
+                ctx.beginPath();
+                const by = H * (0.14 + bi * 0.09);
+                ctx.moveTo(0, by);
+                for (let x = 0; x <= W + 60; x += 60) {
+                  ctx.lineTo(x, by + Math.sin(x * 0.008 + t * 0.9 + bi) * 22);
+                }
+                for (let x = W + 60; x >= 0; x -= 60) {
+                  ctx.lineTo(x, by + 44 + Math.cos(x * 0.007 + t * 0.8 + bi) * 16);
+                }
+                ctx.closePath();
+                ctx.fill();
+              });
+            } else if (activeWeather.particleType === 'muffins') {
+              const mCount = isPhone ? 6 : 12;
+              ctx.globalAlpha = 0.85;
+              for (let i = 0; i < mCount; i++) {
+                const prog = ((t * 0.14 + i * 0.27) % 1 + 1) % 1;
+                const mx = ((i * 0.18 + prog * 0.3) % 1) * W;
+                const my = prog * H;
+                ctx.fillStyle = '#ffe0a3';
+                ctx.beginPath();
+                ctx.arc(mx, my, 5, Math.PI, 0);
+                ctx.fill();
+                ctx.fillStyle = i % 2 === 0 ? '#ff9ebb' : '#9be8d8';
+                ctx.fillRect(mx - 4, my, 8, 4.5);
+              }
+            }
+            ctx.restore();
+          }
 
           // Cached atmospheric radial vignette for storybook masthead contrast
           if (!cachedVig || cachedVig.w !== W || cachedVig.h !== H) {
@@ -190,16 +316,27 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
       window.removeEventListener('orientationchange', handleResize);
       window.visualViewport?.removeEventListener('resize', handleResize);
     };
-  }, [playerLook]);
+  }, [playerLook, is3DBackdrop]);
 
   const isLandscapePhone = device.isLandscapePhone;
 
   return (
     <div className="fixed inset-0 z-20 pointer-events-auto overflow-y-auto overscroll-contain pt-safe pb-safe pl-safe pr-safe">
-      <canvas
-        ref={canvasRef}
-        className="fixed inset-0 w-full h-full block -z-10"
-      />
+      {is3DBackdrop ? (
+        <div
+          aria-hidden="true"
+          className="fixed inset-0 -z-10 pointer-events-none"
+          style={{
+            background:
+              'radial-gradient(circle at 50% 42%, rgba(20, 12, 35, 0.08) 25%, rgba(18, 10, 32, 0.48) 100%)',
+          }}
+        />
+      ) : (
+        <canvas
+          ref={canvasRef}
+          className="fixed inset-0 w-full h-full block -z-10"
+        />
+      )}
       <div
         className={`min-h-full w-full flex ${
           isLandscapePhone
@@ -254,8 +391,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
         }`}
       >
         {/* Save Slot Selector Bar */}
-        <div className="w-full flex items-center justify-center gap-1.5 storybook-panel border border-[#ffd3e2]/85 dark:border-[#6b4a7a]/85 p-1 sm:p-1.5 rounded-2xl">
-          <span className="text-[10px] font-black uppercase tracking-wider text-[#e0578d] dark:text-[#ff99bd] pl-2 pr-1 whitespace-nowrap">
+        <div className="w-full flex items-center justify-center gap-1.5 storybook-panel border border-[var(--bd)] p-1 sm:p-1.5 rounded-2xl">
+          <span className="text-[10px] font-black uppercase tracking-wider text-[var(--ac)] pl-2 pr-1 whitespace-nowrap">
             Save Slot
           </span>
           {[1, 2, 3].map((slotNum) => (
@@ -267,14 +404,37 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               }}
               className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-black transition-all cursor-pointer whitespace-nowrap ${
                 currentSlot === slotNum
-                  ? 'bg-linear-to-b from-[#ff8bb3] to-[#f05c93] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.4),0_2px_8px_rgba(240,92,147,0.35)]'
-                  : 'text-[#4a3550] dark:text-[#fdeeff] hover:bg-[#ff7aa8]/12 dark:hover:bg-white/10'
+                  ? 'text-white shadow-[0_2px_8px_var(--season-glow)]'
+                  : 'text-[var(--fg)] hover:bg-[var(--ac)]/12 dark:hover:bg-white/10'
               }`}
+              style={currentSlot === slotNum ? { backgroundColor: 'var(--ac)' } : undefined}
             >
               Slot {slotNum}
             </button>
           ))}
         </div>
+
+        {/* Read-Only Live World Season & Weather Status */}
+        {(() => {
+          const activeTheme = SEASON_THEMES[normalizeSeasonId(season)];
+          const weatherMood = WEATHER_UI_THEMES[weather.id];
+          return (
+            <div
+              className="w-full flex items-center justify-between gap-1.5 storybook-panel border border-[var(--bd)] px-2.5 py-1.5 rounded-2xl text-[11px] font-black text-[var(--fg)]"
+              title={`${activeTheme.subtitle} · ${weather.name} (${weatherMood.moodLabel}) — Seasons and weather shift automatically`}
+            >
+              <span className="flex items-center gap-1.5 truncate">
+                <span>{activeTheme.icon}</span>
+                <span className="truncate">{activeTheme.subtitle}</span>
+              </span>
+              <span className="h-3.5 w-[1px] bg-[var(--bd)] shrink-0" />
+              <span className="flex items-center gap-1.5 truncate">
+                <span>{weather.icon}</span>
+                <span className="truncate">{weather.name}</span>
+              </span>
+            </div>
+          );
+        })()}
 
         {hasSavedGame && (
           <button

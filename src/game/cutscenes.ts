@@ -5,10 +5,71 @@
 
 import { drawMochi } from './characterRenderer';
 import { PlayerLook, hash } from './engine';
+import type { SeasonId } from './constants';
+
+export type Cutscene3DEnv =
+  | 'dawn'
+  | 'day'
+  | 'sunset'
+  | 'night'
+  | 'starlight'
+  | 'glowdeep'
+  | 'sky'
+  | 'finale';
+
+export type Cutscene3DLandmark =
+  | 'harmony_shore'
+  | 'lantern_tree'
+  | 'campfire_grove'
+  | 'moon_gate'
+  | 'cauldron'
+  | 'sky_islands'
+  | 'dawn_spire'
+  | 'credits_vista';
+
+export type Cutscene3DMoteStyle = 'notes' | 'stars' | 'spores' | 'embers' | 'petals';
+
+export interface Cutscene3DActorSpec {
+  role: 'player' | 'companion' | 'npc';
+  npcName?: string;
+  startPos: [number, number, number];
+  endPos?: [number, number, number];
+  yaw?: number;
+  headYaw?: number;
+  headPitch?: number;
+  scale?: number;
+  isMoving?: boolean;
+  isSprinting?: boolean;
+  isGreeting?: boolean;
+  isHollow?: boolean;
+  hollowBloom?: number;
+  jumpArcHeight?: number;
+  weatherBehavior?: 'dancing' | 'sheltering' | 'stargazing' | 'shivering' | 'idle';
+}
+
+export interface Cutscene3DSceneSpec {
+  env: Cutscene3DEnv;
+  landmark: Cutscene3DLandmark;
+  lanternLit?: number; // 0..1
+  showMoon?: boolean;
+  moonSad?: boolean;
+  showSun?: boolean;
+  showWater?: boolean;
+  motes?: Cutscene3DMoteStyle;
+  actors: Cutscene3DActorSpec[];
+  camera: {
+    startPos: [number, number, number];
+    endPos: [number, number, number];
+    startLookAt: [number, number, number];
+    endLookAt: [number, number, number];
+    fov?: number;
+  };
+}
 
 export interface CutsceneSlide {
   duration: number;
   text: string;
+  scene3D?: Cutscene3DSceneSpec;
   draw: (
     ctx: CanvasRenderingContext2D,
     t: number,
@@ -159,14 +220,46 @@ export const csFloatingNotes = (ctx: CanvasRenderingContext2D, W: number, H: num
   ctx.globalAlpha = 1;
 };
 
-export const csStage = (ctx: CanvasRenderingContext2D, W: number, H: number, t: number, k: number) => {
-  const Pl = [
-    ['#ff9f7f', '#ffe8ca', '#b4e396', '#84cd78'],
-    ['#68b8fb', '#dff4ff', '#9be08a', '#6bc079'],
-    ['#543b8c', '#ff9ba8', '#68a66a', '#4d8759'],
-    ['#0b0a24', '#2b2163', '#2e584a', '#23473a'],
-    ['#0a3a7a', '#38a5c3', '#1d5a9a', '#164a80'],
-  ][k];
+export const csStage = (
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  t: number,
+  k: number,
+  season: SeasonId = 'spring'
+) => {
+  const seasonalPalettes: Record<SeasonId, [string, string, string, string][]> = {
+    spring: [
+      ['#ff9f7f', '#ffe8ca', '#b4e396', '#84cd78'],
+      ['#68b8fb', '#dff4ff', '#9be08a', '#6bc079'],
+      ['#543b8c', '#ff9ba8', '#68a66a', '#4d8759'],
+      ['#0b0a24', '#2b2163', '#2e584a', '#23473a'],
+      ['#0a3a7a', '#38a5c3', '#1d5a9a', '#164a80'],
+    ],
+    summer: [
+      ['#ff8852', '#ffe0a3', '#a6df70', '#6dbf58'],
+      ['#2894f5', '#bdeaff', '#7bd468', '#4ab152'],
+      ['#6c2d73', '#ff8c5c', '#549650', '#39733d'],
+      ['#0a1030', '#213a72', '#265c44', '#1a4230'],
+      ['#0a3a7a', '#38a5c3', '#1d5a9a', '#164a80'],
+    ],
+    autumn: [
+      ['#d66d52', '#ffdcb0', '#dfa662', '#bf7a42'],
+      ['#5c8cb8', '#ffe8cc', '#d49d56', '#b87039'],
+      ['#4a2852', '#f28b5a', '#a8673e', '#7f482b'],
+      ['#150e28', '#452852', '#52383a', '#3d282a'],
+      ['#0a3a7a', '#38a5c3', '#1d5a9a', '#164a80'],
+    ],
+    winter: [
+      ['#7898c8', '#e6f0ff', '#d6e6f8', '#b8d2ee'],
+      ['#5b94cf', '#ebf6ff', '#e4effc', '#c8dcf2'],
+      ['#364075', '#b8c8ec', '#9cb4d6', '#7b94b8'],
+      ['#080d22', '#1d2d56', '#5a7396', '#3e5474'],
+      ['#0a3a7a', '#38a5c3', '#1d5a9a', '#164a80'],
+    ],
+  };
+
+  const Pl = (seasonalPalettes[season] || seasonalPalettes.spring)[k] || seasonalPalettes.spring[0];
   csg(ctx, W, H, Pl[0], Pl[1]);
 
   if (k === 3) {
@@ -181,7 +274,14 @@ export const csStage = (ctx: CanvasRenderingContext2D, W: number, H: number, t: 
       const cw = 90 + (i % 3) * 35;
       const cx = ((((i * 290 + t * (9 + (i % 3) * 2.5)) % (W + 360)) + (W + 360)) % (W + 360)) - 180;
       const cy = H * (0.14 + (i % 3) * 0.1);
-      ctx.fillStyle = k === 3 ? 'rgba(180, 195, 255, 0.14)' : 'rgba(255, 252, 245, 0.5)';
+      ctx.fillStyle =
+        k === 3
+          ? 'rgba(180, 195, 255, 0.14)'
+          : season === 'autumn'
+          ? 'rgba(255, 240, 224, 0.45)'
+          : season === 'winter'
+          ? 'rgba(242, 249, 255, 0.56)'
+          : 'rgba(255, 252, 245, 0.5)';
       ctx.beginPath();
       ctx.arc(cx, cy, cw * 0.28, 0, Math.PI * 2);
       ctx.arc(cx + cw * 0.24, cy - cw * 0.08, cw * 0.34, 0, Math.PI * 2);
@@ -205,17 +305,32 @@ export const csStage = (ctx: CanvasRenderingContext2D, W: number, H: number, t: 
     csHills(ctx, W, H, H * 0.86, '#e8d9a8', 6, t * 0.2);
   } else {
     // Distant misty mountain ridge behind the hills
-    const mistCol = k === 3 ? 'rgba(65, 58, 120, 0.45)' : 'rgba(255, 248, 242, 0.34)';
+    const mistCol =
+      k === 3
+        ? 'rgba(65, 58, 120, 0.45)'
+        : season === 'winter'
+        ? 'rgba(220, 238, 255, 0.48)'
+        : season === 'autumn'
+        ? 'rgba(255, 225, 200, 0.34)'
+        : 'rgba(255, 248, 242, 0.34)';
     csHills(ctx, W, H, H * 0.62, mistCol, 18, 0.8);
     csHills(ctx, W, H, H * 0.7, Pl[2], 11, t * 0.08);
     csHills(ctx, W, H, H * 0.8, Pl[3], 8, 2);
 
-    // Subtle meadow blossom specks along foreground grass
+    // Subtle seasonal meadow blossom / leaf / frost specks along foreground grass
     ctx.save();
     for (let i = 0; i < 22; i++) {
       const fx = hash(i, 7, 88) * W;
       const fy = H * 0.82 + hash(i, 8, 88) * H * 0.16;
-      ctx.fillStyle = i % 3 === 0 ? 'rgba(255, 198, 224, 0.85)' : 'rgba(255, 246, 175, 0.85)';
+      if (season === 'autumn') {
+        ctx.fillStyle = i % 3 === 0 ? 'rgba(229, 98, 52, 0.85)' : i % 2 === 0 ? 'rgba(244, 178, 60, 0.85)' : 'rgba(196, 77, 46, 0.8)';
+      } else if (season === 'winter') {
+        ctx.fillStyle = i % 3 === 0 ? 'rgba(173, 219, 255, 0.9)' : 'rgba(255, 255, 255, 0.92)';
+      } else if (season === 'summer') {
+        ctx.fillStyle = i % 3 === 0 ? 'rgba(255, 134, 72, 0.85)' : 'rgba(255, 230, 102, 0.9)';
+      } else {
+        ctx.fillStyle = i % 3 === 0 ? 'rgba(255, 198, 224, 0.85)' : 'rgba(255, 246, 175, 0.85)';
+      }
       ctx.beginPath();
       ctx.arc(fx, fy, 2.5 + (i % 2), 0, Math.PI * 2);
       ctx.fill();
@@ -272,9 +387,28 @@ export const csWings = (ctx: CanvasRenderingContext2D, x: number, y: number, s: 
   }
 };
 
-export const csLitTree = (ctx: CanvasRenderingContext2D, x: number, y: number, s: number, lit: number) => {
+export const csLitTree = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  s: number,
+  lit: number,
+  season: SeasonId = 'spring'
+) => {
   const on = lit > 0;
-  const a = on ? ['#7ad89a', '#9be8b0', '#c8f5cf'] : ['#3c485e', '#46546c', '#566680'];
+  const litPalettes: Record<SeasonId, [string, string, string]> = {
+    spring: ['#7ad89a', '#9be8b0', '#c8f5cf'],
+    summer: ['#52bd6e', '#76d98a', '#adf0b8'],
+    autumn: ['#d87a38', '#f0a243', '#ffd26b'],
+    winter: ['#7eb8da', '#a8d5ef', '#e2f3ff'],
+  };
+  const unlitPalettes: Record<SeasonId, [string, string, string]> = {
+    spring: ['#3c485e', '#46546c', '#566680'],
+    summer: ['#364c58', '#405a68', '#4f6d7c'],
+    autumn: ['#584148', '#6b4e50', '#805c58'],
+    winter: ['#465672', '#5b6f90', '#8aa3c7'],
+  };
+  const a = on ? litPalettes[season] || litPalettes.spring : unlitPalettes[season] || unlitPalettes.spring;
   if (lit > 0.3) {
     const g = ctx.createRadialGradient(x, y - 100 * s, 10, x, y - 100 * s, 230 * s);
     g.addColorStop(0, `rgba(255,230,140,${0.5 * lit})`);

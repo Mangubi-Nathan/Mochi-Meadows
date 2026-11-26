@@ -5,17 +5,21 @@
  */
 
 import { fbm, hash, vn } from './engine';
+import { WORLD_ANCHORS } from './worldAnchors';
 
 export type RealmLayerId = 0 | 1 | 2 | 3 | 4;
 
 export type GlowdeepCell = 'wall' | 'chamber' | 'canal' | 'glowcap' | 'cinder' | 'roots';
 export type MoonRoadCell = 'road' | 'platform' | 'silence' | 'nebula' | 'void';
 
-export const GLOWDEEP_SPAWN_TILE = { x: 130, y: 129 };
-export const GLOWDEEP_RETURN_TILE = { x: 130, y: 126 };
+const gd = WORLD_ANCHORS.glowdeep;
+const mr = WORLD_ANCHORS.moonroad;
 
-export const MOONROAD_SPAWN_TILE = { x: 130, y: 126 };
-export const MOONROAD_RETURN_TILE = { x: 130, y: 128 };
+export const GLOWDEEP_SPAWN_TILE = { x: gd.rootedRest.tx, y: gd.rootedRest.ty - 1 };
+export const GLOWDEEP_RETURN_TILE = { x: gd.returnTile.tx, y: gd.returnTile.ty };
+
+export const MOONROAD_SPAWN_TILE = { x: mr.teaHouse.tx, y: mr.teaHouse.ty + 2 };
+export const MOONROAD_RETURN_TILE = { x: mr.returnTile.tx, y: mr.returnTile.ty };
 
 export function distToSegment(
   px: number,
@@ -34,38 +38,42 @@ export function distToSegment(
 }
 
 export function getGlowdeepCell(x: number, y: number): GlowdeepCell {
-  const dCenter = Math.hypot(x - 130, y - 130);
-  if (dCenter < 15 + vn(x * 0.18, y * 0.18, 81) * 5) {
-    if (dCenter < 7.5) return 'roots';
+  const cx = gd.rootedRest.tx;
+  const cy = gd.rootedRest.ty;
+  const dCenter = Math.hypot(x - cx, y - cy);
+  if (dCenter < 20 + vn(x * 0.14, y * 0.14, 81) * 6) {
+    if (dCenter < 10) return 'roots';
   }
 
-  const dWest = distToSegment(x, y, 130, 130, 58, 148) + (vn(x * 0.08, y * 0.08, 82) - 0.5) * 8;
-  const dSouth = distToSegment(x, y, 130, 130, 128, 215) + (vn(x * 0.08, y * 0.08, 83) - 0.5) * 8;
-  const dNorthEast = distToSegment(x, y, 130, 130, 198, 68) + (vn(x * 0.08, y * 0.08, 84) - 0.5) * 8;
-  const dSouthEast = distToSegment(x, y, 130, 130, 206, 198) + (vn(x * 0.08, y * 0.08, 85) - 0.5) * 8;
-  const dNorthWest = distToSegment(x, y, 130, 130, 56, 56) + (vn(x * 0.08, y * 0.08, 86) - 0.5) * 8;
+  const dWest = distToSegment(x, y, cx, cy, gd.sporeGrotto.tx, gd.sporeGrotto.ty) + (vn(x * 0.06, y * 0.06, 82) - 0.5) * 10;
+  const dSouth = distToSegment(x, y, cx, cy, gd.magmaGeode.tx, gd.magmaGeode.ty) + (vn(x * 0.06, y * 0.06, 83) - 0.5) * 10;
+  const dNorthEast = distToSegment(x, y, cx, cy, gd.prismIce.tx, gd.prismIce.ty) + (vn(x * 0.06, y * 0.06, 84) - 0.5) * 10;
+  const dSouthEast = distToSegment(x, y, cx, cy, gd.seEchoCavern.tx, gd.seEchoCavern.ty) + (vn(x * 0.06, y * 0.06, 85) - 0.5) * 10;
+  const dNorthWest = distToSegment(x, y, cx, cy, gd.deepCanalHub.tx, gd.deepCanalHub.ty) + (vn(x * 0.06, y * 0.06, 86) - 0.5) * 10;
+  const dEast = distToSegment(x, y, cx, cy, gd.crystalConservatory.tx, gd.crystalConservatory.ty) + (vn(x * 0.06, y * 0.06, 87) - 0.5) * 9;
 
-  const minCanal = Math.min(dWest, dSouth, dNorthEast, dSouthEast, dNorthWest);
-  if (minCanal < 3.0) return 'canal';
+  const minCanal = Math.min(dWest, dSouth, dNorthEast, dSouthEast, dNorthWest, dEast);
+  if (minCanal < 3.6) return 'canal';
 
-  const caveNoise = fbm(x * 0.045, y * 0.045, 88);
-  const inMainHall = dCenter < 24 || minCanal < 11.5;
+  const caveNoise = fbm(x * 0.036, y * 0.036, 88);
+  const inMainHall = dCenter < 34 || minCanal < 14.5;
   const inOutpost =
-    Math.hypot(x - 62, y - 145) < 16 ||
-    Math.hypot(x - 128, y - 215) < 16 ||
-    Math.hypot(x - 198, y - 68) < 16 ||
-    Math.hypot(x - 206, y - 198) < 14 ||
-    Math.hypot(x - 56, y - 56) < 14;
+    Math.hypot(x - gd.sporeGrotto.tx, y - gd.sporeGrotto.ty) < 22 ||
+    Math.hypot(x - gd.magmaGeode.tx, y - gd.magmaGeode.ty) < 22 ||
+    Math.hypot(x - gd.prismIce.tx, y - gd.prismIce.ty) < 22 ||
+    Math.hypot(x - gd.seEchoCavern.tx, y - gd.seEchoCavern.ty) < 20 ||
+    Math.hypot(x - gd.deepCanalHub.tx, y - gd.deepCanalHub.ty) < 20 ||
+    Math.hypot(x - gd.crystalConservatory.tx, y - gd.crystalConservatory.ty) < 20;
 
-  if (!inMainHall && !inOutpost && caveNoise < 0.54) {
+  if (!inMainHall && !inOutpost && caveNoise < 0.52) {
     return 'wall';
   }
 
-  if (y > 188 && fbm(x * 0.09, y * 0.09, 89) > 0.52) {
+  if (y > gd.magmaGeode.ty - 38 && fbm(x * 0.075, y * 0.075, 89) > 0.5) {
     return 'cinder';
   }
 
-  if (vn(x * 0.24, y * 0.24, 90) > 0.67 || hash(x, y, 91) < 0.045) {
+  if (vn(x * 0.2, y * 0.2, 90) > 0.65 || hash(x, y, 91) < 0.045) {
     return 'glowcap';
   }
 
@@ -73,34 +81,45 @@ export function getGlowdeepCell(x: number, y: number): GlowdeepCell {
 }
 
 export function getMoonRoadCell(x: number, y: number): MoonRoadCell {
-  const s1 = distToSegment(x, y, 36, 196, 90, 72);
-  const s2 = distToSegment(x, y, 90, 72, 130, 125);
-  const s3 = distToSegment(x, y, 130, 125, 185, 112);
-  const s4 = distToSegment(x, y, 185, 112, 235, 135);
-  const s5 = distToSegment(x, y, 130, 125, 126, 214);
-  const curveOffset = Math.sin(x * 0.09 + y * 0.07) * 1.35;
-  const minRoad = Math.min(s1, s2, s3, s4, s5) + curveOffset;
+  const th = mr.teaHouse;
+  const ts = mr.twinStars;
+  const us = mr.unsungShrine;
+  const es = mr.edgeOfSilence;
+  const sl = mr.southStairLanding;
+  const wc = mr.westCrescentLanding;
+  const cb = mr.crescentBelvedere;
+
+  const s1 = distToSegment(x, y, wc.tx, wc.ty, cb.tx, cb.ty);
+  const s2 = distToSegment(x, y, cb.tx, cb.ty, ts.tx, ts.ty);
+  const s3 = distToSegment(x, y, ts.tx, ts.ty, th.tx, th.ty);
+  const s4 = distToSegment(x, y, th.tx, th.ty, us.tx, us.ty);
+  const s5 = distToSegment(x, y, us.tx, us.ty, es.tx, es.ty);
+  const s6 = distToSegment(x, y, th.tx, th.ty, sl.tx, sl.ty);
+  const s7 = distToSegment(x, y, cb.tx, cb.ty, th.tx, th.ty);
+  const curveOffset = Math.sin(x * 0.065 + y * 0.055) * 1.6;
+  const minRoad = Math.min(s1, s2, s3, s4, s5, s6, s7) + curveOffset;
 
   if (
-    Math.hypot(x - 130, y - 125) < 11 ||
-    Math.hypot(x - 90, y - 72) < 8 ||
-    Math.hypot(x - 185, y - 112) < 8 ||
-    Math.hypot(x - 36, y - 196) < 7 ||
-    Math.hypot(x - 126, y - 214) < 7
+    Math.hypot(x - th.tx, y - th.ty) < 14 ||
+    Math.hypot(x - ts.tx, y - ts.ty) < 10 ||
+    Math.hypot(x - us.tx, y - us.ty) < 10 ||
+    Math.hypot(x - wc.tx, y - wc.ty) < 9 ||
+    Math.hypot(x - sl.tx, y - sl.ty) < 9 ||
+    Math.hypot(x - cb.tx, y - cb.ty) < 10
   ) {
     return 'platform';
   }
 
-  if (Math.hypot(x - 235, y - 135) < 13) {
+  if (Math.hypot(x - es.tx, y - es.ty) < 16) {
     return 'silence';
   }
 
-  if (minRoad < 3.6) {
+  if (minRoad < 4.4) {
     return 'road';
   }
 
-  const neb = fbm(x * 0.032, y * 0.032, 101);
-  if (neb > 0.5) return 'nebula';
+  const neb = fbm(x * 0.025, y * 0.025, 101);
+  if (neb > 0.48) return 'nebula';
   return 'void';
 }
 

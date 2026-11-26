@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import * as THREE from 'three';
 import {
   CottageDecoration,
   CottageState,
@@ -7,9 +8,17 @@ import {
   HouseRoomId,
   PlayerLook,
 } from '../game/engine';
-import { drawMochi } from '../game/characterRenderer';
 import { audio } from '../game/audio';
-import { WeatherConfig } from '../game/constants';
+import { WeatherConfig, WeatherId } from '../game/constants';
+import { createArchMaterialPack } from '../game/architecturePack3D';
+import { createWorldShaderUniforms } from '../game/worldShaders3D';
+import {
+  HOUSE_ROOM_LOCAL_CENTERS,
+  buildHouseInterior3D,
+  mapRoomPercentToHouseWorld,
+  unmapHouseWorldToRoomPercent,
+} from '../game/houseInterior3D';
+import { createMochiRig, updateMochiRig } from '../game/mochiModel3D';
 
 type TabKey = HouseRoomId | 'hamlet';
 
@@ -31,6 +40,10 @@ interface CottageModalProps {
   stamina: number;
   mana: number;
   coins: number;
+  inHouse3D?: boolean;
+  currentRoom3D?: HouseRoomId;
+  onSelectRoom3D?: (room: HouseRoomId) => void;
+  onEnterHouse3D?: () => void;
   onUpdateCottage: (updated: Partial<CottageState>) => void;
   onSpendCoins: (amount: number, reason: string) => boolean;
   onEarnCoins: (amount: number, reason: string) => void;
@@ -170,9 +183,7 @@ const FURNITURE_INTERACTIONS: Record<string, FurnitureInteractionSpec> = {
   'Starry Rug': {
     animation: 'sparkle',
     chime: true,
-    lines: [
-      'Little star patterns shimmer softly as you step onto the weave.',
-    ],
+    lines: ['Little star patterns shimmer softly as you step onto the weave.'],
   },
   'Amber Lantern': {
     animation: 'glow',
@@ -184,9 +195,7 @@ const FURNITURE_INTERACTIONS: Record<string, FurnitureInteractionSpec> = {
   },
   'Lava Lamp': {
     animation: 'glow',
-    lines: [
-      'Rosy wax bubbles drift lazily upward inside the warm glass spire.',
-    ],
+    lines: ['Rosy wax bubbles drift lazily upward inside the warm glass spire.'],
   },
   'Mochi Plushie': {
     animation: 'heart',
@@ -204,15 +213,11 @@ const FURNITURE_INTERACTIONS: Record<string, FurnitureInteractionSpec> = {
   },
   'Kitchen Herb Jar': {
     animation: 'petals',
-    lines: [
-      'Pop goes the cork! Crisp mint leaves and sweet wild thyme scent the air.',
-    ],
+    lines: ['Pop goes the cork! Crisp mint leaves and sweet wild thyme scent the air.'],
   },
   'Berry Basket': {
     animation: 'bounce',
-    lines: [
-      'Plump ruby strawberries from Lantern Isle — still cool with morning dew!',
-    ],
+    lines: ['Plump ruby strawberries from Lantern Isle — still cool with morning dew!'],
   },
   'Moon Mobile': {
     animation: 'notes',
@@ -224,22 +229,16 @@ const FURNITURE_INTERACTIONS: Record<string, FurnitureInteractionSpec> = {
   },
   'Cloud Pillows': {
     animation: 'bounce',
-    lines: [
-      'Puffed high with eiderdown feathers — practically begging for an afternoon snooze.',
-    ],
+    lines: ['Puffed high with eiderdown feathers — practically begging for an afternoon snooze.'],
   },
   'Pearl Mirror': {
     animation: 'sparkle',
     chime: true,
-    lines: [
-      'You strike a cheerful whiskered pose in the mother-of-pearl frame!',
-    ],
+    lines: ['You strike a cheerful whiskered pose in the mother-of-pearl frame!'],
   },
   'Bedside Bouquet': {
     animation: 'petals',
-    lines: [
-      'Fresh pastel tulip petals unfurl gently in the warm bedroom breeze.',
-    ],
+    lines: ['Fresh pastel tulip petals unfurl gently in the warm bedroom breeze.'],
   },
   'Oak Bookshelf': {
     animation: 'sparkle',
@@ -258,16 +257,12 @@ const FURNITURE_INTERACTIONS: Record<string, FurnitureInteractionSpec> = {
   },
   'Wax Seal Desk': {
     animation: 'glow',
-    lines: [
-      'The beeswax candle flickers warmly beside a stack of stamped island postcards.',
-    ],
+    lines: ['The beeswax candle flickers warmly beside a stack of stamped island postcards.'],
   },
   'Breeze Lute': {
     animation: 'notes',
     chime: true,
-    lines: [
-      'A gentle strum sends honeyed pentatonic notes floating around the study!',
-    ],
+    lines: ['A gentle strum sends honeyed pentatonic notes floating around the study!'],
   },
   'Cherry Bonsai': {
     animation: 'petals',
@@ -278,47 +273,33 @@ const FURNITURE_INTERACTIONS: Record<string, FurnitureInteractionSpec> = {
   },
   'Macramé Fern': {
     animation: 'petals',
-    lines: [
-      'Emerald fronds sway softly in the sunlit greenhouse draft.',
-    ],
+    lines: ['Emerald fronds sway softly in the sunlit greenhouse draft.'],
   },
   'Sun Prism Chime': {
     animation: 'notes',
     chime: true,
-    lines: [
-      'Crystal chimes tinkle merrily, painting tiny rainbows across the flagstones!',
-    ],
+    lines: ['Crystal chimes tinkle merrily, painting tiny rainbows across the flagstones!'],
   },
   'Glass Terrarium': {
     animation: 'glow',
-    lines: [
-      'Two sleepy moss fireflies blink a golden hello beneath the tiny fern dome!',
-    ],
+    lines: ['Two sleepy moss fireflies blink a golden hello beneath the tiny fern dome!'],
   },
   'Lavender Candles': {
     animation: 'glow',
-    lines: [
-      'Soothing purple lavender ribbons drift peacefully across the warm bathhouse.',
-    ],
+    lines: ['Soothing purple lavender ribbons drift peacefully across the warm bathhouse.'],
   },
   'Pearl Shell Tray': {
     animation: 'bubbles',
     chime: true,
-    lines: [
-      'Hold a spiral shell to your ear — Pearl Reef’s chorus still echoes softly inside.',
-    ],
+    lines: ['Hold a spiral shell to your ear — Pearl Reef’s chorus still echoes softly inside.'],
   },
   'Bath Toy Duck': {
     animation: 'bubbles',
-    lines: [
-      'Squeak-splash! Ducky hops happily through an imaginary cloud of soap suds.',
-    ],
+    lines: ['Squeak-splash! Ducky hops happily through an imaginary cloud of soap suds.'],
   },
   'Coral Branch Art': {
     animation: 'bubbles',
-    lines: [
-      'Rose-pink coral shimmers with pearly droplets like sunset at Tidepool Atoll.',
-    ],
+    lines: ['Rose-pink coral shimmers with pearly droplets like sunset at Tidepool Atoll.'],
   },
 };
 
@@ -347,42 +328,404 @@ const STARGAZE_READINGS = [
   'Comet Whisker arcs past Aurora Reach, promising joyful reunions with island friends.',
 ];
 
-/** Small live canvas inside each room so Mochi is visibly relaxing in the house */
-const RoomMochiSprite: React.FC<{ playerLook: PlayerLook; room: HouseRoomId }> = ({
+interface ProjectedHotspot {
+  deco: CottageDecoration;
+  leftPct: number;
+  topPct: number;
+}
+
+/**
+ * Interactive Three.js 3D Architectural Preview of all 6 connected rooms
+ * (Rendered whenever CottageModal is opened from outside or pause menu)
+ */
+const RoomInterior3DCanvas: React.FC<{
+  activeRoom: HouseRoomId;
+  cottage: CottageState;
+  playerLook: PlayerLook;
+  weatherId: WeatherId;
+  aquariumFishList: string[];
+  roomDecorations: CottageDecoration[];
+  isArrangeMode: boolean;
+  movingDecoId: string | null;
+  activeEffect: { decoId: string; kind: FurnitureAnimationKind; nonce: number } | null;
+  onPlaceMovingAt: (xPct: number, yPct: number) => void;
+  onSelectDecoration: (deco: CottageDecoration) => void;
+  onMoveDecorationStart: (decoId: string) => void;
+  onRemoveDecoration: (id: string, name: string) => void;
+}> = ({
+  activeRoom,
+  cottage,
   playerLook,
-  room,
+  weatherId,
+  aquariumFishList,
+  roomDecorations,
+  isArrangeMode,
+  movingDecoId,
+  activeEffect,
+  onPlaceMovingAt,
+  onSelectDecoration,
+  onMoveDecorationStart,
+  onRemoveDecoration,
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const propsRef = useRef({
+    activeRoom,
+    cottage,
+    playerLook,
+    weatherId,
+    aquariumFishList,
+    roomDecorations,
+  });
+  propsRef.current = {
+    activeRoom,
+    cottage,
+    playerLook,
+    weatherId,
+    aquariumFishList,
+    roomDecorations,
+  };
+
+  const [hotspots, setHotspots] = useState<ProjectedHotspot[]>([]);
+  const [webglError, setWebglError] = useState(false);
+
+  const orbitRef = useRef({ yaw: 0.14, pitch: 0.56, dragging: false, moved: false, lastX: 0, lastY: 0 });
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
 
   useEffect(() => {
+    const container = mountRef.current;
+    if (!container) return;
+
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        preserveDrawingBuffer: true,
+        powerPreference: 'high-performance',
+      });
+    } catch {
+      setWebglError(true);
+      return;
+    }
+
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.08;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.domElement.style.width = '100%';
+    renderer.domElement.style.height = '100%';
+    renderer.domElement.style.display = 'block';
+    container.innerHTML = '';
+    container.appendChild(renderer.domElement);
+
+    let contextLost = false;
+    const onLost = (e: Event) => {
+      e.preventDefault();
+      contextLost = true;
+      setWebglError(true);
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onLost);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x281e38);
+
+    const camera = new THREE.PerspectiveCamera(
+      44,
+      Math.max(1, container.clientWidth) / Math.max(1, container.clientHeight),
+      0.45,
+      90
+    );
+    cameraRef.current = camera;
+
+    const hemi = new THREE.HemisphereLight(0xfff4e0, 0x5c426b, 1.35);
+    scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xfff0d4, 1.65);
+    sun.position.set(7, 14, 9);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(512, 512);
+    sun.shadow.camera.near = 2;
+    sun.shadow.camera.far = 36;
+    const d = 14;
+    sun.shadow.camera.left = -d;
+    sun.shadow.camera.right = d;
+    sun.shadow.camera.top = d;
+    sun.shadow.camera.bottom = -d;
+    sun.shadow.bias = -0.0008;
+    sun.shadow.normalBias = 0.035;
+    sun.shadow.radius = 1.6;
+    scene.add(sun);
+
+    const ownedGeos: THREE.BufferGeometry[] = [];
+    const ownedMats: THREE.Material[] = [];
+    const trackGeo = <T extends THREE.BufferGeometry>(g: T): T => {
+      ownedGeos.push(g);
+      return g;
+    };
+    const trackMat = <T extends THREE.Material>(m: T): T => {
+      ownedMats.push(m);
+      return m;
+    };
+
+    const uniforms = createWorldShaderUniforms();
+    const archPack = createArchMaterialPack(uniforms, trackMat);
+    const interior = buildHouseInterior3D(archPack, trackGeo, trackMat);
+    interior.setCutaway(true);
+    scene.add(interior.group);
+
+    // 3D Player Mochi inside the focused room
+    const mochiRig = createMochiRig();
+    mochiRig.root.scale.setScalar(0.88);
+    scene.add(mochiRig.root);
+
+    const initialCenter = HOUSE_ROOM_LOCAL_CENTERS[propsRef.current.activeRoom];
+    const camTarget = new THREE.Vector3(initialCenter.x, 0.9, initialCenter.z);
+    const mochiPos = new THREE.Vector3(initialCenter.x - 0.6, 0.04, initialCenter.z + 1.25);
+
+    const projVec = new THREE.Vector3();
     let raf = 0;
-    const render = (now: number) => {
-      const c = canvasRef.current;
-      if (c) {
-        const ctx = c.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, c.width, c.height);
-          const t = now * 0.001;
-          const bob = Math.sin(t * 2.6) * 2.2;
-          const blink = (t % 3.8) < 0.14;
-          const facing = room === 'kitchen' || room === 'study' ? -1 : 1;
-          drawMochi(ctx, 48, 58, 1.55, bob, facing, blink, playerLook, false, t);
+    let lastTime = performance.now();
+    let elapsed = 0;
+    let frameIdx = 0;
+    let prevSpots: ProjectedHotspot[] = [];
+
+    const handleResize = () => {
+      const w = Math.max(1, container.clientWidth);
+      const h = Math.max(1, container.clientHeight);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
+    };
+    handleResize();
+
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(handleResize) : null;
+    ro?.observe(container);
+
+    const tick = (now: number) => {
+      if (contextLost) return;
+      const dt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
+      lastTime = now;
+      elapsed += dt;
+      frameIdx++;
+
+      const cur = propsRef.current;
+      const center = HOUSE_ROOM_LOCAL_CENTERS[cur.activeRoom] || HOUSE_ROOM_LOCAL_CENTERS.living;
+      const lerpAmt = Math.min(1, dt * 6.5);
+      camTarget.x += (center.x - camTarget.x) * lerpAmt;
+      camTarget.z += (center.z - camTarget.z) * lerpAmt;
+
+      const mochiGoalX = center.x + (cur.activeRoom === 'kitchen' || cur.activeRoom === 'study' ? -0.9 : 0.4);
+      const mochiGoalZ = center.z + 1.45;
+      const distToGoal = Math.hypot(mochiGoalX - mochiPos.x, mochiGoalZ - mochiPos.z);
+      mochiPos.x += (mochiGoalX - mochiPos.x) * lerpAmt;
+      mochiPos.z += (mochiGoalZ - mochiPos.z) * lerpAmt;
+
+      mochiRig.root.position.copy(mochiPos);
+      const isBlinking = elapsed % 3.8 < 0.14;
+      updateMochiRig(mochiRig, {
+        look: cur.playerLook,
+        time: elapsed,
+        isMoving: distToGoal > 0.2,
+        isBlinking,
+        facingYaw: Math.sin(elapsed * 0.7) * 0.25,
+        bobOffset: Math.sin(elapsed * 2.4) * 0.02,
+        dt,
+      });
+
+      const orb = orbitRef.current;
+      const radius = 8.4;
+      const cosP = Math.cos(orb.pitch);
+      camera.position.set(
+        camTarget.x + Math.sin(orb.yaw) * cosP * radius,
+        camTarget.y + Math.sin(orb.pitch) * radius + 1.0,
+        camTarget.z + Math.cos(orb.yaw) * cosP * radius
+      );
+      camera.lookAt(camTarget);
+
+      interior.update(elapsed, cur.cottage, cur.weatherId, cur.aquariumFishList);
+      renderer.render(scene, camera);
+
+      // Refresh projected hotspot tags only when positions move meaningfully (eliminates idle React re-renders)
+      if (frameIdx % 4 === 0) {
+        const nextSpots: ProjectedHotspot[] = [];
+        for (let i = 0; i < cur.roomDecorations.length; i++) {
+          const deco = cur.roomDecorations[i];
+          const wp = mapRoomPercentToHouseWorld(cur.activeRoom, deco.x, deco.y);
+          projVec.set(wp.x, wp.y + 0.52, wp.z).project(camera);
+          if (projVec.z < 1 && projVec.x >= -0.95 && projVec.x <= 0.95 && projVec.y >= -0.9 && projVec.y <= 0.9) {
+            nextSpots.push({
+              deco,
+              leftPct: (projVec.x * 0.5 + 0.5) * 100,
+              topPct: (-projVec.y * 0.5 + 0.5) * 100,
+            });
+          }
+        }
+        let changed = nextSpots.length !== prevSpots.length;
+        if (!changed) {
+          for (let i = 0; i < nextSpots.length; i++) {
+            const a = nextSpots[i];
+            const b = prevSpots[i];
+            if (
+              a.deco !== b.deco ||
+              Math.abs(a.leftPct - b.leftPct) > 0.35 ||
+              Math.abs(a.topPct - b.topPct) > 0.35
+            ) {
+              changed = true;
+              break;
+            }
+          }
+        }
+        if (changed) {
+          prevSpots = nextSpots;
+          setHotspots(nextSpots);
         }
       }
-      raf = requestAnimationFrame(render);
+
+      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(raf);
-  }, [playerLook, room]);
+
+    raf = requestAnimationFrame(tick);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      ro?.disconnect();
+      renderer.domElement.removeEventListener('webglcontextlost', onLost);
+      interior.dispose();
+      mochiRig.root.traverse((obj) => {
+        if ((obj as THREE.Mesh).isMesh) {
+          const m = obj as THREE.Mesh;
+          m.geometry?.dispose();
+        }
+      });
+      for (const g of ownedGeos) g.dispose();
+      for (const m of ownedMats) m.dispose();
+      renderer.dispose();
+      if (renderer.domElement.parentNode === container) {
+        container.removeChild(renderer.domElement);
+      }
+      cameraRef.current = null;
+    };
+  }, []);
+
+  const raycasterRef = useRef(new THREE.Raycaster());
+  const floorPlaneRef = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.03));
+  const hitPointRef = useRef(new THREE.Vector3());
+  const pointerNdcRef = useRef(new THREE.Vector2());
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    orbitRef.current.dragging = true;
+    orbitRef.current.moved = false;
+    orbitRef.current.lastX = e.clientX;
+    orbitRef.current.lastY = e.clientY;
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const orb = orbitRef.current;
+    if (!orb.dragging) return;
+    const dx = e.clientX - orb.lastX;
+    const dy = e.clientY - orb.lastY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) orb.moved = true;
+    orb.lastX = e.clientX;
+    orb.lastY = e.clientY;
+    orb.yaw = Math.max(-0.95, Math.min(0.95, orb.yaw - dx * 0.008));
+    orb.pitch = Math.max(0.28, Math.min(1.08, orb.pitch + dy * 0.006));
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const wasMoved = orbitRef.current.moved;
+    orbitRef.current.dragging = false;
+    if (wasMoved || !movingDecoId) return;
+
+    const container = mountRef.current;
+    const cam = cameraRef.current;
+    if (!container || !cam) return;
+    const rect = container.getBoundingClientRect();
+    pointerNdcRef.current.set(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    raycasterRef.current.setFromCamera(pointerNdcRef.current, cam);
+    if (raycasterRef.current.ray.intersectPlane(floorPlaneRef.current, hitPointRef.current)) {
+      const pct = unmapHouseWorldToRoomPercent(activeRoom, hitPointRef.current.x, hitPointRef.current.z);
+      onPlaceMovingAt(pct.x, pct.y);
+    }
+  };
+
+  if (webglError) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-[#281e38] text-white/90 text-xs font-bold p-4 text-center">
+        3D Preview unavailable in this browser mode — step through your front door to walk around the 3D house!
+      </div>
+    );
+  }
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={96}
-      height={84}
-      className="pointer-events-none select-none drop-shadow-sm"
-      title={`${playerLook.name || 'Mochi'} relaxing in the ${ROOM_META[room].label}`}
-    />
+    <div
+      className={`relative w-full aspect-16/10 min-h-[200px] sm:min-h-[265px] max-h-[42dvh] sm:max-h-none rounded-2xl border-2 border-[#e8bfd1] dark:border-[#5d3d70] overflow-hidden shadow-inner select-none ${
+        movingDecoId ? 'cursor-crosshair ring-2 ring-[#ffd23f]' : 'cursor-grab active:cursor-grabbing'
+      }`}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerLeave={() => {
+        orbitRef.current.dragging = false;
+      }}
+    >
+      <div ref={mountRef} className="w-full h-full" />
+
+      {/* 3D Orbit Hint Pill */}
+      <div className="pointer-events-none absolute top-2 left-2 px-2 py-0.5 rounded-lg bg-[#20142f]/75 text-[#fdeeff] text-[10px] font-extrabold backdrop-blur-xs">
+        🔄 Drag to orbit 3D {ROOM_META[activeRoom].shortLabel}
+      </div>
+
+      {/* Projected Interactive 3D Furniture Badges */}
+      {hotspots.map(({ deco, leftPct, topPct }) => {
+        const isMovingThis = movingDecoId === deco.id;
+        const effectHere = activeEffect?.decoId === deco.id ? activeEffect : null;
+        return (
+          <div
+            key={deco.id}
+            style={{ left: `${leftPct}%`, top: `${topPct}%` }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (isArrangeMode) {
+                onMoveDecorationStart(deco.id);
+              } else {
+                onSelectDecoration(deco);
+              }
+            }}
+            title={isArrangeMode ? `${deco.name} (click to move)` : `${deco.name} (click to interact)`}
+            className={`group absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 px-1.5 py-0.5 rounded-xl text-[11px] font-black shadow-md cursor-pointer transition-transform ${
+              isMovingThis
+                ? 'bg-[#ffd23f] text-[#4a3550] ring-2 ring-white scale-115 z-20'
+                : 'bg-[#fffaf4]/90 dark:bg-[#2a1d35]/90 text-[#4a3550] dark:text-[#fdeeff] border border-[#f2a8c2] hover:scale-110 z-10'
+            }`}
+          >
+            <span>{deco.icon}</span>
+            {effectHere && <span className="animate-bounce">✨</span>}
+            {isArrangeMode && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemoveDecoration(deco.id, deco.name);
+                }}
+                aria-label={`Remove ${deco.name}`}
+                className="ml-0.5 w-4 h-4 rounded-full bg-[#ff5c8a] text-white text-[9px] flex items-center justify-center cursor-pointer"
+              >
+                ×
+              </button>
+            )}
+          </div>
+        );
+      })}
+
+      {movingDecoId && (
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-30 px-3 py-1 rounded-xl bg-[#4a3550]/90 text-white text-[11px] font-black shadow-md pointer-events-none whitespace-nowrap">
+          Tap anywhere on the 3D floor in {ROOM_META[activeRoom].label} to place item
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -395,6 +738,10 @@ export const CottageModal: React.FC<CottageModalProps> = ({
   stamina,
   mana,
   coins,
+  inHouse3D = false,
+  currentRoom3D,
+  onSelectRoom3D,
+  onEnterHouse3D,
   onUpdateCottage,
   onSpendCoins,
   onEarnCoins,
@@ -407,7 +754,7 @@ export const CottageModal: React.FC<CottageModalProps> = ({
   onStepOutside,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<TabKey>('living');
+  const [activeTab, setActiveTab] = useState<TabKey>(currentRoom3D || 'living');
   const [feedback, setFeedback] = useState<string>('');
   const [isArrangeMode, setIsArrangeMode] = useState(false);
   const [movingDecoId, setMovingDecoId] = useState<string | null>(null);
@@ -422,20 +769,23 @@ export const CottageModal: React.FC<CottageModalProps> = ({
     icon: string;
     line: string;
     count: number;
-    x: number;
-    y: number;
   } | null>(null);
   const [stargazeNote, setStargazeNote] = useState<string | null>(null);
   const [showAllFurniture, setShowAllFurniture] = useState(false);
+
+  // Sync active tab when player walks between rooms inside the live 3D house
+  useEffect(() => {
+    if (inHouse3D && currentRoom3D && activeTab !== 'hamlet') {
+      setActiveTab(currentRoom3D);
+    }
+  }, [inHouse3D, currentRoom3D]);
 
   const fireplaceLit = cottage.fireplaceLit !== false;
   const lampOn = cottage.lampOn !== false;
   const tubFilled = cottage.tubFilled !== false;
   const ovenWarm = Boolean(cottage.ovenWarm);
 
-  const showRoomFeedback = (msg: string) => {
-    setFeedback(msg);
-  };
+  const showRoomFeedback = (msg: string) => setFeedback(msg);
 
   useEffect(() => {
     if (!feedback) return;
@@ -457,7 +807,6 @@ export const CottageModal: React.FC<CottageModalProps> = ({
 
   const activeRoomId: HouseRoomId = activeTab === 'hamlet' ? 'living' : activeTab;
 
-  // Decorations placed in current room (legacy items without room default to 'living')
   const roomDecorations = useMemo(() => {
     return cottage.decorationsPlaced.filter((d) => (d.room || 'living') === activeRoomId);
   }, [cottage.decorationsPlaced, activeRoomId]);
@@ -467,7 +816,6 @@ export const CottageModal: React.FC<CottageModalProps> = ({
     return FURNITURE_CATALOG.filter((f) => f.room === activeRoomId);
   }, [activeRoomId, showAllFurniture]);
 
-  // Combine caught fish with starter cottage reef fish for the panoramic aquarium
   const aquariumRoster = useMemo(() => {
     const caughtEntries = Object.entries(fishLog).filter(([, count]) => count > 0);
     const starter = cottage.aquariumFish.filter((name) => !fishLog[name]);
@@ -477,22 +825,18 @@ export const CottageModal: React.FC<CottageModalProps> = ({
     ];
   }, [fishLog, cottage.aquariumFish]);
 
-  const handleStageClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!movingDecoId || activeTab === 'hamlet') {
-      if (furnitureDialogue) setFurnitureDialogue(null);
-      return;
-    }
-    const rect = e.currentTarget.getBoundingClientRect();
-    const xPct = Math.max(10, Math.min(90, Math.round(((e.clientX - rect.left) / rect.width) * 100)));
-    const yPct = Math.max(22, Math.min(86, Math.round(((e.clientY - rect.top) / rect.height) * 100)));
+  const aquariumFishList = useMemo(() => aquariumRoster.map((f) => f.name), [aquariumRoster]);
+
+  const handlePlaceMovingAt = (xPct: number, yPct: number) => {
+    if (!movingDecoId) return;
     onUpdateCottage({
       decorationsPlaced: cottage.decorationsPlaced.map((d) =>
-        d.id === movingDecoId ? { ...d, x: xPct, y: yPct } : d
+        d.id === movingDecoId ? { ...d, x: xPct, y: yPct, room: activeRoomId } : d
       ),
     });
     setMovingDecoId(null);
     audio.pop();
-    showRoomFeedback('Moved furniture into its cozy new spot!');
+    showRoomFeedback('Moved 3D furniture into its cozy new spot!');
   };
 
   const handleInteractDecoration = (deco: CottageDecoration) => {
@@ -509,11 +853,8 @@ export const CottageModal: React.FC<CottageModalProps> = ({
       furnitureInteractCount: (cottage.furnitureInteractCount || 0) + 1,
     });
 
-    if (spec.chime) {
-      audio.chime();
-    } else {
-      audio.pop();
-    }
+    if (spec.chime) audio.chime();
+    else audio.pop();
 
     setActiveEffect({ decoId: deco.id, kind: spec.animation, nonce: now });
     setFurnitureDialogue({
@@ -522,8 +863,6 @@ export const CottageModal: React.FC<CottageModalProps> = ({
       icon: deco.icon,
       line: spec.lines[lineIdx],
       count: nextCount,
-      x: deco.x,
-      y: deco.y,
     });
   };
 
@@ -531,8 +870,8 @@ export const CottageModal: React.FC<CottageModalProps> = ({
     if (!onSpendCoins(item.cost, `Crafted ${item.name}`)) return;
     const newDeco: CottageDecoration = {
       id: `deco-${Date.now()}-${Math.floor(Math.random() * 999)}`,
-      x: 18 + Math.round(Math.random() * 64),
-      y: 48 + Math.round(Math.random() * 34),
+      x: 24 + Math.round(Math.random() * 52),
+      y: 44 + Math.round(Math.random() * 34),
       name: item.name,
       icon: item.icon,
       room: activeRoomId,
@@ -542,7 +881,7 @@ export const CottageModal: React.FC<CottageModalProps> = ({
       decorationsPlaced: [...cottage.decorationsPlaced, newDeco],
     });
     audio.chime();
-    showRoomFeedback(`Placed ${item.name} in the ${ROOM_META[activeRoomId].label}! Click it to try it out.`);
+    showRoomFeedback(`Placed 3D ${item.name} in the ${ROOM_META[activeRoomId].label}!`);
   };
 
   const handleRemoveDecoration = (id: string, name: string) => {
@@ -565,12 +904,12 @@ export const CottageModal: React.FC<CottageModalProps> = ({
       gardenPlots: [...cottage.gardenPlots, newPlot],
     });
     audio.pop();
-    showRoomFeedback(`Planted ${seed.name} in a warm terracotta box! Water it to help it bloom.`);
+    showRoomFeedback(`Planted ${seed.name} in the 3D Sunroom planter! Water it to help it bloom.`);
   };
 
   const handleWaterAllPlots = () => {
     if (cottage.gardenPlots.length === 0) {
-      showRoomFeedback('Plant a seed packet below first so the watering can has sprouts to mist!');
+      showRoomFeedback('Plant a seed packet first so the watering can has sprouts to mist!');
       return;
     }
     onUpdateCottage({
@@ -580,7 +919,7 @@ export const CottageModal: React.FC<CottageModalProps> = ({
       })),
     });
     audio.chime();
-    showRoomFeedback('Misted every planter with sun-warmed spring water! Blooms grew taller.');
+    showRoomFeedback('Misted every 3D planter with sun-warmed spring water! Blooms grew taller.');
   };
 
   const handleHarvestPlot = (index: number, seedType: string) => {
@@ -593,70 +932,557 @@ export const CottageModal: React.FC<CottageModalProps> = ({
     showRoomFeedback(`Harvested radiant ${matched?.name ?? seedType} for +${reward} Coins!`);
   };
 
-  const renderWeatherSky = () => {
-    const wid = activeWeather.id;
-    const isNight = wid === 'stardust' || wid === 'aurora';
-    const isRain = wid === 'drizzle';
-    const isSnow = wid === 'snowy';
-    const isMuffin = wid === 'muffin_rain';
-    return (
-      <g>
-        <rect
-          x="332"
-          y="38"
-          width="96"
-          height="108"
-          rx="48"
-          fill={isNight ? '#1b2148' : isRain ? '#6985a8' : isSnow ? '#9ec6e4' : '#7ec8f8'}
-          stroke="#6f4b3e"
-          strokeWidth="5"
-        />
-        {isNight && (
-          <>
-            <circle cx="362" cy="70" r="10" fill="#ffe68c" />
-            <circle cx="366" cy="67" r="8" fill="#1b2148" />
-            <circle cx="395" cy="64" r="2" fill="#fff9c4" />
-            <circle cx="408" cy="82" r="1.8" fill="#fff9c4" />
-            <circle cx="352" cy="95" r="1.6" fill="#fff9c4" />
-          </>
-        )}
-        {!isNight && !isRain && (
-          <>
-            <circle cx="392" cy="72" r="13" fill="#ffd95a" opacity="0.95" />
-            <ellipse cx="360" cy="95" rx="16" ry="7" fill="#ffffff" opacity="0.88" />
-            <ellipse cx="398" cy="108" rx="14" ry="6" fill="#ffffff" opacity="0.8" />
-          </>
-        )}
-        {isRain && (
-          <g stroke="#d8f0ff" strokeWidth="2" strokeLinecap="round">
-            <line x1="355" y1="68" x2="351" y2="82" />
-            <line x1="380" y1="62" x2="376" y2="76" />
-            <line x1="402" y1="74" x2="398" y2="88" />
-            <line x1="366" y1="92" x2="362" y2="106" />
-          </g>
-        )}
-        {isSnow && (
-          <g fill="#ffffff">
-            <circle cx="356" cy="72" r="2.5" />
-            <circle cx="384" cy="66" r="2.2" />
-            <circle cx="403" cy="85" r="2.6" />
-            <circle cx="368" cy="102" r="2.1" />
-          </g>
-        )}
-        {isMuffin && (
-          <g fontSize="14">
-            <text x="348" y="82">🧁</text>
-            <text x="388" y="96">🥐</text>
-          </g>
-        )}
-        {/* Window panes & sill */}
-        <line x1="380" y1="38" x2="380" y2="146" stroke="#6f4b3e" strokeWidth="3.5" />
-        <line x1="332" y1="96" x2="428" y2="96" stroke="#6f4b3e" strokeWidth="3.5" />
-        <rect x="322" y="144" width="116" height="9" rx="3" fill="#8b5e49" stroke="#3b2a45" strokeWidth="1.5" />
-      </g>
-    );
+  const handleTabSwitch = (key: TabKey) => {
+    setActiveTab(key);
+    setMovingDecoId(null);
+    setFurnitureDialogue(null);
+    setActiveEffect(null);
+    audio.pop();
+    if (inHouse3D && key !== 'hamlet' && onSelectRoom3D) {
+      onSelectRoom3D(key);
+    }
   };
 
+  const controlsPanel = (
+    <div className="space-y-3">
+      {/* Room-Specific Interactive Appliances */}
+      <div className="p-3.5 storybook-card rounded-2xl space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-black text-xs uppercase tracking-wide text-[#c94a77] dark:text-[#ff9ec0]">
+            {ROOM_META[activeRoomId].icon} {ROOM_META[activeRoomId].label} Appliances
+          </h3>
+          <span className="text-[11px] font-bold opacity-75">
+            {activeWeather.icon} {activeWeather.name}
+          </span>
+        </div>
+
+        {activeTab === 'living' && (
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => {
+                onUpdateCottage({ fireplaceLit: !fireplaceLit });
+                audio.pop();
+                showRoomFeedback(
+                  !fireplaceLit
+                    ? 'Crackling logs lit up the 3D living room hearth!'
+                    : 'Banked the hearth embers into warm coals.'
+                );
+              }}
+              className="min-h-[42px] p-2.5 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent text-left cursor-pointer transition-all"
+            >
+              <p className="font-black text-xs text-[#4a3550] dark:text-[#fdeeff]">
+                🔥 {fireplaceLit ? 'Bank Hearth Fire' : 'Light Hearth Fire'}
+              </p>
+              <p className="text-[10px] opacity-75">Cozy amber chimney glow</p>
+            </button>
+
+            <button
+              onClick={() => {
+                audio.chime();
+                onPlayMusicBox();
+              }}
+              className="min-h-[42px] p-2.5 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent text-left cursor-pointer transition-all"
+            >
+              <p className="font-black text-xs text-[#4a3550] dark:text-[#fdeeff]">🎠 Play Music Box</p>
+              <p className="text-[10px] opacity-75">Chiming Song Weaver tune</p>
+            </button>
+
+            <button
+              onClick={() => {
+                audio.pop();
+                onRestoreVitals(15, 10, 'Lounged on the Cloud Sofa (+15% ⚡ Stamina, +10% ✨ Mana)');
+              }}
+              className="col-span-2 min-h-[42px] p-2.5 rounded-xl bg-linear-to-r from-[#ff7aa8] to-[#f46496] text-white font-black text-xs shadow-xs cursor-pointer transition-transform active:scale-98"
+            >
+              🛋️ Curl Up on Cloud Sofa (+15% ⚡ · +10% ✨)
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'kitchen' && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              onClick={() => {
+                onUpdateCottage({ ovenWarm: true });
+                audio.chime();
+                onRestoreVitals(25, 0, 'Baked warm honey muffins in the Cloud Oven (+25% ⚡ Stamina)!');
+              }}
+              className="min-h-[42px] p-2.5 rounded-xl bg-[#ff87a6] hover:brightness-105 text-white font-black text-xs text-left cursor-pointer shadow-xs"
+            >
+              🧁 Bake Cloud Muffin
+              <span className="block text-[10px] font-bold opacity-90">+25% ⚡ Stamina</span>
+            </button>
+
+            <button
+              onClick={() => {
+                audio.chime();
+                onRestoreVitals(0, 30, 'Steeped Starlight Chamomile Tea (+30% ✨ Mana)!');
+              }}
+              className="min-h-[42px] p-2.5 rounded-xl bg-[#52b8c6] hover:brightness-105 text-white font-black text-xs text-left cursor-pointer shadow-xs"
+            >
+              🫖 Brew Starlight Tea
+              <span className="block text-[10px] font-bold opacity-90">+30% ✨ Mana</span>
+            </button>
+
+            <button
+              onClick={() => {
+                audio.pop();
+                onRestoreVitals(15, 15, 'Shared a chilled Berry Parfait from the icebox (+15% ⚡ & +15% ✨)!');
+              }}
+              className="sm:col-span-2 min-h-[40px] p-2.5 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent font-black text-xs text-[#4a3550] dark:text-[#fdeeff] cursor-pointer"
+            >
+              🍓 Cold-Mist Icebox Snack (+15% ⚡ &amp; +15% ✨)
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'bedroom' && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              onClick={() => {
+                onRestRestore();
+                showRoomFeedback('Took a cozy patchwork nap — Stamina & Mana 100% restored!');
+              }}
+              className="sm:col-span-2 min-h-[44px] p-3 rounded-xl bg-linear-to-r from-[#8d74e8] to-[#b57be8] text-white font-black text-xs shadow-xs cursor-pointer transition-transform active:scale-98"
+            >
+              🛏️ Rest in Patchwork Bed (Restore 100% ⚡ Stamina &amp; ✨ Mana)
+            </button>
+
+            <button
+              onClick={() => {
+                onUpdateCottage({ lampOn: !lampOn });
+                audio.pop();
+                showRoomFeedback(!lampOn ? 'Switched on the amber bedside lamp!' : 'Dimmed the bedroom for stargazing.');
+              }}
+              className="min-h-[40px] p-2.5 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent font-black text-xs text-[#4a3550] dark:text-[#fdeeff] cursor-pointer"
+            >
+              💡 {lampOn ? 'Dim Night Lamp' : 'Turn On Lamp'}
+            </button>
+
+            <button
+              onClick={onOpenWardrobe}
+              className="min-h-[40px] p-2.5 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent font-black text-xs text-[#4a3550] dark:text-[#fdeeff] cursor-pointer"
+            >
+              👒 Carved Wardrobe
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'study' && (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={onOpenSongWeaver}
+                className="min-h-[42px] p-2.5 rounded-xl bg-linear-to-r from-[#ff7aa8] to-[#f46496] text-white font-black text-xs cursor-pointer shadow-xs"
+              >
+                🎼 Song Weaver
+              </button>
+              <button
+                onClick={() => {
+                  const reading =
+                    STARGAZE_READINGS[Math.floor(Math.random() * STARGAZE_READINGS.length)];
+                  setStargazeNote(reading);
+                  onRestoreVitals(0, 12, 'Stargazed through the brass telescope (+12% ✨ Mana)');
+                }}
+                className="min-h-[42px] p-2.5 rounded-xl bg-[#5b6ad0] text-white font-black text-xs cursor-pointer shadow-xs"
+              >
+                🔭 Gaze at Stars
+              </button>
+            </div>
+            {stargazeNote && (
+              <p className="text-[11px] italic text-[#5a425f] dark:text-[#e6d7ec] bg-white/60 dark:bg-black/25 p-2.5 rounded-xl">
+                {stargazeNote}
+              </p>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'conservatory' && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-black text-[#4a3550] dark:text-[#fdeeff] tabular-nums">
+                {cottage.gardenPlots.length}/6 Planter Boxes Used
+              </span>
+              <button
+                onClick={handleWaterAllPlots}
+                className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#4eb8a9] hover:brightness-105 text-white font-black text-xs cursor-pointer shadow-xs"
+              >
+                💧 Water All Sprouts
+              </button>
+            </div>
+
+            {cottage.gardenPlots.length > 0 && (
+              <div className="grid grid-cols-2 gap-1.5">
+                {cottage.gardenPlots.slice(0, 6).map((plot, idx) => {
+                  const seedInfo = SEED_TYPES.find((s) => s.name === plot.seedType || s.id === plot.seedType);
+                  const stage = plot.stage || 1;
+                  const stageIcon = stage >= 3 ? (seedInfo?.icon || '🌸') : stage === 2 ? '🌿' : '🌱';
+                  return (
+                    <button
+                      key={`${plot.seedType}-${idx}`}
+                      onClick={() => {
+                        if (stage >= 3) {
+                          handleHarvestPlot(idx, plot.seedType);
+                        } else {
+                          onUpdateCottage({
+                            gardenPlots: cottage.gardenPlots.map((p, pIdx) =>
+                              pIdx === idx ? { ...p, stage: Math.min(3, stage + 1) } : p
+                            ),
+                          });
+                          audio.chime();
+                          showRoomFeedback(`Watered ${plot.seedType}!`);
+                        }
+                      }}
+                      className="p-2 rounded-xl storybook-well hover:border-[#52b870] border border-transparent flex items-center justify-between gap-1.5 text-left cursor-pointer"
+                    >
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-lg shrink-0">{stageIcon}</span>
+                        <span className="text-[11px] font-black truncate text-[#4a3550] dark:text-[#fdeeff]">
+                          {plot.seedType}
+                        </span>
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-[#a45c3f] text-[9px] font-black text-white shrink-0">
+                        {stage >= 3 ? 'Harvest' : `${stage}/3`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-1.5">
+              {SEED_TYPES.map((seed) => (
+                <button
+                  key={seed.id}
+                  onClick={() => handlePlantSeed(seed)}
+                  className="p-2 rounded-xl storybook-well hover:border-[#52b870] border border-transparent flex items-center gap-2 text-left cursor-pointer"
+                >
+                  <span className="text-xl shrink-0">{seed.icon}</span>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-black truncate text-[#4a3550] dark:text-[#fdeeff]">
+                      {seed.name}
+                    </p>
+                    <p className="text-[10px] text-[#35854b] dark:text-[#8fe0a3] font-bold tabular-nums">
+                      +{seed.coinYield} 🪙 harvest
+                    </p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'bath' && (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => {
+                  if (!tubFilled) onUpdateCottage({ tubFilled: true });
+                  onRestoreVitals(35, 10, 'Soaked in warm lavender cedar water (+35% ⚡ Stamina, +10% ✨ Mana)!');
+                }}
+                className="min-h-[42px] p-2.5 rounded-xl bg-[#4eaec4] hover:brightness-105 text-white font-black text-xs cursor-pointer shadow-xs"
+              >
+                🛁 Herbal Cedar Soak
+                <span className="block text-[10px] font-bold opacity-90">+35% ⚡ · +10% ✨</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  onUpdateCottage({ tubFilled: !tubFilled });
+                  audio.pop();
+                  showRoomFeedback(!tubFilled ? 'Filled the cedar tub with steaming lavender water!' : 'Drained the cedar bath.');
+                }}
+                className="min-h-[42px] p-2.5 rounded-xl storybook-well hover:border-[#4eaec4] border border-transparent font-black text-xs text-[#4a3550] dark:text-[#fdeeff] cursor-pointer"
+              >
+                🚿 {tubFilled ? 'Drain Tub' : 'Fill Warm Bath'}
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {aquariumRoster.slice(0, 6).map((fish) => (
+                <span
+                  key={fish.name}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#0d4d6d]/85 text-white text-[10px] font-bold"
+                >
+                  <span>🐠</span>
+                  <span>{fish.name}</span>
+                  {fish.caught && <span className="text-[#ffd23f] tabular-nums">×{fish.count}</span>}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Placed 3D Items in Active Room */}
+      {roomDecorations.length > 0 && (
+        <div className="p-3 storybook-card rounded-2xl space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="font-black text-xs uppercase tracking-wide text-[#c94a77] dark:text-[#ff9ec0]">
+              Placed in {ROOM_META[activeRoomId].shortLabel} ({roomDecorations.length})
+            </h3>
+            {!inHouse3D && (
+              <button
+                onClick={() => {
+                  const next = !isArrangeMode;
+                  setIsArrangeMode(next);
+                  if (!next) setMovingDecoId(null);
+                  audio.pop();
+                }}
+                className={`px-2 py-0.5 rounded-lg text-[10px] font-black cursor-pointer ${
+                  isArrangeMode ? 'bg-[#ffd23f] text-[#4a3550]' : 'storybook-well text-[#4a3550] dark:text-[#fdeeff]'
+                }`}
+              >
+                {isArrangeMode ? '✓ Done Moving' : '✥ Reposition'}
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {roomDecorations.map((deco) => (
+              <div
+                key={deco.id}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-xl storybook-well text-[11px] font-black text-[#4a3550] dark:text-[#fdeeff]"
+              >
+                <button
+                  onClick={() => handleInteractDecoration(deco)}
+                  className="inline-flex items-center gap-1 cursor-pointer hover:text-[#ff7aa8]"
+                  title="Interact with 3D item"
+                >
+                  <span>{deco.icon}</span>
+                  <span>{deco.name}</span>
+                </button>
+                {!inHouse3D && (
+                  <button
+                    onClick={() => {
+                      setIsArrangeMode(true);
+                      setMovingDecoId(movingDecoId === deco.id ? null : deco.id);
+                    }}
+                    title="Move on 3D floor"
+                    className={`px-1 rounded text-[10px] cursor-pointer ${
+                      movingDecoId === deco.id ? 'bg-[#ffd23f] text-[#4a3550]' : 'opacity-70 hover:opacity-100'
+                    }`}
+                  >
+                    ✥
+                  </button>
+                )}
+                <button
+                  onClick={() => handleRemoveDecoration(deco.id, deco.name)}
+                  title="Store away"
+                  className="text-[#ff5c8a] hover:brightness-110 text-xs leading-none cursor-pointer"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Furniture Interaction Note */}
+      {furnitureDialogue && !movingDecoId && (
+        <div
+          onClick={() => setFurnitureDialogue(null)}
+          className="p-2.5 rounded-2xl bg-[#fffaf4] dark:bg-[#2a1d35] border-2 border-[#f2a8c2] dark:border-[#855296] shadow-sm cursor-pointer animate-in fade-in duration-150"
+        >
+          <div className="flex items-start gap-2">
+            <span className="text-xl shrink-0">{furnitureDialogue.icon}</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-black text-[#4a3550] dark:text-[#fdeeff] leading-tight">
+                {furnitureDialogue.name}
+              </p>
+              <p className="text-[11px] font-semibold text-[#5f4763] dark:text-[#e3d2eb] mt-0.5 leading-snug">
+                {furnitureDialogue.line}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Room Furniture & Decor Crafting */}
+      <div className="p-3.5 storybook-card rounded-2xl space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-black text-xs uppercase tracking-wide text-[#c94a77] dark:text-[#ff9ec0]">
+            Craft 3D Furniture ({coins} 🪙)
+          </h3>
+          <button
+            onClick={() => setShowAllFurniture((v) => !v)}
+            className="text-[11px] font-black text-[#7c5c75] dark:text-[#d8c7df] hover:text-[#ff7aa8] cursor-pointer"
+          >
+            {showAllFurniture ? 'Room Picks Only' : 'Show All Rooms'}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 xs:grid-cols-2 gap-2 max-h-[200px] overflow-y-auto pr-0.5">
+          {catalogList.map((furn) => {
+            const affordable = coins >= furn.cost;
+            return (
+              <button
+                key={furn.id}
+                onClick={() => handleAddDecoration(furn)}
+                className={`p-2 rounded-xl border text-left flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
+                  affordable
+                    ? 'storybook-well border-transparent hover:border-[#ff7aa8]'
+                    : 'storybook-well border-transparent opacity-60'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xl shrink-0">{furn.icon}</span>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-black text-[#4a3550] dark:text-[#fdeeff] truncate">
+                      {furn.name}
+                    </p>
+                    <p className="text-[10px] font-bold text-[#c94a77] dark:text-[#ff9ec0] tabular-nums">
+                      {furn.cost} 🪙
+                    </p>
+                  </div>
+                </div>
+                <span className="text-xs shrink-0 font-black">＋</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
+  const hamletPanel = (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-2xl storybook-card">
+        <div>
+          <h3 className="font-black text-sm text-[#4a3550] dark:text-[#fdeeff]">
+            Mochi Hamlet · {hamletResidents.length} Neighbors Settled
+          </h3>
+          <p className="text-xs text-[#6d546e] dark:text-[#ceb7d4]">
+            Invite befriended islanders to build cozy cottages and artisan stalls beside your yard.
+          </p>
+        </div>
+      </div>
+
+      <div className={`grid gap-2.5 ${inHouse3D ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}`}>
+        {[
+          { name: 'Pip', shop: 'Pip’s Floating Bakery', icon: '🧁', desc: 'Bakes fresh cloud muffins every morning' },
+          { name: 'Captain Barnacle', shop: 'Driftwood Boatshop', icon: '⛵', desc: 'Tends lanterns and harbor breezes' },
+          { name: 'Fennel', shop: 'Fennel’s Map Stall', icon: '🗺️', desc: 'Drafts enthusiastic treasure charts' },
+          { name: 'Tidbit', shop: 'Tidbit’s Lantern Workshop', icon: '🏮', desc: 'Crafts colorful glowing evening lanterns' },
+          { name: 'Gran Dumpling', shop: 'Soup Kitchen of Remembering', icon: '🍲', desc: 'Simmers warm memory broths' },
+          { name: 'Bellamy', shop: 'Bellamy’s Chime Foundry', icon: '🔔', desc: 'Tunes golden bells for the Hamlet gate' },
+        ].map((res) => {
+          const isMovedIn = hamletResidents.some((h) => h.npcName === res.name);
+          return (
+            <div
+              key={res.name}
+              className="p-3.5 storybook-card rounded-2xl flex items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <div className="w-11 h-11 rounded-2xl bg-[#fff4f8] dark:bg-[#3a2645] flex items-center justify-center text-2xl shrink-0">
+                  {res.icon}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-black text-sm text-[#4a3550] dark:text-[#fdeeff] truncate">{res.name}</p>
+                  <p className="text-[11px] text-[#c94a77] dark:text-[#ff9ec0] font-extrabold truncate">{res.shop}</p>
+                  <p className="text-[11px] opacity-75 line-clamp-2">{res.desc}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => onInviteToHamlet(res.name)}
+                className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                  isMovedIn
+                    ? 'bg-[#5ab870] text-white'
+                    : 'bg-[#ff7aa8] hover:brightness-105 text-white shadow-xs'
+                }`}
+              >
+                {isMovedIn ? 'Moved In ✓' : 'Invite'}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  // Side-Drawer UI when standing inside the live 3D House so player sees their 3D rooms updating in real time
+  if (inHouse3D) {
+    return (
+      <div className="fixed inset-y-0 right-0 z-50 w-full max-w-[430px] p-2 sm:p-3 pointer-events-auto select-none flex flex-col animate-in fade-in slide-in-from-right-4 duration-200">
+        <div className="flex-1 min-h-0 storybook-modal rounded-2xl sm:rounded-3xl p-3 sm:p-4 flex flex-col gap-2.5 shadow-2xl border-2 border-[#f2c4d7] dark:border-[#6a447c] overflow-hidden">
+          <div className="flex items-center justify-between gap-2 border-b border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 pb-2 shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-9 h-9 rounded-xl bg-[#ffe6f0] dark:bg-[#492c56] border border-[#f5bfd6] dark:border-[#6a447c] flex items-center justify-center text-xl shrink-0">
+                🏡
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-sm font-black text-[#4a3550] dark:text-[#fdeeff] leading-tight truncate">
+                  Home Architect &amp; Hamlet
+                </h2>
+                <p className="text-[10px] font-bold text-[#7c5c75] dark:text-[#d5bddb] truncate tabular-nums">
+                  {ROOM_META[activeTab].label} · ⚡ {Math.round(stamina)}% · ✨ {Math.round(mana)}% · 🪙 {coins}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              aria-label="Close decorator"
+              className="w-8 h-8 rounded-full storybook-card hover:bg-[#ff7aa8] hover:text-white text-[#4a3550] dark:text-[#fdeeff] font-black text-sm flex items-center justify-center cursor-pointer shrink-0"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="flex storybook-well p-1 rounded-xl gap-1 overflow-x-auto scrollbar-none shrink-0">
+            {(Object.keys(ROOM_META) as TabKey[]).map((key) => {
+              const meta = ROOM_META[key];
+              const active = activeTab === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => handleTabSwitch(key)}
+                  className={`min-w-fit min-h-[34px] py-1 px-2.5 rounded-lg text-[11px] font-black transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1 ${
+                    active
+                      ? 'bg-[#ff7aa8] text-white shadow-xs'
+                      : 'text-[#5a425f] dark:text-[#d8c7df] hover:bg-white/60 dark:hover:bg-black/25'
+                  }`}
+                >
+                  <span>{meta.icon}</span>
+                  <span>{meta.shortLabel}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {feedback && (
+            <div className="px-3 py-1.5 bg-[#fff2cc] dark:bg-[#493822] border border-[#ffd23f] rounded-xl text-center text-xs font-black text-[#4a3550] dark:text-[#fff2c2] shrink-0">
+              {feedback}
+            </div>
+          )}
+
+          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pr-1">
+            {activeTab === 'hamlet' ? hamletPanel : controlsPanel}
+          </div>
+
+          <div className="pt-2 border-t border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 flex items-center justify-between gap-2 shrink-0">
+            {onStepOutside && (
+              <button
+                onClick={() => {
+                  onStepOutside();
+                  onClose();
+                }}
+                className="min-h-[36px] px-3 py-1.5 rounded-xl storybook-card hover:border-[#ff7aa8] text-xs font-black text-[#4a3550] dark:text-[#fdeeff] cursor-pointer"
+              >
+                🚪 Step Outside
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="ml-auto min-h-[36px] px-4 py-1.5 rounded-xl bg-linear-to-r from-[#ff7aa8] to-[#f46496] hover:brightness-105 text-white font-black text-xs shadow-xs cursor-pointer"
+            >
+              Walk Around 3D Room
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Full Centered Modal with Real Interactive Three.js 3D Architectural Preview
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-modal-safe bg-black/60 backdrop-blur-sm pointer-events-auto select-none animate-in fade-in duration-200">
       <div className="w-full max-w-5xl storybook-modal rounded-2xl sm:rounded-3xl p-3 sm:p-5 flex flex-col gap-2.5 sm:gap-3 max-h-[94dvh] overflow-hidden">
@@ -668,7 +1494,7 @@ export const CottageModal: React.FC<CottageModalProps> = ({
             </div>
             <div className="min-w-0">
               <h2 className="text-sm xs:text-base sm:text-xl font-black text-[#4a3550] dark:text-[#fdeeff] leading-tight truncate">
-                {playerLook.name || 'Mochi'}&apos;s Cozy Home &amp; Hamlet
+                {playerLook.name || 'Mochi'}&apos;s 3D Home &amp; Hamlet
               </h2>
               <p className="text-[10px] sm:text-xs font-bold text-[#7c5c75] dark:text-[#d5bddb] truncate tabular-nums">
                 {ROOM_META[activeTab].roleTitle} · ⚡ {Math.round(stamina)}% · ✨ {Math.round(mana)}% · 🪙 {coins} Coins
@@ -677,17 +1503,30 @@ export const CottageModal: React.FC<CottageModalProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {onEnterHouse3D && (
+              <button
+                onClick={() => {
+                  onEnterHouse3D();
+                  onClose();
+                }}
+                title="Walk inside the full 3D house"
+                className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 min-h-[36px] rounded-xl bg-linear-to-r from-[#ff7aa8] to-[#f46496] text-white text-xs font-black cursor-pointer whitespace-nowrap shadow-xs hover:brightness-105"
+              >
+                <span>🚶</span>
+                <span className="hidden sm:inline">Walk Inside 3D</span>
+              </button>
+            )}
             {onStepOutside && (
               <button
                 onClick={() => {
                   onStepOutside();
                   onClose();
                 }}
-                title="Step Outside"
+                title="Teleport to Front Porch"
                 className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 min-h-[36px] rounded-xl storybook-card hover:border-[#ff7aa8] text-xs font-black text-[#4a3550] dark:text-[#fdeeff] cursor-pointer whitespace-nowrap transition-colors"
               >
                 <span>🚪</span>
-                <span className="hidden sm:inline">Step Outside</span>
+                <span className="hidden sm:inline">Front Porch</span>
               </button>
             )}
             <button
@@ -708,13 +1547,7 @@ export const CottageModal: React.FC<CottageModalProps> = ({
             return (
               <button
                 key={key}
-                onClick={() => {
-                  setActiveTab(key);
-                  setMovingDecoId(null);
-                  setFurnitureDialogue(null);
-                  setActiveEffect(null);
-                  audio.pop();
-                }}
+                onClick={() => handleTabSwitch(key)}
                 className={`flex-1 min-w-fit min-h-[38px] py-1.5 px-3 rounded-lg sm:rounded-xl text-xs font-black transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${
                   active
                     ? 'bg-[#ff7aa8] text-white shadow-xs'
@@ -738,633 +1571,34 @@ export const CottageModal: React.FC<CottageModalProps> = ({
         {/* Body */}
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pr-1">
           {activeTab === 'hamlet' ? (
-            /* Mochi Hamlet Neighborhood Tab */
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-2xl storybook-card">
-                <div>
-                  <h3 className="font-black text-sm text-[#4a3550] dark:text-[#fdeeff]">
-                    Mochi Hamlet · {hamletResidents.length} Neighbors Settled
-                  </h3>
-                  <p className="text-xs text-[#6d546e] dark:text-[#ceb7d4]">
-                    Invite befriended islanders to build cozy cottages and artisan stalls beside your yard.
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {[
-                  { name: 'Pip', shop: 'Pip’s Floating Bakery', icon: '🧁', desc: 'Bakes fresh cloud muffins every morning' },
-                  { name: 'Captain Barnacle', shop: 'Driftwood Boatshop', icon: '⛵', desc: 'Tends lanterns and harbor breezes' },
-                  { name: 'Fennel', shop: 'Fennel’s Map Stall', icon: '🗺️', desc: 'Drafts enthusiastic treasure charts' },
-                  { name: 'Tidbit', shop: 'Tidbit’s Lantern Workshop', icon: '🏮', desc: 'Crafts colorful glowing evening lanterns' },
-                  { name: 'Gran Dumpling', shop: 'Soup Kitchen of Remembering', icon: '🍲', desc: 'Simmers warm memory broths' },
-                  { name: 'Bellamy', shop: 'Bellamy’s Chime Foundry', icon: '🔔', desc: 'Tunes golden bells for the Hamlet gate' },
-                ].map((res) => {
-                  const isMovedIn = hamletResidents.some((h) => h.npcName === res.name);
-                  return (
-                    <div
-                      key={res.name}
-                      className="p-3.5 storybook-card rounded-2xl flex items-center justify-between gap-3"
-                    >
-                      <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <div className="w-11 h-11 rounded-2xl bg-[#fff4f8] dark:bg-[#3a2645] flex items-center justify-center text-2xl shrink-0">
-                          {res.icon}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="font-black text-sm text-[#4a3550] dark:text-[#fdeeff] truncate">{res.name}</p>
-                          <p className="text-[11px] text-[#c94a77] dark:text-[#ff9ec0] font-extrabold truncate">{res.shop}</p>
-                          <p className="text-[11px] opacity-75 line-clamp-2">{res.desc}</p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => onInviteToHamlet(res.name)}
-                        className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-                          isMovedIn
-                            ? 'bg-[#5ab870] text-white'
-                            : 'bg-[#ff7aa8] hover:brightness-105 text-white shadow-xs'
-                        }`}
-                      >
-                        {isMovedIn ? 'Moved In ✓' : 'Invite'}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            hamletPanel
           ) : (
-            /* 6 Interactive House Rooms */
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-start">
-              {/* Left Architectural Room Stage */}
+              {/* Left: Real Interactive 3D Room Stage */}
               <div className="lg:col-span-7 space-y-2">
-                <div
-                  onClick={handleStageClick}
-                  className={`relative w-full aspect-16/10 min-h-[170px] sm:min-h-[240px] max-h-[38dvh] sm:max-h-none rounded-2xl border-2 border-[#e8bfd1] dark:border-[#5d3d70] overflow-hidden shadow-inner ${
-                    movingDecoId ? 'cursor-crosshair ring-2 ring-[#ffd23f]' : ''
-                  }`}
-                >
-                  {/* Bespoke Architectural SVG Interior per Room */}
-                  <svg
-                    viewBox="0 0 640 400"
-                    className="w-full h-full block"
-                    preserveAspectRatio="xMidYMid slice"
-                  >
-                    <defs>
-                      <linearGradient id="wallWarm" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#fff7ec" />
-                        <stop offset="100%" stopColor="#f8e6d8" />
-                      </linearGradient>
-                      <linearGradient id="wallKitchen" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#fffaf0" />
-                        <stop offset="100%" stopColor="#f5ebd7" />
-                      </linearGradient>
-                      <linearGradient id="wallBedroom" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={lampOn ? '#f9edf7' : '#2a2240'} />
-                        <stop offset="100%" stopColor={lampOn ? '#eddcf2' : '#1e1730'} />
-                      </linearGradient>
-                      <linearGradient id="wallStudy" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#f2e6d8" />
-                        <stop offset="100%" stopColor="#e2ceb9" />
-                      </linearGradient>
-                      <linearGradient id="wallBath" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#ebf8fa" />
-                        <stop offset="100%" stopColor="#d3edf2" />
-                      </linearGradient>
-                      <radialGradient id="fireGlow" cx="50%" cy="60%" r="55%">
-                        <stop offset="0%" stopColor="rgba(255,190,90,0.48)" />
-                        <stop offset="100%" stopColor="rgba(255,190,90,0)" />
-                      </radialGradient>
-                      <radialGradient id="lampHalo" cx="50%" cy="50%" r="50%">
-                        <stop offset="0%" stopColor="rgba(255,220,130,0.48)" />
-                        <stop offset="100%" stopColor="rgba(255,220,130,0)" />
-                      </radialGradient>
-                    </defs>
-
-                    {/* === LIVING ROOM === */}
-                    {activeTab === 'living' && (
-                      <g>
-                        <rect x="0" y="0" width="640" height="265" fill="url(#wallWarm)" />
-                        {/* Timber Wainscoting */}
-                        <rect x="0" y="205" width="640" height="60" fill="#d9b498" />
-                        <line x1="0" y1="205" x2="640" y2="205" stroke="#9b6e55" strokeWidth="4" />
-                        {/* Oak Floor Planks */}
-                        <rect x="0" y="265" width="640" height="135" fill="#c7956d" />
-                        {[292, 322, 355, 385].map((y) => (
-                          <line key={y} x1="0" y1={y} x2="640" y2={y} stroke="#a6744f" strokeWidth="2" />
-                        ))}
-
-                        {/* Brick Hearth Fireplace (Left) */}
-                        <g>
-                          <rect x="78" y="45" width="84" height="225" fill="#c47c6a" stroke="#3b2a45" strokeWidth="2.5" />
-                          <rect x="52" y="138" width="136" height="132" rx="6" fill="#d18876" stroke="#3b2a45" strokeWidth="2.5" />
-                          {/* Mantel shelf */}
-                          <rect x="44" y="128" width="152" height="14" rx="4" fill="#7d503c" stroke="#3b2a45" strokeWidth="2" />
-                          {/* Mantel items: candle & framed picture */}
-                          <rect x="70" y="96" width="32" height="32" rx="4" fill="#fffaf0" stroke="#7d503c" strokeWidth="3" />
-                          <circle cx="86" cy="112" r="7" fill="#ff9ebb" />
-                          <rect x="135" y="106" width="10" height="22" rx="2" fill="#fff4d6" />
-                          <circle cx="140" cy="102" r="4" fill="#ffd23f" />
-                          {/* Hearth Opening */}
-                          <path d="M 80 270 L 80 205 Q 120 176 160 205 L 160 270 Z" fill="#2c1c28" />
-                          {fireplaceLit && (
-                            <>
-                              <circle cx="120" cy="230" r="95" fill="url(#fireGlow)" />
-                              <path d="M 102 260 Q 112 212 122 246 Q 134 205 142 260 Z" fill="#ff7b3b" />
-                              <path d="M 110 260 Q 120 225 132 260 Z" fill="#ffd95a" />
-                            </>
-                          )}
-                          {/* Logs */}
-                          <rect x="94" y="254" width="52" height="10" rx="5" fill="#633c29" />
-                          <rect x="46" y="266" width="148" height="10" rx="3" fill="#b4a79f" stroke="#3b2a45" strokeWidth="1.5" />
-                        </g>
-
-                        {/* Weather Picture Window */}
-                        {renderWeatherSky()}
-
-                        {/* Braided Hearth Rug */}
-                        <ellipse cx="320" cy="332" rx="145" ry="38" fill="#ffe1ec" stroke="#e4789c" strokeWidth="5" />
-                        <ellipse cx="320" cy="332" rx="112" ry="26" fill="none" stroke="#ffd23f" strokeWidth="3" strokeDasharray="8 6" />
-
-                        {/* Plush Cloud Sofa */}
-                        <g>
-                          <rect x="235" y="220" width="175" height="58" rx="18" fill="#ffb8cf" stroke="#3b2a45" strokeWidth="2" />
-                          <rect x="225" y="242" width="22" height="44" rx="10" fill="#ff96b9" stroke="#3b2a45" strokeWidth="2" />
-                          <rect x="398" y="242" width="22" height="44" rx="10" fill="#ff96b9" stroke="#3b2a45" strokeWidth="2" />
-                          <rect x="245" y="254" width="155" height="28" rx="8" fill="#ffdbe8" stroke="#3b2a45" strokeWidth="1.8" />
-                          {/* Throw pillow */}
-                          <rect x="255" y="232" width="28" height="24" rx="6" fill="#fff29c" stroke="#3b2a45" strokeWidth="1.5" transform="rotate(-8 269 244)" />
-                        </g>
-
-                        {/* Music Box Table (Right) */}
-                        <g>
-                          <rect x="478" y="222" width="84" height="54" rx="6" fill="#8b5e49" stroke="#3b2a45" strokeWidth="2" />
-                          <rect x="472" y="216" width="96" height="10" rx="3" fill="#a8745a" stroke="#3b2a45" strokeWidth="1.8" />
-                          {/* Carousel Music Box */}
-                          <rect x="502" y="182" width="38" height="34" rx="6" fill="#ffd2e2" stroke="#3b2a45" strokeWidth="1.8" />
-                          <polygon points="498,184 521,164 544,184" fill="#ff7aa8" stroke="#3b2a45" strokeWidth="1.8" />
-                          <circle cx="521" cy="161" r="4" fill="#ffd23f" />
-                          <text x="536" y="162" fontSize="14">🎵</text>
-                        </g>
-                      </g>
-                    )}
-
-                    {/* === KITCHEN & TEA BAR === */}
-                    {activeTab === 'kitchen' && (
-                      <g>
-                        <rect x="0" y="0" width="640" height="265" fill="url(#wallKitchen)" />
-                        {/* Terracotta Checkered Floor */}
-                        <rect x="0" y="265" width="640" height="135" fill="#f3dbc3" />
-                        {Array.from({ length: 10 }).map((_, col) =>
-                          Array.from({ length: 4 }).map((__, row) =>
-                            (col + row) % 2 === 0 ? (
-                              <rect
-                                key={`${col}-${row}`}
-                                x={col * 64}
-                                y={265 + row * 34}
-                                width={64}
-                                height={34}
-                                fill="#e2b494"
-                              />
-                            ) : null
-                          )
-                        )}
-
-                        {/* Hanging Herb Window & Gingham Curtains */}
-                        <rect x="262" y="42" width="116" height="90" rx="8" fill="#9bd8ff" stroke="#7c523c" strokeWidth="4" />
-                        <line x1="320" y1="42" x2="320" y2="132" stroke="#7c523c" strokeWidth="3" />
-                        <path d="M 262 42 Q 285 75 262 115 Z" fill="#ff8fb8" />
-                        <path d="M 378 42 Q 355 75 378 115 Z" fill="#ff8fb8" />
-
-                        {/* Oak Countertop & Upper Shelves */}
-                        <rect x="46" y="180" width="360" height="90" rx="6" fill="#fff3e0" stroke="#3b2a45" strokeWidth="2" />
-                        <rect x="40" y="172" width="372" height="14" rx="4" fill="#9c684b" stroke="#3b2a45" strokeWidth="2" />
-
-                        {/* Cloud Pastry Oven */}
-                        <rect x="74" y="176" width="98" height="94" rx="6" fill="#ff9ebb" stroke="#3b2a45" strokeWidth="2.2" />
-                        <rect x="90" y="200" width="66" height="44" rx="6" fill={ovenWarm ? '#ffb347' : '#4a3550'} stroke="#3b2a45" strokeWidth="2" />
-                        <circle cx="92" cy="188" r="4" fill="#fffaf0" />
-                        <circle cx="110" cy="188" r="4" fill="#fffaf0" />
-                        <circle cx="148" cy="188" r="5" fill="#ffd23f" />
-                        {/* Chimney hood */}
-                        <path d="M 68 85 L 178 85 L 160 40 L 86 40 Z" fill="#f7e7eb" stroke="#3b2a45" strokeWidth="2" />
-
-                        {/* Copper Kettle on Stovetop */}
-                        <circle cx="242" cy="156" r="18" fill="#d87f52" stroke="#3b2a45" strokeWidth="2" />
-                        <path d="M 228 142 Q 242 124 256 142" fill="none" stroke="#3b2a45" strokeWidth="3" />
-                        <path d="M 258 152 L 270 144" stroke="#d87f52" strokeWidth="5" strokeLinecap="round" />
-
-                        {/* Cold-Mist Icebox Fridge */}
-                        <rect x="458" y="88" width="110" height="182" rx="14" fill="#b7e9eb" stroke="#3b2a45" strokeWidth="2.5" />
-                        <line x1="458" y1="158" x2="568" y2="158" stroke="#3b2a45" strokeWidth="2" />
-                        <rect x="472" y="116" width="6" height="24" rx="3" fill="#ffffff" />
-                        <rect x="472" y="176" width="6" height="36" rx="3" fill="#ffffff" />
-                        <circle cx="514" cy="120" r="9" fill="#ff7aa8" opacity="0.85" />
-
-                        {/* Breakfast Table */}
-                        <rect x="242" y="294" width="160" height="16" rx="5" fill="#b87e58" stroke="#3b2a45" strokeWidth="2" />
-                        <rect x="262" y="310" width="12" height="58" fill="#8d5b3e" />
-                        <rect x="370" y="310" width="12" height="58" fill="#8d5b3e" />
-                        <text x="308" y="289" fontSize="22">🥐</text>
-                        <text x="342" y="289" fontSize="20">🍵</text>
-                      </g>
-                    )}
-
-                    {/* === BEDROOM === */}
-                    {activeTab === 'bedroom' && (
-                      <g>
-                        <rect x="0" y="0" width="640" height="265" fill="url(#wallBedroom)" />
-                        <rect x="0" y="265" width="640" height="135" fill={lampOn ? '#d4aa89' : '#6c5145'} />
-                        {/* Round Moon Skylight Window */}
-                        <circle cx="515" cy="95" r="44" fill="#1b2148" stroke="#7c5646" strokeWidth="5" />
-                        <circle cx="505" cy="88" r="13" fill="#ffe68c" />
-                        <circle cx="510" cy="84" r="10" fill="#1b2148" />
-                        <circle cx="536" cy="80" r="2.2" fill="#fff9c4" />
-                        <circle cx="530" cy="112" r="2" fill="#fff9c4" />
-
-                        {/* Carved Wardrobe (Left) */}
-                        <rect x="52" y="96" width="106" height="174" rx="8" fill="#8f5c47" stroke="#3b2a45" strokeWidth="2.5" />
-                        <rect x="64" y="112" width="38" height="130" rx="4" fill="#a8725a" stroke="#3b2a45" strokeWidth="1.5" />
-                        <rect x="108" y="112" width="38" height="130" rx="4" fill="#a8725a" stroke="#3b2a45" strokeWidth="1.5" />
-                        <circle cx="96" cy="176" r="3" fill="#ffd23f" />
-                        <circle cx="114" cy="176" r="3" fill="#ffd23f" />
-
-                        {/* Four-Poster Patchwork Bed (Center) */}
-                        <rect x="206" y="118" width="12" height="154" rx="4" fill="#7a4c39" stroke="#3b2a45" strokeWidth="2" />
-                        <rect x="422" y="118" width="12" height="154" rx="4" fill="#7a4c39" stroke="#3b2a45" strokeWidth="2" />
-                        {/* Draped Canopy Header */}
-                        <path d="M 206 122 Q 320 144 434 122 L 434 108 L 206 108 Z" fill="#ffb8d0" stroke="#3b2a45" strokeWidth="2" />
-                        {/* Headboard & Quilt */}
-                        <rect x="218" y="176" width="204" height="58" rx="10" fill="#a8745a" stroke="#3b2a45" strokeWidth="2" />
-                        <rect x="228" y="192" width="60" height="32" rx="10" fill="#ffffff" stroke="#d8bfd8" strokeWidth="2" />
-                        <rect x="352" y="192" width="60" height="32" rx="10" fill="#ffffff" stroke="#d8bfd8" strokeWidth="2" />
-                        <rect x="214" y="220" width="212" height="58" rx="10" fill="#ff9ec0" stroke="#3b2a45" strokeWidth="2" />
-                        <rect x="214" y="238" width="212" height="40" rx="8" fill="#ffe68c" opacity="0.88" />
-
-                        {/* Bedside Nightstand & Amber Lamp */}
-                        <rect x="458" y="218" width="66" height="54" rx="6" fill="#9c684b" stroke="#3b2a45" strokeWidth="2" />
-                        {lampOn && <circle cx="491" cy="172" r="88" fill="url(#lampHalo)" />}
-                        <rect x="486" y="196" width="10" height="22" fill="#d9a441" />
-                        <polygon points="470,196 512,196 502,166 480,166" fill={lampOn ? '#ffe484' : '#9ca3af'} stroke="#3b2a45" strokeWidth="2" />
-
-                        {/* Soft Fluffy Rug */}
-                        <ellipse cx="320" cy="332" rx="135" ry="34" fill="#f3d9ff" stroke="#c39ae6" strokeWidth="4" />
-                      </g>
-                    )}
-
-                    {/* === STUDY & STUDIO === */}
-                    {activeTab === 'study' && (
-                      <g>
-                        <rect x="0" y="0" width="640" height="265" fill="url(#wallStudy)" />
-                        <rect x="0" y="265" width="640" height="135" fill="#9f6d49" />
-                        {/* Twin Archipelago Bookshelves */}
-                        <rect x="48" y="54" width="142" height="214" rx="6" fill="#6f4733" stroke="#3b2a45" strokeWidth="2.5" />
-                        {[102, 152, 202].map((sy, idx) => (
-                          <g key={sy}>
-                            <rect x="56" y={sy} width="126" height="8" fill="#8f5d44" />
-                            {['#ff7aa8', '#52d6c6', '#ffd23f', '#9a82f6', '#7bd88f', '#f49b6c'].map((col, b) => (
-                              <rect
-                                key={b}
-                                x={64 + b * 19}
-                                y={sy - 30 - ((b + idx) % 3) * 4}
-                                width="14"
-                                height={30 + ((b + idx) % 3) * 4}
-                                rx="2"
-                                fill={col}
-                                stroke="#3b2a45"
-                                strokeWidth="1.2"
-                              />
-                            ))}
-                          </g>
-                        ))}
-
-                        {/* Skylight Balcony Window + Brass Telescope */}
-                        <rect x="424" y="42" width="152" height="142" rx="14" fill="#1e244b" stroke="#7c523c" strokeWidth="5" />
-                        <circle cx="485" cy="96" r="2.2" fill="#ffe98f" />
-                        <circle cx="534" cy="78" r="2.5" fill="#ffe98f" />
-                        <circle cx="512" cy="128" r="1.8" fill="#ffffff" />
-                        <circle cx="458" cy="122" r="1.8" fill="#ffffff" />
-                        {/* Brass Telescope on Tripod */}
-                        <line x1="485" y1="210" x2="462" y2="275" stroke="#5b3d2e" strokeWidth="4" />
-                        <line x1="485" y1="210" x2="508" y2="275" stroke="#5b3d2e" strokeWidth="4" />
-                        <rect x="448" y="180" width="76" height="16" rx="5" fill="#e6b647" stroke="#3b2a45" strokeWidth="2" transform="rotate(-24 485 188)" />
-
-                        {/* Oak Writing Desk & Gramophone */}
-                        <rect x="234" y="198" width="168" height="72" rx="6" fill="#8c5a3f" stroke="#3b2a45" strokeWidth="2.2" />
-                        <rect x="226" y="190" width="184" height="14" rx="4" fill="#aa7252" stroke="#3b2a45" strokeWidth="2" />
-                        {/* Gramophone Horn */}
-                        <rect x="256" y="158" width="38" height="32" rx="4" fill="#b47546" stroke="#3b2a45" strokeWidth="1.8" />
-                        <path d="M 275 162 Q 288 124 316 122 L 310 156 Z" fill="#ffd23f" stroke="#3b2a45" strokeWidth="1.8" />
-                        {/* Crystal Globe */}
-                        <circle cx="356" cy="166" r="16" fill="#7ad8ff" stroke="#3b2a45" strokeWidth="1.8" />
-                        <rect x="346" y="182" width="20" height="8" rx="2" fill="#d9a441" />
-                      </g>
-                    )}
-
-                    {/* === SUNROOM CONSERVATORY === */}
-                    {activeTab === 'conservatory' && (
-                      <g>
-                        {/* Sunlit Meadow Backdrop through Greenhouse Glass */}
-                        <rect x="0" y="0" width="640" height="265" fill="#bfe9ff" />
-                        <path d="M 0 190 Q 160 150 320 185 T 640 175 L 640 265 L 0 265 Z" fill="#8de097" />
-                        <circle cx="520" cy="64" r="32" fill="#ffe47a" opacity="0.92" />
-                        {/* Greenhouse Iron Mullion Arches */}
-                        {[128, 256, 384, 512].map((gx) => (
-                          <line key={gx} x1={gx} y1="0" x2={gx} y2="265" stroke="#538574" strokeWidth="4" />
-                        ))}
-                        <line x1="0" y1="128" x2="640" y2="128" stroke="#538574" strokeWidth="3.5" />
-                        {/* Flagstone Floor */}
-                        <rect x="0" y="265" width="640" height="135" fill="#c9c2b8" />
-                        <ellipse cx="320" cy="340" rx="180" ry="36" fill="#9fdba8" opacity="0.45" />
-                        {/* Cedar Potting Bench */}
-                        <rect x="85" y="188" width="470" height="14" rx="4" fill="#9e6d48" stroke="#3b2a45" strokeWidth="2" />
-                        <rect x="115" y="202" width="14" height="68" fill="#7d5234" />
-                        <rect x="510" y="202" width="14" height="68" fill="#7d5234" />
-                        {/* Hanging Solar Lamp & Macramé Fern */}
-                        <line x1="320" y1="0" x2="320" y2="54" stroke="#538574" strokeWidth="3" />
-                        <circle cx="320" cy="62" r="14" fill="#ffe785" stroke="#3b2a45" strokeWidth="2" />
-                        <circle cx="185" cy="75" r="24" fill="#50b36a" stroke="#3b2a45" strokeWidth="1.5" />
-                      </g>
-                    )}
-
-                    {/* === BATH & CORAL AQUARIUM === */}
-                    {activeTab === 'bath' && (
-                      <g>
-                        <rect x="0" y="0" width="640" height="265" fill="url(#wallBath)" />
-                        <rect x="0" y="265" width="640" height="135" fill="#d9c6b4" />
-                        {/* Built-in Panoramic Saltwater Wall Aquarium */}
-                        <rect x="224" y="42" width="356" height="162" rx="18" fill="#136a94" stroke="#7c523c" strokeWidth="6" />
-                        <rect x="234" y="52" width="336" height="142" rx="12" fill="#1f8bbd" />
-                        {/* Coral & Kelp silhouettes inside tank */}
-                        <path d="M 255 194 Q 248 156 264 130 Q 272 156 268 194 Z" fill="#2cc295" />
-                        <path d="M 526 194 Q 515 148 532 118 Q 542 152 536 194 Z" fill="#ff7aa8" />
-                        <circle cx="320" cy="144" r="4" fill="#baf2ff" opacity="0.7" />
-                        <circle cx="445" cy="110" r="3" fill="#baf2ff" opacity="0.7" />
-                        <circle cx="390" cy="90" r="5" fill="#baf2ff" opacity="0.6" />
-
-                        {/* Steaming Cedar Soaking Tub */}
-                        <ellipse cx="145" cy="240" rx="88" ry="26" fill={tubFilled ? '#7ad8e8' : '#b79777'} stroke="#3b2a45" strokeWidth="2.5" />
-                        <path d="M 57 240 L 66 305 Q 145 322 224 305 L 233 240 Z" fill="#b77f54" stroke="#3b2a45" strokeWidth="2.5" />
-                        <line x1="62" y1="268" x2="228" y2="268" stroke="#6c4832" strokeWidth="4" />
-                        {tubFilled && (
-                          <g stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" opacity="0.8">
-                            <path d="M 110 218 Q 102 200 112 184" fill="none" />
-                            <path d="M 145 214 Q 154 195 144 176" fill="none" />
-                            <path d="M 182 220 Q 174 202 184 185" fill="none" />
-                          </g>
-                        )}
-                      </g>
-                    )}
-                  </svg>
-
-                  {/* Dynamic Interactive Room Overlays (Live Aquarium Fish, Conservatory Plots, Weather Pill, Mochi Avatar, Custom Furniture) */}
-
-                  {/* Sunroom Conservatory Plant Plots rendered interactively on the Cedar Bench */}
-                  {activeTab === 'conservatory' && (
-                    <div className="absolute left-[14%] right-[14%] top-[33%] flex items-end justify-around gap-1 pointer-events-auto">
-                      {cottage.gardenPlots.slice(0, 6).map((plot, idx) => {
-                        const seedInfo = SEED_TYPES.find((s) => s.name === plot.seedType || s.id === plot.seedType);
-                        const stage = plot.stage || 1;
-                        const stageIcon = stage >= 3 ? (seedInfo?.icon || '🌸') : stage === 2 ? '🌿' : '🌱';
-                        return (
-                          <button
-                            key={`${plot.seedType}-${idx}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (stage >= 3) {
-                                handleHarvestPlot(idx, plot.seedType);
-                              } else {
-                                onUpdateCottage({
-                                  gardenPlots: cottage.gardenPlots.map((p, pIdx) =>
-                                    pIdx === idx ? { ...p, stage: Math.min(3, stage + 1) } : p
-                                  ),
-                                });
-                                audio.chime();
-                                showRoomFeedback(`Watered ${plot.seedType}!`);
-                              }
-                            }}
-                            title={stage >= 3 ? `Harvest ${plot.seedType} (+${seedInfo?.coinYield ?? 10} coins)` : `Water ${plot.seedType}`}
-                            className="group flex flex-col items-center cursor-pointer transition-transform hover:scale-110 active:scale-95"
-                          >
-                            <span className="text-2xl sm:text-3xl drop-shadow-sm">{stageIcon}</span>
-                            <span className="mt-0.5 px-1.5 py-0.5 rounded bg-[#a45c3f] text-[9px] font-black text-white shadow-xs">
-                              {stage >= 3 ? 'Harvest' : `Stage ${stage}/3`}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Bath Panoramic Aquarium Live Swimming Fish Overlay */}
-                  {activeTab === 'bath' && (
-                    <div className="absolute left-[37%] right-[11%] top-[14%] bottom-[51%] pointer-events-none overflow-hidden flex flex-wrap items-center justify-around gap-1 p-2">
-                      {aquariumRoster.slice(0, 8).map((fish, i) => (
-                        <div
-                          key={fish.name}
-                          className="flex items-center gap-1 px-1.5 py-0.5 rounded-lg bg-[#0d4d6d]/65 text-white text-[10px] font-black shadow-xs animate-pulse"
-                          style={{ animationDuration: `${2.2 + (i % 4) * 0.6}s` }}
-                        >
-                          <span>{i % 2 === 0 ? '🐠' : '🐟'}</span>
-                          <span className="truncate max-w-[78px]">{fish.name}</span>
-                          {fish.caught && <span className="text-[#ffd23f] tabular-nums">×{fish.count}</span>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Player Mochi Hanging Out Inside the Active Room */}
-                  <div className="absolute left-[42%] bottom-[6%] pointer-events-none">
-                    <RoomMochiSprite playerLook={playerLook} room={activeRoomId} />
-                  </div>
-
-                  {/* Placed Room Furniture Hotspots */}
-                  {roomDecorations.map((deco) => {
-                    const isMovingThis = movingDecoId === deco.id;
-                    const effectHere = activeEffect?.decoId === deco.id ? activeEffect : null;
-                    return (
-                      <div
-                        key={deco.id}
-                        style={{ left: `${deco.x}%`, top: `${deco.y}%` }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (isArrangeMode) {
-                            setMovingDecoId(isMovingThis ? null : deco.id);
-                          } else {
-                            handleInteractDecoration(deco);
-                          }
-                        }}
-                        className={`group absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center cursor-pointer transition-transform ${
-                          isMovingThis
-                            ? 'scale-125 ring-2 ring-[#ffd23f] rounded-xl bg-white/80 p-1 z-20'
-                            : 'hover:scale-110 z-10'
-                        }`}
-                        title={
-                          isArrangeMode
-                            ? `${deco.name} (click to pick up & move)`
-                            : `${deco.name} (click to interact)`
-                        }
-                      >
-                        {/* Cosmetic Effect Animation Overlay */}
-                        {effectHere && (
-                          <div
-                            key={effectHere.nonce}
-                            className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 w-16 h-14 flex items-center justify-center overflow-visible"
-                          >
-                            {effectHere.kind === 'steam' && (
-                              <svg viewBox="0 0 64 56" className="w-14 h-12 overflow-visible animate-pulse">
-                                <path
-                                  d="M22 48 Q14 34 24 22 Q32 12 22 2"
-                                  fill="none"
-                                  stroke="rgba(255,255,255,0.92)"
-                                  strokeWidth="3.5"
-                                  strokeLinecap="round"
-                                />
-                                <path
-                                  d="M34 50 Q26 36 36 22 Q44 10 34 0"
-                                  fill="none"
-                                  stroke="rgba(255,244,214,0.95)"
-                                  strokeWidth="3.2"
-                                  strokeLinecap="round"
-                                />
-                                <path
-                                  d="M45 47 Q38 35 46 24 Q52 14 44 5"
-                                  fill="none"
-                                  stroke="rgba(255,255,255,0.85)"
-                                  strokeWidth="2.8"
-                                  strokeLinecap="round"
-                                />
-                                <circle cx="28" cy="14" r="2.2" fill="#ffe68c" />
-                                <circle cx="42" cy="18" r="1.8" fill="#ffffff" />
-                              </svg>
-                            )}
-                            {effectHere.kind === 'glow' && (
-                              <>
-                                <span className="absolute inset-0 rounded-full bg-[#ffd23f]/45 blur-md animate-ping" />
-                                <span className="relative text-sm animate-bounce">✨</span>
-                              </>
-                            )}
-                            {effectHere.kind === 'heart' && (
-                              <div className="flex items-center gap-1 animate-bounce text-sm">
-                                <span>💗</span>
-                                <span className="-mt-2 text-xs">💕</span>
-                              </div>
-                            )}
-                            {effectHere.kind === 'notes' && (
-                              <div className="flex items-center gap-1 animate-bounce text-sm">
-                                <span>🎵</span>
-                                <span className="-mt-3 text-xs">🎶</span>
-                              </div>
-                            )}
-                            {effectHere.kind === 'petals' && (
-                              <div className="flex items-center gap-1 animate-bounce text-sm">
-                                <span>🌸</span>
-                                <span className="-mt-2 text-xs">🍃</span>
-                              </div>
-                            )}
-                            {effectHere.kind === 'bubbles' && (
-                              <div className="flex items-center gap-1 animate-bounce text-sm">
-                                <span>🫧</span>
-                                <span className="-mt-3 text-xs">💧</span>
-                              </div>
-                            )}
-                            {effectHere.kind === 'sparkle' && (
-                              <div className="flex items-center gap-1 animate-pulse text-sm">
-                                <span>✨</span>
-                                <span className="-mt-2 text-xs">🌟</span>
-                              </div>
-                            )}
-                            {effectHere.kind === 'bounce' && (
-                              <span className="text-sm animate-bounce">☁️</span>
-                            )}
-                          </div>
-                        )}
-
-                        <span
-                          className={`text-2xl sm:text-3xl drop-shadow-sm transition-transform ${
-                            effectHere?.kind === 'bounce' || effectHere?.kind === 'heart'
-                              ? 'animate-bounce'
-                              : effectHere
-                              ? 'scale-115'
-                              : ''
-                          }`}
-                        >
-                          {deco.icon}
-                        </span>
-
-                        {/* Quick Hover / Touch Arrange Controls (Move / Remove) */}
-                        <div
-                          className={`absolute -top-2.5 -right-5 flex items-center gap-0.5 transition-opacity ${
-                            isArrangeMode
-                              ? 'opacity-95'
-                              : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'
-                          }`}
-                        >
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setIsArrangeMode(true);
-                              setMovingDecoId(deco.id);
-                              setFurnitureDialogue(null);
-                            }}
-                            aria-label={`Move ${deco.name}`}
-                            title="Reposition item"
-                            className="w-6 h-6 sm:w-5 sm:h-5 rounded-full bg-[#6d537a] hover:bg-[#4a3550] text-white text-[10px] font-black flex items-center justify-center shadow-xs cursor-pointer"
-                          >
-                            ✥
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleRemoveDecoration(deco.id, deco.name);
-                            }}
-                            aria-label={`Remove ${deco.name}`}
-                            title="Store item"
-                            className="w-6 h-6 sm:w-5 sm:h-5 rounded-full bg-[#ff5c8a] hover:brightness-105 text-white text-[10px] font-black flex items-center justify-center shadow-xs cursor-pointer"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {/* Furniture Interaction Storybook Dialogue Pop-up */}
-                  {furnitureDialogue && !movingDecoId && (
-                    <div
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setFurnitureDialogue(null);
-                      }}
-                      style={{
-                        left: `${Math.max(28, Math.min(72, furnitureDialogue.x))}%`,
-                        top: furnitureDialogue.y > 46 ? `${Math.max(8, furnitureDialogue.y - 34)}%` : `${Math.min(74, furnitureDialogue.y + 12)}%`,
-                      }}
-                      className="absolute -translate-x-1/2 z-30 w-52 xs:w-60 sm:w-64 p-2 sm:p-2.5 rounded-2xl bg-[#fffaf4]/95 dark:bg-[#2a1d35]/95 border-2 border-[#f2a8c2] dark:border-[#855296] shadow-lg cursor-pointer animate-in fade-in zoom-in-95 duration-150"
-                    >
-                      <div className="flex items-start gap-2">
-                        <span className="text-xl shrink-0">{furnitureDialogue.icon}</span>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-[11px] font-black text-[#4a3550] dark:text-[#fdeeff] leading-tight">
-                            {furnitureDialogue.name}
-                          </p>
-                          <p className="text-[11px] font-semibold text-[#5f4763] dark:text-[#e3d2eb] mt-0.5 leading-snug">
-                            {furnitureDialogue.line}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Move Mode Instruction Strip */}
-                  {movingDecoId && (
-                    <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 px-3 py-1 rounded-xl bg-[#4a3550]/90 text-white text-[11px] font-black shadow-md pointer-events-none">
-                      Tap anywhere in the {ROOM_META[activeRoomId].label} to place item
-                    </div>
-                  )}
-                </div>
+                <RoomInterior3DCanvas
+                  activeRoom={activeRoomId}
+                  cottage={cottage}
+                  playerLook={playerLook}
+                  weatherId={activeWeather.id}
+                  aquariumFishList={aquariumFishList}
+                  roomDecorations={roomDecorations}
+                  isArrangeMode={isArrangeMode}
+                  movingDecoId={movingDecoId}
+                  activeEffect={activeEffect}
+                  onPlaceMovingAt={handlePlaceMovingAt}
+                  onSelectDecoration={handleInteractDecoration}
+                  onMoveDecorationStart={(id) => {
+                    setIsArrangeMode(true);
+                    setMovingDecoId(movingDecoId === id ? null : id);
+                    setFurnitureDialogue(null);
+                  }}
+                  onRemoveDecoration={handleRemoveDecoration}
+                />
 
                 <div className="flex flex-wrap items-center justify-between gap-2 px-1">
                   <p className="text-[11px] font-bold text-[#7c5c75] dark:text-[#d5bddb] flex-1 min-w-[200px]">
-                    {ROOM_META[activeRoomId].subtitle} · {isArrangeMode ? 'Tap an item, then tap a floor spot to move it.' : 'Click placed furniture to interact with it.'}
+                    {ROOM_META[activeRoomId].subtitle} · {isArrangeMode ? 'Click ✥ on an item, then tap the 3D floor to place it.' : 'Drag to orbit 3D view or click items to interact.'}
                   </p>
                   <button
                     onClick={() => {
@@ -1379,277 +1613,13 @@ export const CottageModal: React.FC<CottageModalProps> = ({
                         : 'storybook-card hover:border-[#ff7aa8] text-[#4a3550] dark:text-[#fdeeff]'
                     }`}
                   >
-                    {isArrangeMode ? '✓ Done Arranging' : '✥ Arrange Room'}
+                    {isArrangeMode ? '✓ Done Arranging' : '✥ Arrange 3D Room'}
                   </button>
                 </div>
               </div>
 
-              {/* Right Room Controls & Decor Catalog */}
-              <div className="lg:col-span-5 space-y-3">
-                {/* Room-Specific Interactive Appliances */}
-                <div className="p-3.5 storybook-card rounded-2xl space-y-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <h3 className="font-black text-xs uppercase tracking-wide text-[#c94a77] dark:text-[#ff9ec0]">
-                      {ROOM_META[activeRoomId].icon} {ROOM_META[activeRoomId].label} Appliances
-                    </h3>
-                    <span className="text-[11px] font-bold opacity-75">
-                      {activeWeather.icon} {activeWeather.name}
-                    </span>
-                  </div>
-
-                  {activeTab === 'living' && (
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => {
-                          onUpdateCottage({ fireplaceLit: !fireplaceLit });
-                          audio.pop();
-                          showRoomFeedback(
-                            !fireplaceLit
-                              ? 'Crackling logs lit up the living room hearth!'
-                              : 'Banked the hearth embers into warm coals.'
-                          );
-                        }}
-                        className="min-h-[42px] p-2.5 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent text-left cursor-pointer transition-all"
-                      >
-                        <p className="font-black text-xs text-[#4a3550] dark:text-[#fdeeff]">
-                          🔥 {fireplaceLit ? 'Bank Hearth Fire' : 'Light Hearth Fire'}
-                        </p>
-                        <p className="text-[10px] opacity-75">Cozy amber chimney glow</p>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          audio.chime();
-                          onPlayMusicBox();
-                        }}
-                        className="min-h-[42px] p-2.5 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent text-left cursor-pointer transition-all"
-                      >
-                        <p className="font-black text-xs text-[#4a3550] dark:text-[#fdeeff]">🎠 Play Music Box</p>
-                        <p className="text-[10px] opacity-75">Chiming Song Weaver tune</p>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          audio.pop();
-                          onRestoreVitals(15, 10, 'Lounged on the Cloud Sofa (+15% ⚡ Stamina, +10% ✨ Mana)');
-                        }}
-                        className="col-span-2 min-h-[42px] p-2.5 rounded-xl bg-linear-to-r from-[#ff7aa8] to-[#f46496] text-white font-black text-xs shadow-xs cursor-pointer transition-transform active:scale-98"
-                      >
-                        🛋️ Curl Up on Cloud Sofa (+15% ⚡ · +10% ✨)
-                      </button>
-                    </div>
-                  )}
-
-                  {activeTab === 'kitchen' && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <button
-                        onClick={() => {
-                          onUpdateCottage({ ovenWarm: true });
-                          audio.chime();
-                          onRestoreVitals(25, 0, 'Baked warm honey muffins in the Cloud Oven (+25% ⚡ Stamina)!');
-                        }}
-                        className="min-h-[42px] p-2.5 rounded-xl bg-[#ff87a6] hover:brightness-105 text-white font-black text-xs text-left cursor-pointer shadow-xs"
-                      >
-                        🧁 Bake Cloud Muffin
-                        <span className="block text-[10px] font-bold opacity-90">+25% ⚡ Stamina</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          audio.chime();
-                          onRestoreVitals(0, 30, 'Steeped Starlight Chamomile Tea (+30% ✨ Mana)!');
-                        }}
-                        className="min-h-[42px] p-2.5 rounded-xl bg-[#52b8c6] hover:brightness-105 text-white font-black text-xs text-left cursor-pointer shadow-xs"
-                      >
-                        🫖 Brew Starlight Tea
-                        <span className="block text-[10px] font-bold opacity-90">+30% ✨ Mana</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          audio.pop();
-                          onRestoreVitals(15, 15, 'Shared a chilled Berry Parfait from the icebox (+15% ⚡ & +15% ✨)!');
-                        }}
-                        className="sm:col-span-2 min-h-[40px] p-2.5 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent font-black text-xs text-[#4a3550] dark:text-[#fdeeff] cursor-pointer"
-                      >
-                        🍓 Cold-Mist Icebox Snack (+15% ⚡ &amp; +15% ✨)
-                      </button>
-                    </div>
-                  )}
-
-                  {activeTab === 'bedroom' && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <button
-                        onClick={() => {
-                          onRestRestore();
-                          showRoomFeedback('Took a cozy patchwork nap — Stamina & Mana 100% restored!');
-                        }}
-                        className="sm:col-span-2 min-h-[44px] p-3 rounded-xl bg-linear-to-r from-[#8d74e8] to-[#b57be8] text-white font-black text-xs shadow-xs cursor-pointer transition-transform active:scale-98"
-                      >
-                        🛏️ Rest in Patchwork Bed (Restore 100% ⚡ Stamina &amp; ✨ Mana)
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          onUpdateCottage({ lampOn: !lampOn });
-                          audio.pop();
-                          showRoomFeedback(!lampOn ? 'Switched on the amber bedside lamp!' : 'Dimmed the bedroom for stargazing.');
-                        }}
-                        className="min-h-[40px] p-2.5 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent font-black text-xs text-[#4a3550] dark:text-[#fdeeff] cursor-pointer"
-                      >
-                        💡 {lampOn ? 'Dim Night Lamp' : 'Turn On Lamp'}
-                      </button>
-
-                      <button
-                        onClick={onOpenWardrobe}
-                        className="min-h-[40px] p-2.5 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent font-black text-xs text-[#4a3550] dark:text-[#fdeeff] cursor-pointer"
-                      >
-                        👒 Carved Wardrobe
-                      </button>
-                    </div>
-                  )}
-
-                  {activeTab === 'study' && (
-                    <div className="space-y-2">
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          onClick={onOpenSongWeaver}
-                          className="min-h-[42px] p-2.5 rounded-xl bg-linear-to-r from-[#ff7aa8] to-[#f46496] text-white font-black text-xs cursor-pointer shadow-xs"
-                        >
-                          🎼 Song Weaver
-                        </button>
-                        <button
-                          onClick={() => {
-                            const reading =
-                              STARGAZE_READINGS[Math.floor(Math.random() * STARGAZE_READINGS.length)];
-                            setStargazeNote(reading);
-                            onRestoreVitals(0, 12, 'Stargazed through the brass telescope (+12% ✨ Mana)');
-                          }}
-                          className="min-h-[42px] p-2.5 rounded-xl bg-[#5b6ad0] text-white font-black text-xs cursor-pointer shadow-xs"
-                        >
-                          🔭 Gaze at Stars
-                        </button>
-                      </div>
-                      {stargazeNote && (
-                        <p className="text-[11px] italic text-[#5a425f] dark:text-[#e6d7ec] bg-white/60 dark:bg-black/25 p-2.5 rounded-xl">
-                          {stargazeNote}
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {activeTab === 'conservatory' && (
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-black text-[#4a3550] dark:text-[#fdeeff] tabular-nums">
-                          {cottage.gardenPlots.length}/6 Planter Boxes Used
-                        </span>
-                        <button
-                          onClick={handleWaterAllPlots}
-                          className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#4eb8a9] hover:brightness-105 text-white font-black text-xs cursor-pointer shadow-xs"
-                        >
-                          💧 Water All Sprouts
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-2 gap-1.5">
-                        {SEED_TYPES.map((seed) => (
-                          <button
-                            key={seed.id}
-                            onClick={() => handlePlantSeed(seed)}
-                            className="p-2 rounded-xl storybook-well hover:border-[#52b870] border border-transparent flex items-center gap-2 text-left cursor-pointer"
-                          >
-                            <span className="text-xl shrink-0">{seed.icon}</span>
-                            <div className="min-w-0">
-                              <p className="text-[11px] font-black truncate text-[#4a3550] dark:text-[#fdeeff]">
-                                {seed.name}
-                              </p>
-                              <p className="text-[10px] text-[#35854b] dark:text-[#8fe0a3] font-bold tabular-nums">
-                                +{seed.coinYield} 🪙 harvest
-                              </p>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {activeTab === 'bath' && (
-                    <div className="space-y-2">
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          onClick={() => {
-                            if (!tubFilled) onUpdateCottage({ tubFilled: true });
-                            onRestoreVitals(35, 10, 'Soaked in warm lavender cedar water (+35% ⚡ Stamina, +10% ✨ Mana)!');
-                          }}
-                          className="min-h-[42px] p-2.5 rounded-xl bg-[#4eaec4] hover:brightness-105 text-white font-black text-xs cursor-pointer shadow-xs"
-                        >
-                          🛁 Herbal Cedar Soak
-                          <span className="block text-[10px] font-bold opacity-90">+35% ⚡ · +10% ✨</span>
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            onUpdateCottage({ tubFilled: !tubFilled });
-                            audio.pop();
-                            showRoomFeedback(!tubFilled ? 'Filled the cedar tub with steaming lavender water!' : 'Drained the cedar bath.');
-                          }}
-                          className="min-h-[42px] p-2.5 rounded-xl storybook-well hover:border-[#4eaec4] border border-transparent font-black text-xs text-[#4a3550] dark:text-[#fdeeff] cursor-pointer"
-                        >
-                          🚿 {tubFilled ? 'Drain Tub' : 'Fill Warm Bath'}
-                        </button>
-                      </div>
-                      <p className="text-[11px] text-[#5a425f] dark:text-[#d5bddb] tabular-nums">
-                        🐠 Wall Aquarium houses <strong className="font-black">{aquariumRoster.length}</strong> species from your reef &amp; fishing catches.
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Room Furniture & Decor Crafting */}
-                <div className="p-3.5 storybook-card rounded-2xl space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <h3 className="font-black text-xs uppercase tracking-wide text-[#c94a77] dark:text-[#ff9ec0]">
-                      Craft Furniture ({coins} 🪙)
-                    </h3>
-                    <button
-                      onClick={() => setShowAllFurniture((v) => !v)}
-                      className="text-[11px] font-black text-[#7c5c75] dark:text-[#d8c7df] hover:text-[#ff7aa8] cursor-pointer"
-                    >
-                      {showAllFurniture ? 'Room Picks Only' : 'Show All Rooms'}
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 xs:grid-cols-2 gap-2 max-h-[210px] overflow-y-auto pr-0.5">
-                    {catalogList.map((furn) => {
-                      const affordable = coins >= furn.cost;
-                      return (
-                        <button
-                          key={furn.id}
-                          onClick={() => handleAddDecoration(furn)}
-                          className={`p-2 rounded-xl border text-left flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
-                            affordable
-                              ? 'storybook-well border-transparent hover:border-[#ff7aa8]'
-                              : 'storybook-well border-transparent opacity-60'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="text-xl shrink-0">{furn.icon}</span>
-                            <div className="min-w-0">
-                              <p className="text-[11px] font-black text-[#4a3550] dark:text-[#fdeeff] truncate">
-                                {furn.name}
-                              </p>
-                              <p className="text-[10px] font-bold text-[#c94a77] dark:text-[#ff9ec0] tabular-nums">
-                                {furn.cost} 🪙
-                              </p>
-                            </div>
-                          </div>
-                          <span className="text-xs shrink-0 font-black">＋</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
+              {/* Right: Room Controls & 3D Decor Catalog */}
+              <div className="lg:col-span-5">{controlsPanel}</div>
             </div>
           )}
         </div>
@@ -1657,7 +1627,7 @@ export const CottageModal: React.FC<CottageModalProps> = ({
         {/* Clean Unboxed Footer */}
         <div className="pt-2 border-t border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 flex items-center justify-end sm:justify-between gap-3 text-xs shrink-0">
           <span className="hidden sm:inline text-[11px] opacity-75 font-bold truncate">
-            Your home on Lantern Isle · Walk up to the front door or press H anytime
+            Your 6-room 3D Mochi House on Lantern Isle · Walk up to the front door or press H anytime
           </span>
           <button
             onClick={onClose}

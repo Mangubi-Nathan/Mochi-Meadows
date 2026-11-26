@@ -1,5 +1,7 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
-import { MAGIC_SPELLS } from '../game/constants';
+import { MAGIC_SPELLS, SeasonId } from '../game/constants';
+import { normalizeSeasonId } from '../game/seasons';
+import { getSeasonalSpellVariant } from '../game/seasonalSpells';
 
 interface TouchControlsProps {
   isPhone: boolean;
@@ -7,24 +9,28 @@ interface TouchControlsProps {
   isLandscapePhone?: boolean;
   isCompactPhone?: boolean;
   currentChapter?: number;
+  season?: SeasonId;
   nearNpc: boolean;
   activeNpcName?: string;
   canDive: boolean;
   isDiving: boolean;
+  isSwimming?: boolean;
   isSky: boolean;
   canFish: boolean;
   mana: number;
   selectedSpellIdx: number;
   onJoystickMove: (dx: number, dy: number, active: boolean) => void;
   onDash: () => void;
+  onJump?: () => void;
   onTalk: () => void;
   onDive: () => void;
   onFish: () => void;
   onCastSpell: (idx: number) => void;
   onCycleSpell?: () => void;
-  onOpenMap: () => void;
   nearbyPortal?: { label: string; icon: string; locked?: boolean } | null;
   onUsePortal?: () => void;
+  nearbyTownAction?: { kind: 'market' | 'board'; townName: string; label: string; icon: string } | null;
+  onTownInteract?: () => void;
 }
 
 export const TouchControls: React.FC<TouchControlsProps> = ({
@@ -33,16 +39,19 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
   isLandscapePhone = false,
   isCompactPhone = false,
   currentChapter = 1,
+  season = 'spring',
   nearNpc,
   activeNpcName,
   canDive,
   isDiving,
+  isSwimming = false,
   isSky,
   canFish,
   mana,
   selectedSpellIdx,
   onJoystickMove,
   onDash,
+  onJump,
   onTalk,
   onDive,
   onFish,
@@ -50,6 +59,8 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
   onCycleSpell,
   nearbyPortal = null,
   onUsePortal,
+  nearbyTownAction = null,
+  onTownInteract,
 }) => {
   const joystickBaseRef = useRef<HTMLDivElement | null>(null);
   const pointerIdRef = useRef<number | null>(null);
@@ -134,7 +145,9 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
     };
   }, [onJoystickMove]);
 
+  const activeSeason = normalizeSeasonId(season);
   const spell = MAGIC_SPELLS[selectedSpellIdx] || MAGIC_SPELLS[0];
+  const activeVariant = getSeasonalSpellVariant(spell.id, activeSeason);
   const spellUnlocked = currentChapter >= spell.unlockChapter;
   const hasEnoughMana = spellUnlocked && mana >= spell.cost;
 
@@ -220,6 +233,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
               const locked = currentChapter < s.unlockChapter;
               const selected = idx === selectedSpellIdx;
               const affordable = mana >= s.cost;
+              const sVariant = getSeasonalSpellVariant(s.id, activeSeason);
               return (
                 <button
                   key={s.id}
@@ -229,8 +243,12 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
                     onCastSpell(idx);
                     setSpellDrawerOpen(false);
                   }}
-                  title={`${s.name} (${s.cost} MP)`}
-                  className={`w-10 h-10 rounded-xl flex flex-col items-center justify-center text-base transition-all cursor-pointer ${
+                  title={
+                    sVariant
+                      ? `${sVariant.seasonBadge} ${sVariant.variantName} (${s.cost} MP) — ${sVariant.bonusSummary}`
+                      : `${s.name} (${s.cost} MP)`
+                  }
+                  className={`relative w-10 h-10 rounded-xl flex flex-col items-center justify-center text-base transition-all cursor-pointer ${
                     locked
                       ? 'opacity-30 grayscale cursor-not-allowed'
                       : selected
@@ -240,6 +258,13 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
                       : 'opacity-55 bg-white/40 dark:bg-black/15'
                   }`}
                 >
+                  {!locked && sVariant && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full"
+                      style={{ backgroundColor: sVariant.ringColor }}
+                    />
+                  )}
                   <span className="leading-none">{s.icon}</span>
                   <span className="text-[8px] font-black leading-none mt-0.5 tabular-nums">{s.cost}</span>
                 </button>
@@ -263,6 +288,24 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
               {activeNpcName && !isCompactPhone && (
                 <span className="text-[8px] font-black tracking-tight leading-none text-[#4a3550] max-w-[42px] truncate mt-0.5">
                   {activeNpcName}
+                </span>
+              )}
+            </button>
+          )}
+
+          {nearbyTownAction && onTownInteract && !nearNpc && (
+            <button
+              onClick={() => {
+                triggerHaptic();
+                onTownInteract();
+              }}
+              className={`${btnSizeClass} rounded-full bg-[#ff7aa8] hover:bg-[#f05c93] border-2 sm:border-3 border-white text-white font-black flex flex-col items-center justify-center shadow-2xl active:scale-90 transition-transform cursor-pointer shrink-0`}
+              title={nearbyTownAction.label}
+            >
+              <span className="leading-none">{nearbyTownAction.icon}</span>
+              {!isCompactPhone && (
+                <span className="text-[8px] font-black tracking-tight leading-none text-white max-w-[42px] truncate mt-0.5">
+                  {nearbyTownAction.kind === 'board' ? 'Board' : 'Market'}
                 </span>
               )}
             </button>
@@ -323,7 +366,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
                 setSpellDrawerOpen((v) => !v);
               }}
               title={spellDrawerOpen ? 'Close spell tray' : 'Choose Spell'}
-              className={`w-10 h-10 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-xs font-black transition-all active:scale-90 cursor-pointer shrink-0 ${
+              className={`w-11 h-11 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-sm font-black transition-all active:scale-90 cursor-pointer shrink-0 ${
                 spellDrawerOpen
                   ? 'bg-[#ff7aa8] text-white'
                   : 'bg-[#fffaf2]/90 dark:bg-[#2a1d35]/90 text-[#4a3550] dark:text-[#fdeeff]'
@@ -333,7 +376,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
             </button>
           )}
 
-          {/* Active Spell Cast + Cycle Badge */}
+          {/* Active Spell Cast + Cycle Badge (Tablet only when spell tray isn't used) */}
           <div className="relative shrink-0">
             <button
               onClick={() => {
@@ -341,16 +384,36 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
                 onCastSpell(selectedSpellIdx);
               }}
               disabled={!hasEnoughMana}
+              style={
+                hasEnoughMana && activeVariant
+                  ? {
+                      boxShadow: `0 4px 16px ${activeVariant.ringColor}88`,
+                      borderColor: activeVariant.ringColor,
+                    }
+                  : undefined
+              }
               className={`${btnSizeClass} rounded-full border-2 sm:border-3 border-white shadow-xl flex flex-col items-center justify-center transition-all cursor-pointer ${
                 hasEnoughMana
                   ? 'bg-linear-to-tr from-[#9b6bff] to-[#bd8fff] text-white active:scale-90'
                   : 'bg-gray-400/75 opacity-60 text-white cursor-not-allowed'
               }`}
-              title={`${spell.name} (${spell.cost} MP)`}
+              title={
+                activeVariant
+                  ? `${activeVariant.seasonBadge} ${activeVariant.variantName} (${spell.cost} MP) — ${activeVariant.bonusSummary}`
+                  : `${spell.name} (${spell.cost} MP)`
+              }
             >
               <span className="leading-none">{spell.icon}</span>
             </button>
-            {onCycleSpell && (
+            {activeVariant && (
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute -top-1 -left-1 w-5 h-5 rounded-full bg-[#fffaf2]/95 dark:bg-[#271d31]/95 border border-white/80 text-[10px] flex items-center justify-center shadow-xs"
+              >
+                {activeVariant.seasonBadge}
+              </span>
+            )}
+            {!isPhone && onCycleSpell && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -365,17 +428,31 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
             )}
           </div>
 
-          {/* Primary Dash / Sprint Button */}
+          {/* Quick Dash Button */}
           <button
             onClick={() => {
               triggerHaptic();
               onDash();
             }}
-            className={`${dashSizeClass} rounded-full bg-linear-to-tr from-[#ff7aa8] to-[#ff5277] hover:from-[#ff6b6b] hover:to-[#ff3b68] border-3 sm:border-4 border-white text-white font-black flex items-center justify-center shadow-2xl active:scale-90 transition-transform cursor-pointer shrink-0`}
-            title="Dash / Sprint"
+            className={`${btnSizeClass} rounded-full bg-linear-to-tr from-[#ff7aa8] to-[#ff5277] hover:from-[#ff6b6b] hover:to-[#ff3b68] border-2 sm:border-3 border-white text-white font-black flex items-center justify-center shadow-2xl active:scale-90 transition-transform cursor-pointer shrink-0`}
+            title="Dash"
           >
             <span>⚡</span>
           </button>
+
+          {/* Primary Jump / Dolphin Leap Button */}
+          {onJump && (
+            <button
+              onClick={() => {
+                triggerHaptic();
+                onJump();
+              }}
+              className={`${dashSizeClass} rounded-full bg-linear-to-tr from-[#5fd678] to-[#98eb93] hover:brightness-105 border-3 sm:border-4 border-white text-[#14421f] font-black flex items-center justify-center shadow-2xl active:scale-90 transition-transform cursor-pointer shrink-0`}
+              title={isSwimming ? 'Dolphin Leap' : 'Jump / Double-Hop'}
+            >
+              <span>{isSwimming ? '🐬' : '⬆️'}</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

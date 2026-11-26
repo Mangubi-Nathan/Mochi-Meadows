@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { NPC } from './engine';
+import { NPC, Town, T, WorldLayerId, getNpcLayer } from './engine';
 import { WeatherId } from './constants';
 
 export const NPC_WEATHER_DIALOGUES: Record<
@@ -224,10 +224,186 @@ export const NPC_WEATHER_DIALOGUES: Record<
         'The lake is glowing like an electric gemstone! Even the minnows have neon glowing stripes tonight! 🫧',
       chatter: ['Luminescent fish swimming! ✨', 'The lake is sparkling! 🌟', 'Catching starlight minnows!'],
     },
-    snowy: {
+      snowy: {
       speech:
         'Ice is forming on the reeds! Keep your line moving so your bobber doesn’t freeze into an ice cube! ❄️',
       chatter: ['Frosted reeds and icy water! ❄️', 'Shivering by the tackle box 🥶', 'Winter fishing season!'],
+    },
+  },
+  'Lantern Tree': {
+    sunny: {
+      speech:
+        'Warm sunbeams filter through my golden boughs, waking old songs nestled in every leaf. ☀️🌟',
+      chatter: ['Leaves humming in the sun… 🌟', 'Warmth in the ancient boughs…'],
+    },
+    drizzle: {
+      speech:
+        'Soft rain bathes my roots and carries whispers down to Lumi in Glowdeep below. 🌧️🌱',
+      chatter: ['Raindrops chime on my lanterns… 🌧️', 'Cool roots, warm light…'],
+    },
+    stardust: {
+      speech:
+        'Starlight answers the Moon Gate beside my trunk—every lantern sways in cosmic time. ✨🌙',
+      chatter: ['Starlight mirrors my lanterns… ✨', 'The Dawn Duet draws near…'],
+    },
+    snowy: {
+      speech:
+        'Snowflakes rest like silver blossoms upon my branches, yet the embers inside my heart stay warm. ❄️🏮',
+      chatter: ['Golden lanterns warm the snow… ❄️', 'Glowing softly in winter…'],
+    },
+  },
+  Lumi: {
+    sunny: {
+      speech:
+        'No sunbeams pierce our crystal dome, yet warm roots hum of meadow home! 🍄☀️',
+      chatter: ['Roots hum with distant sunbeams~', 'Crystals glow warmer today! ✨'],
+    },
+    drizzle: {
+      speech:
+        'Cool drops trickle down the mossy slate, making the cavern canals resonate! 💧🍄',
+      chatter: ['Drip-drop down the root halls! 💧', 'Glowcaps sparkle in the mist!'],
+    },
+    stardust: {
+      speech:
+        'Even miles beneath the meadow soil, Nana’s roots shimmer when the Moon’s dust falls! ✨🌿',
+      chatter: ['Root fibers singing with stardust! ✨', 'Shimmering beneath the stone~'],
+    },
+    snowy: {
+      speech:
+        'Frosty air chills the upper ground, while thermal springs keep Glowdeep sound! ❄️🔥',
+      chatter: ['Snug beside the warm geodes~', 'Steam rises softly over the canal!'],
+    },
+  },
+  'The Moon': {
+    sunny: {
+      speech:
+        'Yaaawn… Aurelle is shining bright down below! Put the kettle on—morning light always tastes like honey-mint. ☕☀️',
+      chatter: ['Aurelle’s glow warms the tea house~ ☀️', 'Warm cups on the silver rail!'],
+    },
+    drizzle: {
+      speech:
+        'Little silver cloud-wisps drift across the cosmos today. Careful—don’t slip on wet star-stones! 🌧️🌙',
+      chatter: ['Steeping jasmine clouds in tea~ 🫖', 'Mist along the Moon Road…'],
+    },
+    stardust: {
+      speech:
+        'Ah! My pockets must have a hole again—stardust is swirling everywhere along the Moon Road! ✨🌙',
+      chatter: ['So much stardust tonight! ✨', 'Watch your step on glowing stars!'],
+    },
+    snowy: {
+      speech:
+        'Winter frost paints frost-stars on the Moon Road railings! Sit by my tea table and warm your paws. ❄️🍵',
+      chatter: ['Chamomile tea keeps the cold away! ☕', 'Frost-flowers in outer space~ ❄️'],
+    },
+  },
+  Dusk: {
+    sunny: {
+      speech:
+        '…Even out here at the Edge of Silence, a thread of golden warmth reaches my scarf… 🌤️',
+      chatter: ['…warm light from afar…', '…the chord feels less lonely…'],
+    },
+    drizzle: {
+      speech:
+        '…Soft cosmic mist quiets every sharp note. Sometimes a gentle pause is kind… 🌧️',
+      chatter: ['…listening to quiet mist…', '…gentle rest between notes…'],
+    },
+    stardust: {
+      speech:
+        '…Look how the fallen notes glow along the dark highway. None of them were ever truly lost… ✨',
+      chatter: ['…every note shines… ✨', '…humming four soft notes…'],
+    },
+    snowy: {
+      speech:
+        '…The Edge of Silence is frosted silver today, yet The Moon’s lantern is still visible from here… ❄️',
+      chatter: ['…silver hush… ❄️', '…remembering the Tea House…'],
+    },
+  },
+  'Queen Nimbus': {
+    sunny: {
+      speech:
+        'Golden sunbeams turn every battlement of Cirrus Castle into spun amber! Soar high, little traveler! ☀️🏰',
+      chatter: ['Cirrus Castle gleams in gold! ☀️', 'Warm updrafts everywhere! ☁️'],
+    },
+    drizzle: {
+      speech:
+        'Soft cloud-mist sweeps across the courtyard! Our clouds drink it up and grow twice as fluffy! 🌧️☁️',
+      chatter: ['Refilling our fluffy clouds! 🌧️', 'Rainbow awnings shimmer! 🌈'],
+    },
+    stardust: {
+      speech:
+        'Up here above the world, stardust swirls right past our crown spires like confetti! ✨👑',
+      chatter: ['Crown dusted in starlight! ✨', 'High above the meadows~ 🌟'],
+    },
+    snowy: {
+      speech:
+        'Crisp sky-flakes drift off our towers into the valleys below! Tuck your scarf close when gliding! ❄️🦉',
+      chatter: ['Powder-sugar clouds today! ❄️', 'Frosty feathers aloft! ☃️'],
+    },
+  },
+  Cumulo: {
+    sunny: {
+      speech:
+        'Clear sunny thermals bring customers gliding straight to Nimbus Market! Best sky-shopping weather all season! ☀️🛍️',
+      chatter: ['Open sky-market! 🛍️', 'Golden wings gleaming! ☀️'],
+    },
+    drizzle: {
+      speech:
+        'Even in sky drizzle, our rainbow awnings keep every crystal charm dry and bright! 🌈💧',
+      chatter: ['Cozy under the market awning! 🌈', 'Misty breeze at Nimbus Market~'],
+    },
+    stardust: {
+      speech:
+        'Stardust drifts right onto my counter—makes every starlight lens sparkle on its own! ✨🔭',
+      chatter: ['Sparkling inventory tonight! ✨', 'Half price on stardust smiles!'],
+    },
+    snowy: {
+      speech:
+        'Fluffy snowbanks piling up beside the bazaar stalls! Grab a hot cloud-brew while browsing! ❄️☕',
+      chatter: ['Fluffy winter clouds! ❄️', 'Sky lanterns keep us warm!'],
+    },
+  },
+  Marina: {
+    sunny: {
+      speech:
+        'Sunbeams lace through the turquoise waves like golden harps! The whole reef dances in chorus! ☀️🐚',
+      chatter: ['Sunbeams through the waves! ☀️', 'Pearl Reef gleams today! 🐚'],
+    },
+    drizzle: {
+      speech:
+        'Raindrops drum softly overhead against the ocean ceiling—Nature’s favorite sea-percussion! 🌧️🌊',
+      chatter: ['Hear the surface rain-drum! 🌧️', 'Singing under gentle ripples! 🎶'],
+    },
+    stardust: {
+      speech:
+        'Sunken stardust sinks gently onto the coral fans, making Pearl Reef glow brighter than twilight! ✨🪸',
+      chatter: ['Glowing reef pearls! ✨', 'Luminescent sea-songs tonight!'],
+    },
+    snowy: {
+      speech:
+        'Chilly currents swirl near the top, so swim close to the warm pink coral beds! ❄️🪸',
+      chatter: ['Snug in the coral beds! ❄️', 'Crystal-clear winter tides!'],
+    },
+  },
+  Octavia: {
+    sunny: {
+      speech:
+        'Sunlight refracting through the Coral Concert Hall paints eight rainbows across my counter! 🌈🪸',
+      chatter: ['Rainbow coral acoustics! 🌈', 'Busy day at the Concert Hall!'],
+    },
+    drizzle: {
+      speech:
+        'Surface rain sets the whole Concert Hall humming in C-major! Splendid acoustics for browsing! 🌧️🎵',
+      chatter: ['Perfect acoustic ripples! 🎵', 'Warm lights beneath the rain~'],
+    },
+    stardust: {
+      speech:
+        'Starlight specks float through our coral organ pipes like musical fireflies! ✨🪸',
+      chatter: ['Sparkling sea curios! ✨', 'Singing coral glowing bright!'],
+    },
+    snowy: {
+      speech:
+        'Even when snowflakes dust the waves above, our coral grotto stays cozy and crystal-clear! ❄️🐚',
+      chatter: ['Winter concert season! ❄️', 'Warm clam-lanterns lit!'],
     },
   },
 };
@@ -279,6 +455,44 @@ export function getNPCWeatherDialogue(npc: NPC, weatherId: WeatherId): string {
     }
   }
 
+  if (npc.glowdeep) {
+    switch (weatherId) {
+      case 'sunny':
+        return 'Warmth from the meadows above gently tingles along Nana Mochi’s golden roots! 🍄☀️';
+      case 'drizzle':
+        return 'Silver droplets filter down through the cavern ceiling, making the bioluminescent spores sing! 💧🍄';
+      case 'stardust':
+        return 'Stardust echoes through the crystal veins of Glowdeep like fireflies in the dark! ✨';
+      case 'snowy':
+        return 'While frost blankets the surface, the thermal geodes keep Glowdeep warm and snug! ❄️🔥';
+      case 'aurora':
+        return 'Ripples of emerald light shimmer down the crystal gondola canals! 🌌';
+      case 'muffin_rain':
+        return 'Sweet cinnamon breezes from the upper meadow drift even down into the root halls! 🧁';
+      default:
+        return 'The bioluminescent caves pulse in peaceful subterranean harmony! 🍄';
+    }
+  }
+
+  if (npc.moonroad) {
+    switch (weatherId) {
+      case 'sunny':
+        return 'Warm golden rays reach even the Moon Road highway, gilding every stepping stone! ☀️🌙';
+      case 'drizzle':
+        return 'Soft silver star-mist drifts between constellations along the Moon Road! 🌧️✨';
+      case 'stardust':
+        return 'A shower of luminous stardust dances across the night sky path! ✨🌙';
+      case 'snowy':
+        return 'Delicate frost crystals sparkle like tiny moons along the celestial railings! ❄️🌙';
+      case 'aurora':
+        return 'Emerald and violet aurora ribbons wind right beside the Moon’s Tea House! 🌌';
+      case 'muffin_rain':
+        return 'Pip’s cloud muffins have drifted all the way up to the Moon Road again! 🧁🌙';
+      default:
+        return 'The starlit highway hums quietly between twilight and morning! 🌙';
+    }
+  }
+
   // Standard islander fallback
   switch (weatherId) {
     case 'sunny':
@@ -325,6 +539,33 @@ export function getNPCWeatherChatter(npc: NPC, weatherId: WeatherId): string {
   }
 }
 
+function pickTownWanderTarget(n: NPC, towns: Town[] | undefined, radiusMin: number, radiusSpan: number): [number, number] {
+  if (towns && towns.length > 0 && Math.random() < 0.55) {
+    const npcLayer = getNpcLayer(n);
+    let nearTown: Town | null = null;
+    let bestD2 = 280 * 280;
+    for (let i = 0; i < towns.length; i++) {
+      const tw = towns[i];
+      if (tw.w !== npcLayer) continue;
+      const cx = tw.x * T + T / 2;
+      const cy = tw.y * T + T / 2;
+      const d2 = (cx - n.hx) * (cx - n.hx) + (cy - n.hy) * (cy - n.hy);
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        nearTown = tw;
+      }
+    }
+    if (nearTown) {
+      const a = Math.random() * Math.PI * 2;
+      const r = 24 + Math.random() * 58;
+      return [nearTown.x * T + T / 2 + Math.cos(a) * r, nearTown.y * T + T / 2 + Math.sin(a) * r];
+    }
+  }
+  const angle = Math.random() * Math.PI * 2;
+  const r = radiusMin + Math.random() * radiusSpan;
+  return [n.hx + Math.cos(angle) * r, n.hy + Math.sin(angle) * r];
+}
+
 /**
  * Updates NPC movement behavior and animation poses based on current weather.
  */
@@ -333,18 +574,25 @@ export function updateNPCWeatherBehavior(
   weatherId: WeatherId,
   time: number,
   dt: number,
-  lanternTreePos?: { x: number; y: number }
+  activeLayer?: WorldLayerId,
+  towns?: Town[]
 ) {
   for (const n of npcs) {
-    if (n.tree) continue; // Don't move the Lantern Tree!
+    // Only actively tick NPCs belonging to the player's current world layer
+    if (activeLayer !== undefined && getNpcLayer(n) !== activeLayer) {
+      n.mv = 0;
+      continue;
+    }
 
-    // Decrement speech bubble timer
+    // Decrement speech bubble timer even for static landmarks like Lantern Tree
     if (n.sayT > 0) {
       n.sayT -= dt;
       if (n.sayT <= 0) {
         n.say = undefined;
       }
     }
+
+    if (n.tree) continue; // Don't move or change pose of the Lantern Tree
 
     // Occasional ambient chatter (every ~30s on average per NPC if near player)
     n.cool -= dt;
@@ -378,8 +626,26 @@ export function updateNPCWeatherBehavior(
             n.mv = 1;
           }
         } else {
-          // Huddled stationary with slight cozy shiver
-          n.mv = 0;
+          // Huddled near shelter with periodic cozy shifting & soft shiver
+          n.wt -= dt;
+          if (n.wt <= 0) {
+            n.wt = 2.0 + Math.random() * 2.5;
+            const a = Math.random() * Math.PI * 2;
+            const r = Math.random() * 8;
+            n.tx = n.hx + Math.cos(a) * r;
+            n.ty = n.hy + Math.sin(a) * r;
+          }
+          const sdx = n.tx - n.x;
+          const sdy = n.ty - n.y;
+          const sdist = Math.hypot(sdx, sdy);
+          if (sdist > 2) {
+            n.x += (sdx / sdist) * 18 * dt;
+            n.y += (sdy / sdist) * 18 * dt;
+            if (Math.abs(sdx) > 0.5) n.f = sdx > 0 ? 1 : -1;
+            n.mv = 0.5;
+          } else {
+            n.mv = 0;
+          }
           n.weatherPoseY = Math.sin(time * 20 + n.ph) * 1.0; // soft shivering vibration
         }
         break;
@@ -392,11 +658,9 @@ export function updateNPCWeatherBehavior(
 
         if (n.wt <= 0) {
           n.wt = 2.5 + Math.random() * 3.5;
-          // Pick a random sunny wander target around home (radius up to 60px)
-          const angle = Math.random() * Math.PI * 2;
-          const r = 20 + Math.random() * 45;
-          n.tx = n.hx + Math.cos(angle) * r;
-          n.ty = n.hy + Math.sin(angle) * r;
+          const [wx, wy] = pickTownWanderTarget(n, towns, 20, 45);
+          n.tx = wx;
+          n.ty = wy;
         }
 
         // Move towards target with dancing spring
@@ -427,10 +691,9 @@ export function updateNPCWeatherBehavior(
         n.wt -= dt;
         if (n.wt <= 0) {
           n.wt = 4 + Math.random() * 4;
-          const angle = Math.random() * Math.PI * 2;
-          const r = 15 + Math.random() * 25;
-          n.tx = n.hx + Math.cos(angle) * r;
-          n.ty = n.hy + Math.sin(angle) * r;
+          const [wx, wy] = pickTownWanderTarget(n, towns, 15, 25);
+          n.tx = wx;
+          n.ty = wy;
         }
 
         const dx = n.tx - n.x;
@@ -459,10 +722,9 @@ export function updateNPCWeatherBehavior(
 
         if (n.wt <= 0) {
           n.wt = 3 + Math.random() * 4;
-          const angle = Math.random() * Math.PI * 2;
-          const r = 10 + Math.random() * 30;
-          n.tx = n.hx + Math.cos(angle) * r;
-          n.ty = n.hy + Math.sin(angle) * r;
+          const [wx, wy] = pickTownWanderTarget(n, towns, 10, 30);
+          n.tx = wx;
+          n.ty = wy;
         }
 
         const dx = n.tx - n.x;
@@ -491,10 +753,9 @@ export function updateNPCWeatherBehavior(
 
         if (n.wt <= 0) {
           n.wt = 4 + Math.random() * 4;
-          const angle = Math.random() * Math.PI * 2;
-          const r = 12 + Math.random() * 32;
-          n.tx = n.hx + Math.cos(angle) * r;
-          n.ty = n.hy + Math.sin(angle) * r;
+          const [wx, wy] = pickTownWanderTarget(n, towns, 12, 32);
+          n.tx = wx;
+          n.ty = wy;
         }
 
         const dx = n.tx - n.x;
@@ -523,10 +784,9 @@ export function updateNPCWeatherBehavior(
 
         if (n.wt <= 0) {
           n.wt = 2.2 + Math.random() * 3.0;
-          const angle = Math.random() * Math.PI * 2;
-          const r = 18 + Math.random() * 44;
-          n.tx = n.hx + Math.cos(angle) * r;
-          n.ty = n.hy + Math.sin(angle) * r;
+          const [wx, wy] = pickTownWanderTarget(n, towns, 18, 44);
+          n.tx = wx;
+          n.ty = wy;
         }
 
         const dx = n.tx - n.x;

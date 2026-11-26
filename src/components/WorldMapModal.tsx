@@ -3,7 +3,6 @@ import {
   N,
   T,
   BIOME_NAMES,
-  BIOME_COLORS,
   Town,
   NPC,
   StarGem,
@@ -15,15 +14,19 @@ import {
   hash,
   vn,
   fbm,
+  getNpcLayer,
 } from '../game/engine';
+import type { SeasonId } from '../game/constants';
+import { getSeasonalBiomeColor } from '../game/seasons';
 import { MEMORY_ECHOES, MOON_DIARY_PAGES, TOWNS_DATA_MM2 } from '../game/worldData';
 import { distToSegment, getGlowdeepCell, getMoonRoadCell } from '../game/realmCells';
+import { WORLD_ANCHORS } from '../game/worldAnchors';
 
 export type MapLayerId = 0 | 1 | 2 | 3 | 4;
 
 const MIN_ZOOM = 0.35;
-const MAX_ZOOM = 8.0;
-const BASE_MAP_SIZE = N * 4; // 1040px base coordinate canvas
+const MAX_ZOOM = 10.0;
+const BASE_MAP_SIZE = N * 4; // 1680px base coordinate canvas
 
 interface WorldMapModalProps {
   terrain: Uint8Array;
@@ -43,6 +46,7 @@ interface WorldMapModalProps {
   feathers: Feather[];
   quests: Quest[];
   mana?: number;
+  season?: SeasonId;
   onTeleportToTown?: (town: Town) => void;
   onClose: () => void;
 }
@@ -87,14 +91,17 @@ interface FocusHub {
 }
 
 const ARCHIPELAGO_ISLANDS = [
-  { name: 'Lantern Isle', tx: 130, ty: 128, icon: '🏮', desc: 'The verdant heart of the Starlit Archipelago where the Sacred Lantern Tree takes root.' },
-  { name: 'Honeycomb Hills', tx: 48, ty: 52, icon: '🍯', desc: 'Golden clover terraces, honey windmills, and Bumble’s humming apiaries.' },
-  { name: 'Tidepool Atoll', tx: 42, ty: 202, icon: '🐚', desc: 'Crescent coral lagoons, starlight tidepools, and Tidbit’s coastal lighthouse.' },
-  { name: 'Cinder Cradle', tx: 126, ty: 222, icon: '🌋', desc: 'Steaming volcanic hot springs, glowing lava lamps, and Ember’s warm hearth.' },
-  { name: 'Mirror Fens', tx: 210, ty: 208, icon: '🪷', desc: 'Misty weeping willows, luminous lily pads, and echoing opera lagoons.' },
-  { name: 'Aurora Reach', tx: 214, ty: 52, icon: '❄️', desc: 'Frosted crystal caves and snowfields crowned by dancing emerald auroras.' },
-  { name: 'Chime Canopy', tx: 130, ty: 32, icon: '🔔', desc: 'Towering bellwood boughs linked by pentatonic rope bridges.' },
-  { name: 'Dawn Spire', tx: 235, ty: 135, icon: '🌅', desc: 'The golden eastern summit where Aurelle awaits the Dawn Duet.' },
+  { name: WORLD_ANCHORS.islands.lanternIsle.name, tx: WORLD_ANCHORS.islands.lanternIsle.tx, ty: WORLD_ANCHORS.islands.lanternIsle.ty, icon: '🏮', desc: 'The verdant heart of the Starlit Archipelago where the Sacred Lantern Tree takes root.' },
+  { name: WORLD_ANCHORS.islands.honeycombHills.name, tx: WORLD_ANCHORS.islands.honeycombHills.tx, ty: WORLD_ANCHORS.islands.honeycombHills.ty, icon: '🍯', desc: 'Golden clover terraces, honey windmills, and Bumble’s humming apiaries.' },
+  { name: WORLD_ANCHORS.islands.tidepoolAtoll.name, tx: WORLD_ANCHORS.islands.tidepoolAtoll.tx, ty: WORLD_ANCHORS.islands.tidepoolAtoll.ty, icon: '🐚', desc: 'Crescent coral lagoons, starlight tidepools, and Tidbit’s coastal lighthouse.' },
+  { name: WORLD_ANCHORS.islands.cinderCradle.name, tx: WORLD_ANCHORS.islands.cinderCradle.tx, ty: WORLD_ANCHORS.islands.cinderCradle.ty, icon: '🌋', desc: 'Steaming volcanic hot springs, glowing lava lamps, and Ember’s warm hearth.' },
+  { name: WORLD_ANCHORS.islands.mirrorFens.name, tx: WORLD_ANCHORS.islands.mirrorFens.tx, ty: WORLD_ANCHORS.islands.mirrorFens.ty, icon: '🪷', desc: 'Misty weeping willows, luminous lily pads, and echoing opera lagoons.' },
+  { name: WORLD_ANCHORS.islands.auroraReach.name, tx: WORLD_ANCHORS.islands.auroraReach.tx, ty: WORLD_ANCHORS.islands.auroraReach.ty, icon: '❄️', desc: 'Frosted crystal caves and snowfields crowned by dancing emerald auroras.' },
+  { name: WORLD_ANCHORS.islands.chimeCanopy.name, tx: WORLD_ANCHORS.islands.chimeCanopy.tx, ty: WORLD_ANCHORS.islands.chimeCanopy.ty, icon: '🔔', desc: 'Towering bellwood boughs linked by pentatonic rope bridges.' },
+  { name: WORLD_ANCHORS.islands.dawnSpire.name, tx: WORLD_ANCHORS.islands.dawnSpire.tx, ty: WORLD_ANCHORS.islands.dawnSpire.ty, icon: '🌅', desc: 'The golden eastern summit where Aurelle awaits the Dawn Duet.' },
+  { name: WORLD_ANCHORS.islands.sapphireBluff.name, tx: WORLD_ANCHORS.islands.sapphireBluff.tx, ty: WORLD_ANCHORS.islands.sapphireBluff.ty, icon: '⚓', desc: 'Wind-carved sapphire headlands and lighthouse cliffs watching the far western sea.' },
+  { name: WORLD_ANCHORS.islands.mapleMist.name, tx: WORLD_ANCHORS.islands.mapleMist.tx, ty: WORLD_ANCHORS.islands.mapleMist.ty, icon: '🍁', desc: 'Crimson blossom woodlands and cedar wind-chimes suspended in misty strait breezes.' },
+  { name: WORLD_ANCHORS.islands.starfallShoals.name, tx: WORLD_ANCHORS.islands.starfallShoals.tx, ty: WORLD_ANCHORS.islands.starfallShoals.ty, icon: '🔭', desc: 'Warm southeastern sandbars and brass astrolabes where shooting stars touch the tide.' },
 ];
 
 const PHASE_LANDMARKS: PhaseLandmark[] = [
@@ -105,10 +112,10 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Sacred Lantern Tree',
     subtitle: 'Heart of Lantern Isle · Portal Roots',
     icon: '🌟',
-    tx: 130,
-    ty: 126,
+    tx: WORLD_ANCHORS.towns.lanternTree.tx,
+    ty: WORLD_ANCHORS.towns.lanternTree.ty,
     color: '#ffd23f',
-    description: 'Ancient glowing tree whose roots descend into Glowdeep Caverns and whose Lantern Doors connect the 8 realms.',
+    description: 'Ancient glowing tree whose roots descend into Glowdeep Caverns and whose Lantern Doors connect the realms.',
     residents: ['Wick', 'Pip'],
   },
   {
@@ -117,8 +124,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Moonlit Cottage & Hamlet',
     subtitle: 'Home Sanctuary',
     icon: '🏡',
-    tx: 136,
-    ty: 132,
+    tx: WORLD_ANCHORS.towns.mochiHamlet.tx,
+    ty: WORLD_ANCHORS.towns.mochiHamlet.ty,
     color: '#ff9ebb',
     description: 'Your cozy cottage sanctuary with botanical garden plots, music box, coral aquarium, and neighbors.',
   },
@@ -128,8 +135,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Dawn Spire Summit',
     subtitle: 'Eastern Sanctuary',
     icon: '🌅',
-    tx: 235,
-    ty: 135,
+    tx: WORLD_ANCHORS.towns.dawnSpireSummit.tx,
+    ty: WORLD_ANCHORS.towns.dawnSpireSummit.ty,
     color: '#ffd23f',
     description: 'A soaring golden spire on the eastern horizon where the Dawn Chorus will one day be sung.',
     residents: ['Aurelle'],
@@ -142,8 +149,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Coral Concert Hall',
     subtitle: 'Resonant Undersea Amphitheater',
     icon: '🪸',
-    tx: 90,
-    ty: 175,
+    tx: WORLD_ANCHORS.reef.coralConcertHall.tx,
+    ty: WORLD_ANCHORS.reef.coralConcertHall.ty,
     color: '#ff7aa8',
     description: 'A natural prism of singing pink coral tubes where sea currents carry ancient whale-song echoes.',
   },
@@ -153,8 +160,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Atoll Sunken Ruins',
     subtitle: 'Submerged Tidepool Cavern',
     icon: '🏛️',
-    tx: 46,
-    ty: 196,
+    tx: WORLD_ANCHORS.reef.atollSunkenRuins.tx,
+    ty: WORLD_ANCHORS.reef.atollSunkenRuins.ty,
     color: '#52d6c6',
     description: 'Ancient stone arches beneath Tidepool Atoll accessible at low tide, guarding lost sea pearls.',
     residents: ['Tidbit'],
@@ -165,8 +172,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Starlit Kelp Trench',
     subtitle: 'Deep Bioluminescent Reef',
     icon: '🌿',
-    tx: 178,
-    ty: 176,
+    tx: WORLD_ANCHORS.reef.starlitKelpTrench.tx,
+    ty: WORLD_ANCHORS.reef.starlitKelpTrench.ty,
     color: '#7bd88f',
     description: 'Towering emerald sea-kelp sway beside deep sapphire trenches where Moon Koi and Lantern Eels glide.',
   },
@@ -176,10 +183,21 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Driftwood Dive Lagoon',
     subtitle: 'Surface Entry Reef',
     icon: '🌀',
-    tx: 100,
-    ty: 162,
+    tx: WORLD_ANCHORS.reef.driftwoodDiveLagoon.tx,
+    ty: WORLD_ANCHORS.reef.driftwoodDiveLagoon.ty,
     color: '#68c4e4',
     description: 'Clear turquoise plunge-basin just off Driftwood Dock. Great starting spot for pearl diving.',
+  },
+  {
+    id: 'lm-pearl-grotto',
+    layer: 1,
+    name: 'Sunken Pearl Grotto',
+    subtitle: 'Western Pearlescent Shrine',
+    icon: '🫧',
+    tx: WORLD_ANCHORS.reef.sunkenPearlGrotto.tx,
+    ty: WORLD_ANCHORS.reef.sunkenPearlGrotto.ty,
+    color: '#a8f7ff',
+    description: 'Quiet mother-of-pearl sea arch between Sapphire Bluff and Maple Mist cradling ancient giant clams.',
   },
 
   // Layer 2: Sky Kingdom landmarks
@@ -189,8 +207,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Cirrus Castle',
     subtitle: 'Royal Cloud Citadel',
     icon: '🏰',
-    tx: 136,
-    ty: 70,
+    tx: WORLD_ANCHORS.sky.cirrusCastle.tx,
+    ty: WORLD_ANCHORS.sky.cirrusCastle.ty,
     color: '#ffd23f',
     description: 'Gleaming alabaster palace floating high above Lantern Isle, home to the Sky Court and rainbow rings.',
   },
@@ -200,8 +218,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Nimbus Market',
     subtitle: 'Floating Cloud Bazaar',
     icon: '🛍️',
-    tx: 88,
-    ty: 88,
+    tx: WORLD_ANCHORS.sky.nimbusMarket.tx,
+    ty: WORLD_ANCHORS.sky.nimbusMarket.ty,
     color: '#8fd5ff',
     description: 'An airy trade terrace draped in rainbow awnings where skyfarers barter cloud feathers and starlight wares.',
   },
@@ -211,10 +229,22 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Sunrise Updraft Spire',
     subtitle: 'Eastern Wind Thermal',
     icon: '🌬️',
-    tx: 215,
-    ty: 120,
+    tx: WORLD_ANCHORS.sky.sunriseUpdraftSpire.tx,
+    ty: WORLD_ANCHORS.sky.sunriseUpdraftSpire.ty,
     color: '#ffe37a',
     description: 'Warm rising currents spiraling high above Dawn Spire, lifting gliders effortlessly toward the upper clouds.',
+  },
+  {
+    id: 'lm-aether-garden',
+    layer: 2,
+    name: 'Aether Sky Garden',
+    subtitle: 'Western Wind Harp Conservatory',
+    icon: '🪷',
+    tx: WORLD_ANCHORS.sky.aetherGarden.tx,
+    ty: WORLD_ANCHORS.sky.aetherGarden.ty,
+    color: '#9ee8ff',
+    description: 'Floating blossom veranda where Zephyr tends the western jetstream’s marble wind-harp arch.',
+    residents: ['Zephyr'],
   },
 
   // Layer 3: Glowdeep landmarks
@@ -224,8 +254,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Rooted Rest & Nana’s Hearth',
     subtitle: 'Heart of Glowdeep Caverns',
     icon: '🌳',
-    tx: 130,
-    ty: 130,
+    tx: WORLD_ANCHORS.glowdeep.rootedRest.tx,
+    ty: WORLD_ANCHORS.glowdeep.rootedRest.ty,
     color: '#7bd88f',
     description: 'Golden roots of Nana Mochi cradle a tranquil cavern hub with the cauldron for the Soup of Remembering.',
     residents: ['Lumi'],
@@ -236,8 +266,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Spore Grotto Gondola Pier',
     subtitle: 'Western Canal Station',
     icon: '🚤',
-    tx: 62,
-    ty: 145,
+    tx: WORLD_ANCHORS.glowdeep.sporeGrotto.tx,
+    ty: WORLD_ANCHORS.glowdeep.sporeGrotto.ty,
     color: '#45e3f5',
     description: 'Lantern-lit crystal gondola dock floating on liquid starlight currents beneath Tidepool Atoll.',
   },
@@ -247,8 +277,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Magma Geode Vault',
     subtitle: 'Southern Thermal Cavern',
     icon: '💎',
-    tx: 128,
-    ty: 215,
+    tx: WORLD_ANCHORS.glowdeep.magmaGeode.tx,
+    ty: WORLD_ANCHORS.glowdeep.magmaGeode.ty,
     color: '#ff9f70',
     description: 'Warm amber amethyst veins beneath Cinder Cradle where underground springs boil peacefully.',
   },
@@ -258,10 +288,21 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Prism Ice Grotto',
     subtitle: 'Northeastern Crystal Hall',
     icon: '💠',
-    tx: 198,
-    ty: 68,
+    tx: WORLD_ANCHORS.glowdeep.prismIce.tx,
+    ty: WORLD_ANCHORS.glowdeep.prismIce.ty,
     color: '#b48cff',
     description: 'Refracting quartz pillars singing softly with crystal Cave Echoes below Aurora Reach.',
+  },
+  {
+    id: 'lm-crystal-conservatory',
+    layer: 3,
+    name: 'Crystal Conservatory',
+    subtitle: 'Eastern Luminous Chime Cavern',
+    icon: '🔮',
+    tx: WORLD_ANCHORS.glowdeep.crystalConservatory.tx,
+    ty: WORLD_ANCHORS.glowdeep.crystalConservatory.ty,
+    color: '#6bf5c9',
+    description: 'Emerald-and-amethyst cavern gallery extending beneath the eastern sea toward Dawn Spire.',
   },
 
   // Layer 4: Moon Road landmarks
@@ -271,8 +312,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'The Moon’s Tea House',
     subtitle: 'Chamomile & Twilight Pavilion',
     icon: '🍵',
-    tx: 130,
-    ty: 125,
+    tx: WORLD_ANCHORS.moonroad.teaHouse.tx,
+    ty: WORLD_ANCHORS.moonroad.teaHouse.ty,
     color: '#ffd23f',
     description: 'A cozy starlit veranda suspended on silver beams where The Moon pours chamomile twilight tea.',
     residents: ['The Moon'],
@@ -283,8 +324,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Twin Stars Gazebo',
     subtitle: 'Northern Constellation Arch',
     icon: '✨',
-    tx: 90,
-    ty: 72,
+    tx: WORLD_ANCHORS.moonroad.twinStars.tx,
+    ty: WORLD_ANCHORS.moonroad.twinStars.ty,
     color: '#b48cff',
     description: 'Crystal arch dedicated to Kevin & Kevin, shimmering along the northwestern silver ribbon road.',
   },
@@ -294,8 +335,8 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'Shrine of the Unsung Verse',
     subtitle: 'Bridge of Two Notes',
     icon: '🎶',
-    tx: 185,
-    ty: 112,
+    tx: WORLD_ANCHORS.moonroad.unsungShrine.tx,
+    ty: WORLD_ANCHORS.moonroad.unsungShrine.ty,
     color: '#ff7aa8',
     description: 'Where the 9th Unsung Verse waits between the notes of the Lullaby and the Reveille.',
   },
@@ -305,11 +346,22 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     name: 'The Edge of Silence',
     subtitle: 'Dusk’s Watchtower',
     icon: '🖤',
-    tx: 235,
-    ty: 135,
+    tx: WORLD_ANCHORS.moonroad.edgeOfSilence.tx,
+    ty: WORLD_ANCHORS.moonroad.edgeOfSilence.ty,
     color: '#cbd5e1',
     description: 'Quiet twilight horizon where Dusk the Hollow King whistles his unresolved 4-note melody.',
     residents: ['Dusk'],
+  },
+  {
+    id: 'lm-crescent-belvedere',
+    layer: 4,
+    name: 'Crescent Belvedere',
+    subtitle: 'Western Starlight Overlook',
+    icon: '🌙',
+    tx: WORLD_ANCHORS.moonroad.crescentBelvedere.tx,
+    ty: WORLD_ANCHORS.moonroad.crescentBelvedere.ty,
+    color: '#8fd5ff',
+    description: 'Silver crescent observatory floating above the western sea along the path from West Crescent Landing.',
   },
 ];
 
@@ -328,7 +380,7 @@ const PHASE_META: Record<
   0: {
     label: '🌿 Ground',
     shortLabel: 'Ground',
-    title: 'Surface Archipelago (8 Islands)',
+    title: 'Surface Archipelago (11 Islands)',
     howToReach: 'Default Realm · Sail docks with B or walk shores',
     accent: '#ff7aa8',
     bgVoid: '#2f7db8',
@@ -417,6 +469,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
   feathers,
   quests,
   mana = 0,
+  season = 'spring',
   onTeleportToTown,
   onClose,
 }) => {
@@ -424,7 +477,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
   const insetCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // Layer selection: 0 = Ground (8 Islands), 1 = Sea Reef, 2 = Cirrus Sky, 3 = Glowdeep, 4 = Moon Road
+  // Layer selection: 0 = Ground (11 Islands), 1 = Sea Reef, 2 = Cirrus Sky, 3 = Glowdeep, 4 = Moon Road
   const [selectedLayer, setSelectedLayer] = useState<MapLayerId>(
     playerPos.sky ? 2 : playerPos.dive ? 1 : playerPos.glowdeep ? 3 : playerPos.moonroad ? 4 : 0
   );
@@ -544,14 +597,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
     };
   }, []);
 
-  // Get NPC layer consistently across all 5 phases
-  const getNpcLayer = useCallback((npc: NPC): MapLayerId => {
-    if (npc.moonroad || npc.n === 'The Moon' || npc.n === 'Dusk') return 4;
-    if (npc.glowdeep || npc.n === 'Lumi') return 3;
-    if (npc.sky) return 2;
-    if (npc.sea) return 1;
-    return 0;
-  }, []);
+  // NPC layer resolution uses shared getNpcLayer helper imported from ../game/engine
 
   // Clamp camera smoothly so map never scrolls completely out of viewport
   const clampCam = useCallback((x: number, y: number, z: number) => {
@@ -633,7 +679,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
       return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
     };
 
-    const groundPalette = BIOME_COLORS.map(hexToRgb);
+    const groundPalette = Array.from({ length: 8 }, (_, b) => hexToRgb(getSeasonalBiomeColor(b, season)));
 
     // 0. GROUND ARCHIPELAGO BITMAP
     layerBitmapsRef.current[0] = makeCanvas((data) => {
@@ -645,11 +691,11 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
 
           if (b >= 2 && x > 0 && y > 0 && x < N - 1 && y < N - 1) {
             if (terrain[i - 1] < 2 || terrain[i + 1] < 2 || terrain[i - N] < 2 || terrain[i + N] < 2) {
-              rgb = [252, 245, 224];
+              rgb = season === 'winter' ? [232, 244, 255] : [252, 245, 224];
             }
           }
           if (townMap && townMap[i] === 2) {
-            rgb = [225, 210, 188];
+            rgb = season === 'winter' ? [208, 214, 226] : [225, 210, 188];
           }
           const idx = i * 4;
           data[idx] = rgb[0];
@@ -927,7 +973,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         }
       }
     });
-  }, [terrain, underwaterDecor, townMap, skyTerrain, skyDecor]);
+  }, [terrain, underwaterDecor, townMap, skyTerrain, skyDecor, season]);
 
   // Center on player on initial load
   useEffect(() => {
@@ -1058,7 +1104,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         });
       });
 
-    // On Ground phase, also include all 8 islands so players can zip straight into any island
+    // On Ground phase, also include all 11 islands so players can zip straight into any island
     if (selectedLayer === 0) {
       ARCHIPELAGO_ISLANDS.forEach((isl) => {
         if (hubs.some((h) => h.label.toLowerCase().includes(isl.name.toLowerCase()))) return;
@@ -1211,7 +1257,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
           icon: bIdx < 2 ? '🌊' : '🌿',
           description:
             bIdx < 2
-              ? 'Sparkling surface waters connecting the 8 islands. Swim here and press Dive (V) to descend to the Reef!'
+              ? 'Sparkling surface waters connecting the 11 archipelago islands. Swim here and press Dive (V) to descend to the Reef!'
               : 'Lush surface archipelago terrain dotted with wildflowers, star gems, and friendly islanders.',
         };
       }
@@ -1569,25 +1615,28 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.38)';
         ctx.lineWidth = 2 * markerScale;
         ctx.setLineDash([6 * markerScale, 6 * markerScale]);
-        const hubX = toPx(118);
-        const hubY = toPx(148);
+        const hubX = toPx(WORLD_ANCHORS.towns.driftwoodDock.tx);
+        const hubY = toPx(WORLD_ANCHORS.towns.driftwoodDock.ty);
         [
-          [48, 52],
-          [42, 202],
-          [126, 222],
-          [210, 208],
-          [214, 52],
-          [130, 32],
-          [235, 135],
-        ].forEach(([ix, iy]) => {
+          WORLD_ANCHORS.islands.honeycombHills,
+          WORLD_ANCHORS.islands.tidepoolAtoll,
+          WORLD_ANCHORS.islands.cinderCradle,
+          WORLD_ANCHORS.islands.mirrorFens,
+          WORLD_ANCHORS.islands.auroraReach,
+          WORLD_ANCHORS.islands.chimeCanopy,
+          WORLD_ANCHORS.islands.dawnSpire,
+          WORLD_ANCHORS.islands.sapphireBluff,
+          WORLD_ANCHORS.islands.mapleMist,
+          WORLD_ANCHORS.islands.starfallShoals,
+        ].forEach((isl) => {
           ctx.beginPath();
           ctx.moveTo(hubX, hubY);
-          ctx.lineTo(toPx(ix), toPx(iy));
+          ctx.lineTo(toPx(isl.tx), toPx(isl.ty));
           ctx.stroke();
         });
         ctx.restore();
 
-        // 8 Archipelago Island Banner Labels
+        // 11 Archipelago Island Banner Labels
         ctx.save();
         const fontSize = Math.max(4.5, 12.5 * markerScale);
         ctx.font = `900 ${fontSize}px Nunito, sans-serif`;
@@ -1608,16 +1657,17 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         ctx.lineWidth = 2.4 * markerScale;
         ctx.setLineDash([4 * markerScale, 6 * markerScale]);
         const pts = [
-          [100, 162],
-          [90, 175],
-          [46, 196],
-          [178, 176],
-          [100, 162],
+          WORLD_ANCHORS.reef.driftwoodDiveLagoon,
+          WORLD_ANCHORS.reef.coralConcertHall,
+          WORLD_ANCHORS.reef.sunkenPearlGrotto,
+          WORLD_ANCHORS.reef.atollSunkenRuins,
+          WORLD_ANCHORS.reef.starlitKelpTrench,
+          WORLD_ANCHORS.reef.driftwoodDiveLagoon,
         ];
         ctx.beginPath();
-        pts.forEach(([px, py], i) => {
-          if (i === 0) ctx.moveTo(toPx(px), toPx(py));
-          else ctx.lineTo(toPx(px), toPx(py));
+        pts.forEach((pt, i) => {
+          if (i === 0) ctx.moveTo(toPx(pt.tx), toPx(pt.ty));
+          else ctx.lineTo(toPx(pt.tx), toPx(pt.ty));
         });
         ctx.stroke();
         ctx.restore();
@@ -1627,13 +1677,14 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         ctx.lineWidth = 2.4 * markerScale;
         ctx.setLineDash([8 * markerScale, 6 * markerScale]);
         [
-          [88, 88, 136, 70],
-          [136, 70, 215, 120],
-          [88, 88, 130, 126],
-        ].forEach(([x1, y1, x2, y2]) => {
+          [WORLD_ANCHORS.sky.nimbusMarket, WORLD_ANCHORS.sky.cirrusCastle],
+          [WORLD_ANCHORS.sky.cirrusCastle, WORLD_ANCHORS.sky.sunriseUpdraftSpire],
+          [WORLD_ANCHORS.sky.nimbusMarket, WORLD_ANCHORS.towns.lanternTree],
+          [WORLD_ANCHORS.sky.aetherGarden, WORLD_ANCHORS.sky.nimbusMarket],
+        ].forEach(([a, b]) => {
           ctx.beginPath();
-          ctx.moveTo(toPx(x1), toPx(y1));
-          ctx.quadraticCurveTo(toPx((x1 + x2) / 2), toPx((y1 + y2) / 2 - 14), toPx(x2), toPx(y2));
+          ctx.moveTo(toPx(a.tx), toPx(a.ty));
+          ctx.quadraticCurveTo(toPx((a.tx + b.tx) / 2), toPx((a.ty + b.ty) / 2 - 22), toPx(b.tx), toPx(b.ty));
           ctx.stroke();
         });
         ctx.restore();
@@ -1658,16 +1709,18 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         ctx.strokeStyle = 'rgba(69, 227, 245, 0.72)';
         ctx.lineWidth = 2.8 * markerScale;
         ctx.setLineDash([7 * markerScale, 5 * markerScale]);
+        const rr = WORLD_ANCHORS.glowdeep.rootedRest;
         [
-          [130, 130, 62, 145],
-          [130, 130, 128, 215],
-          [130, 130, 198, 68],
-          [130, 130, 206, 198],
-          [130, 130, 56, 56],
-        ].forEach(([x1, y1, x2, y2]) => {
+          WORLD_ANCHORS.glowdeep.sporeGrotto,
+          WORLD_ANCHORS.glowdeep.magmaGeode,
+          WORLD_ANCHORS.glowdeep.prismIce,
+          WORLD_ANCHORS.glowdeep.seEchoCavern,
+          WORLD_ANCHORS.glowdeep.deepCanalHub,
+          WORLD_ANCHORS.glowdeep.crystalConservatory,
+        ].forEach((dest) => {
           ctx.beginPath();
-          ctx.moveTo(toPx(x1), toPx(y1));
-          ctx.lineTo(toPx(x2), toPx(y2));
+          ctx.moveTo(toPx(rr.tx), toPx(rr.ty));
+          ctx.lineTo(toPx(dest.tx), toPx(dest.ty));
           ctx.stroke();
         });
         ctx.restore();
@@ -1678,20 +1731,21 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         ctx.lineWidth = 2.8 * markerScale;
         ctx.beginPath();
         [
-          [36, 196],
-          [90, 72],
-          [130, 125],
-          [185, 112],
-          [235, 135],
-        ].forEach(([mx, my], idx) => {
-          if (idx === 0) ctx.moveTo(toPx(mx), toPx(my));
-          else ctx.lineTo(toPx(mx), toPx(my));
+          WORLD_ANCHORS.moonroad.westCrescentLanding,
+          WORLD_ANCHORS.moonroad.crescentBelvedere,
+          WORLD_ANCHORS.moonroad.twinStars,
+          WORLD_ANCHORS.moonroad.teaHouse,
+          WORLD_ANCHORS.moonroad.unsungShrine,
+          WORLD_ANCHORS.moonroad.edgeOfSilence,
+        ].forEach((pt, idx) => {
+          if (idx === 0) ctx.moveTo(toPx(pt.tx), toPx(pt.ty));
+          else ctx.lineTo(toPx(pt.tx), toPx(pt.ty));
         });
         ctx.stroke();
 
         ctx.beginPath();
-        ctx.moveTo(toPx(130), toPx(125));
-        ctx.lineTo(toPx(126), toPx(214));
+        ctx.moveTo(toPx(WORLD_ANCHORS.moonroad.teaHouse.tx), toPx(WORLD_ANCHORS.moonroad.teaHouse.ty));
+        ctx.lineTo(toPx(WORLD_ANCHORS.moonroad.southStairLanding.tx), toPx(WORLD_ANCHORS.moonroad.southStairLanding.ty));
         ctx.stroke();
         ctx.restore();
       }
@@ -1952,9 +2006,10 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         });
       }
 
-      // 8. Roaming Hollow Creatures (Ground Layer)
-      if (selectedLayer === 0 && (filterType === 'all' || filterType === 'npcs')) {
+      // 8. Roaming Hollow Creatures (filtered strictly by selectedLayer)
+      if (filterType === 'all' || filterType === 'npcs') {
         hollows.forEach((h) => {
+          if ((h.w ?? 0) !== selectedLayer) return;
           const hx = (h.x / (N * T)) * BASE_MAP_SIZE;
           const hy = (h.y / (N * T)) * BASE_MAP_SIZE;
           ctx.save();
@@ -2166,7 +2221,6 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
     allTowns,
     feathers,
     filterType,
-    getNpcLayer,
     hollows,
     npcs,
     pearls,
@@ -2264,28 +2318,27 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         return;
       }
 
-      // 3. Check Roaming Hollows (Ground)
-      if (selectedLayer === 0) {
-        for (const h of hollows) {
-          const hx = (h.x / (N * T)) * BASE_MAP_SIZE;
-          const hy = (h.y / (N * T)) * BASE_MAP_SIZE;
-          if (Math.hypot(hx - mapX, hy - mapY) < 17 / Math.pow(cam.zoom, 0.72)) {
-            const { paces, dir } = getNavInfo(h.x, h.y);
-            setSelectedArea({
-              id: `hollow-${h.id}`,
-              title: h.soothed ? `${h.name} (Soothed)` : `${h.name} (Hollow)`,
-              subtitle: h.soothed ? 'Restored Companion Spirit' : 'Lost in the Great Silence',
-              type: 'hollow',
-              x: h.x,
-              y: h.y,
-              icon: h.soothed ? '💖' : '🩶',
-              description: h.quote || 'Humming quietly, waiting for warmth and kindness.',
-              collectiblesInfo: h.soothed ? 'Color bloomed back!' : 'Cast Hush Hug (8) nearby to soothe with warmth',
-              distancePaces: paces,
-              direction: dir,
-            });
-            return;
-          }
+      // 3. Check Roaming Hollows on selectedLayer
+      for (const h of hollows) {
+        if ((h.w ?? 0) !== selectedLayer) continue;
+        const hx = (h.x / (N * T)) * BASE_MAP_SIZE;
+        const hy = (h.y / (N * T)) * BASE_MAP_SIZE;
+        if (Math.hypot(hx - mapX, hy - mapY) < 17 / Math.pow(cam.zoom, 0.72)) {
+          const { paces, dir } = getNavInfo(h.x, h.y);
+          setSelectedArea({
+            id: `hollow-${h.id}`,
+            title: h.soothed ? `${h.name} (Soothed)` : `${h.name} (Hollow)`,
+            subtitle: h.soothed ? 'Restored Companion Spirit' : 'Lost in the Great Silence',
+            type: 'hollow',
+            x: h.x,
+            y: h.y,
+            icon: h.soothed ? '💖' : '🩶',
+            description: h.quote || 'Humming quietly, waiting for warmth and kindness.',
+            collectiblesInfo: h.soothed ? 'Color bloomed back!' : 'Cast Hush Hug (8) nearby to soothe with warmth',
+            distancePaces: paces,
+            direction: dir,
+          });
+          return;
         }
       }
 
@@ -2404,7 +2457,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         });
       }
     },
-    [allTowns, describeTile, findMatchingTown, getNavInfo, getNpcLayer, hollows, npcs, quests, selectedLayer]
+    [allTowns, describeTile, findMatchingTown, getNavInfo, hollows, npcs, quests, selectedLayer]
   );
 
   // Canvas Click & Double-Click Zoom
@@ -2711,7 +2764,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
     });
 
     return matches.slice(0, 7);
-  }, [searchQuery, allTowns, npcs, getNpcLayer]);
+  }, [searchQuery, allTowns, npcs]);
 
   const activePhase = PHASE_META[selectedLayer];
   const zoomPercent = Math.round(zoomUi * 100);

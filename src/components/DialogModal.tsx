@@ -54,11 +54,17 @@ export const DialogModal: React.FC<DialogModalProps> = ({
 
   // Shop inventory mapping
   const SHOP_INVENTORY: Record<string, string[]> = {
-    Barley: ['tonic', 'snack', 'clover'],
-    Flurry: ['tonic', 'snack', 'boots'],
-    Dot: ['rod', 'boots'],
-    Octavia: ['crys', 'lens'],
-    Cumulo: ['cloud', 'lens', 'crys'],
+    Barley: ['tonic', 'snack', 'honey_tart', 'clover', 'market_bell'],
+    Pip: ['snack', 'honey_tart', 'tonic'],
+    Flurry: ['tonic', 'cinder_cocoa', 'cozy_scarf', 'boots'],
+    Dot: ['tide_chowder', 'rod', 'boat_sail', 'boots'],
+    Octavia: ['starlight_tea', 'crys', 'lens', 'lantern_charm'],
+    Cumulo: ['starlight_tea', 'cloud', 'lens', 'crys', 'market_bell'],
+    Fennel: ['tonic', 'starlight_tea', 'doris_deluxe', 'satchel'],
+    Waffles: ['snack', 'tide_chowder', 'rod', 'market_bell'],
+    Bumble: ['honey_tart', 'snack', 'clover'],
+    Ember: ['cinder_cocoa', 'tonic', 'cozy_scarf', 'lantern_charm'],
+    'Penny and Quill': ['cinder_cocoa', 'starlight_tea', 'lens', 'boots'],
   };
 
   const hasShop = Boolean(SHOP_INVENTORY[npc.n]);
@@ -139,7 +145,7 @@ export const DialogModal: React.FC<DialogModalProps> = ({
       lower.includes('how are')
     ) {
       return isFriend
-        ? `Always wonderful seeing your cozy face, ${playerLook.name}! ${npc.qp[0]}`
+        ? `Always wonderful seeing your cozy face, ${playerLook.name}! ${npc.qp?.[0] || npc.g || '…'}`
         : `${npc.g}`;
     }
 
@@ -165,7 +171,7 @@ export const DialogModal: React.FC<DialogModalProps> = ({
       }
     });
 
-    return bestMatch || npc.qp[Math.floor(Math.random() * npc.qp.length)];
+    return bestMatch || (npc.qp?.length ? npc.qp[Math.floor(Math.random() * npc.qp.length)] : npc.g || '…');
   };
 
   const handleSendChat = async () => {
@@ -384,16 +390,18 @@ export const DialogModal: React.FC<DialogModalProps> = ({
               {SHOP_INVENTORY[npc.n]?.map((itemId) => {
                 const item = SHOP_ITEMS.find((s) => s.id === itemId);
                 if (!item) return null;
-                const owned = Boolean(ownedUpgrades[item.id]);
+                const hasBell = Boolean(ownedUpgrades.market_bell);
+                const finalPrice = hasBell && item.id !== 'market_bell' ? Math.max(1, Math.round(item.price * 0.85)) : item.price;
+                const owned = !item.consumable && Boolean(ownedUpgrades[item.id]);
                 return (
                   <button
                     key={item.id}
-                    disabled={owned || coins < item.price}
-                    onClick={() => onBuyItem(item.id, item.price)}
+                    disabled={owned || coins < finalPrice}
+                    onClick={() => onBuyItem(item.id, finalPrice)}
                     className={`flex items-center justify-between gap-2 text-xs font-black px-3 py-2 rounded-xl border transition-all text-left cursor-pointer ${
                       owned
                         ? 'bg-gray-200/80 dark:bg-white/10 border-gray-300 dark:border-gray-700 text-gray-500 cursor-not-allowed'
-                        : coins < item.price
+                        : coins < finalPrice
                         ? 'opacity-60 border-[#f0c7d8] bg-[#fffaf2] dark:bg-[#2b2137] text-[#4a3550] dark:text-[#fdeeff]'
                         : 'bg-[#fffaf2] dark:bg-[#2b2137] border-[#ff7aa8] hover:bg-[#ff7aa8] hover:text-white active:scale-95 text-[#4a3550] dark:text-[#fdeeff]'
                     }`}
@@ -403,7 +411,7 @@ export const DialogModal: React.FC<DialogModalProps> = ({
                       <span>{item.icon}</span>
                       <span className="truncate">{item.name}</span>
                     </span>
-                    <span className="shrink-0 whitespace-nowrap">({owned ? 'Owned ✓' : `${item.price} 🪙`})</span>
+                    <span className="shrink-0 whitespace-nowrap">({owned ? 'Owned ✓' : `${finalPrice} 🪙`})</span>
                   </button>
                 );
               })}

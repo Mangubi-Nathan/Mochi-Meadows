@@ -8,7 +8,6 @@
 import {
   N,
   T,
-  BIOME_COLORS,
   hash,
   Town,
   FishAmbient,
@@ -18,12 +17,15 @@ import {
   Ring,
   QuestItem,
 } from './engine';
+import type { SeasonId, WeatherId } from './constants';
+import { SEASON_THEMES, getSeasonalBiomeColor } from './seasons';
 import {
   GLOWDEEP_RETURN_TILE,
   MOONROAD_RETURN_TILE,
   getGlowdeepCell,
   getMoonRoadCell,
 } from './realmCells';
+import { WORLD_ANCHORS } from './worldAnchors';
 
 export interface RealmCollectible {
   x: number;
@@ -52,6 +54,7 @@ export interface WorldRenderState {
   playerHomePortal?: { x: number; y: number; doorX: number; doorY: number };
   iceMap: Map<number, number>;
   time: number;
+  season?: SeasonId;
 }
 
 export interface YSortableItem {
@@ -60,6 +63,35 @@ export interface YSortableItem {
 }
 
 const OUTLINE = '#3b2a45';
+
+// Ensure older iOS/iPadOS (<15.4), legacy Android WebViews, and older desktop browsers support ctx.roundRect
+if (
+  typeof CanvasRenderingContext2D !== 'undefined' &&
+  !CanvasRenderingContext2D.prototype.roundRect
+) {
+  CanvasRenderingContext2D.prototype.roundRect = function (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    radii?: number | DOMPointInit | (number | DOMPointInit)[]
+  ) {
+    let r = 0;
+    if (typeof radii === 'number') r = radii;
+    else if (Array.isArray(radii) && typeof radii[0] === 'number') r = radii[0];
+    const rw = w < 0 ? -w : w;
+    const rh = h < 0 ? -h : h;
+    const rx = w < 0 ? x + w : x;
+    const ry = h < 0 ? y + h : y;
+    const cr = Math.max(0, Math.min(r, Math.min(rw, rh) / 2));
+    this.moveTo(rx + cr, ry);
+    this.arcTo(rx + rw, ry, rx + rw, ry + rh, cr);
+    this.arcTo(rx + rw, ry + rh, rx, ry + rh, cr);
+    this.arcTo(rx, ry + rh, rx, ry, cr);
+    this.arcTo(rx, ry, rx + rw, ry, cr);
+    this.closePath();
+  };
+}
 
 const TOWN_ROOF_PALETTES = [
   { roof: '#e86f88', roofDark: '#bd4c65', roofHi: '#ff9eb4', trim: '#ffe6ee', wall: '#fff7eb', trimWood: '#8d624d' }, // Blossom Rose
@@ -222,7 +254,7 @@ function getBackdropGradientStrip(
     bctx.fillStyle = grad;
     bctx.fillRect(0, 0, 8, ih);
   }
-  if (backdropStripCache.size > 12) {
+  if (backdropStripCache.size > 24) {
     backdropStripCache.clear();
   }
   backdropStripCache.set(cacheKey, c);
@@ -357,11 +389,12 @@ function getWorldVignetteCanvas(w: number, h: number, edgeColor: string): HTMLCa
   ) {
     return cachedWorldVig.canvas;
   }
-  const c = document.createElement('canvas');
-  c.width = iw;
-  c.height = ih;
+  const c = cachedWorldVig?.canvas || document.createElement('canvas');
+  if (c.width !== iw) c.width = iw;
+  if (c.height !== ih) c.height = ih;
   const vctx = c.getContext('2d');
   if (vctx) {
+    vctx.clearRect(0, 0, iw, ih);
     const maxR = Math.max(2, Math.hypot(iw * 0.5, ih * 0.5));
     const vig = vctx.createRadialGradient(iw * 0.5, ih * 0.5, maxR * 0.62, iw * 0.5, ih * 0.5, maxR * 1.04);
     vig.addColorStop(0, 'rgba(24, 14, 38, 0)');
@@ -370,6 +403,69 @@ function getWorldVignetteCanvas(w: number, h: number, edgeColor: string): HTMLCa
     vctx.fillRect(0, 0, iw, ih);
   }
   cachedWorldVig = { w: iw, h: ih, edgeColor, canvas: c };
+  return c;
+}
+
+let cachedFrostCornerStamp: HTMLCanvasElement | null = null;
+
+function getFrostCornerStampCanvas(): HTMLCanvasElement {
+  if (cachedFrostCornerStamp) return cachedFrostCornerStamp;
+  const size = 168;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const fctx = c.getContext('2d');
+  if (fctx) {
+    // Soft radial icy corner haze
+    const haze = fctx.createRadialGradient(0, 0, 6, 0, 0, size * 0.96);
+    haze.addColorStop(0, 'rgba(220, 244, 255, 0.42)');
+    haze.addColorStop(0.55, 'rgba(182, 228, 255, 0.16)');
+    haze.addColorStop(1, 'rgba(170, 220, 255, 0)');
+    fctx.fillStyle = haze;
+    fctx.fillRect(0, 0, size, size);
+
+    // Delicate crystalline frost fern fronds radiating from the corner
+    const drawFrostBranch = (
+      ox: number,
+      oy: number,
+      angle: number,
+      length: number,
+      depth: number
+    ) => {
+      if (depth <= 0 || length < 5) return;
+      const ex = ox + Math.cos(angle) * length;
+      const ey = oy + Math.sin(angle) * length;
+      fctx.beginPath();
+      fctx.moveTo(ox, oy);
+      fctx.lineTo(ex, ey);
+      fctx.stroke();
+
+      if (depth > 1) {
+        const forks = 3;
+        for (let k = 1; k <= forks; k++) {
+          const tFrac = k / (forks + 0.6);
+          const fx = ox + (ex - ox) * tFrac;
+          const fy = oy + (ey - oy) * tFrac;
+          const subLen = length * (0.38 - k * 0.05);
+          drawFrostBranch(fx, fy, angle + 0.56, subLen, depth - 1);
+          drawFrostBranch(fx, fy, angle - 0.56, subLen, depth - 1);
+        }
+      }
+    };
+
+    fctx.lineCap = 'round';
+    fctx.strokeStyle = 'rgba(240, 250, 255, 0.56)';
+    fctx.lineWidth = 1.35;
+    drawFrostBranch(2, 2, 0.24, 108, 3);
+    drawFrostBranch(2, 2, 0.78, 128, 3);
+    drawFrostBranch(2, 2, 1.32, 104, 3);
+
+    fctx.strokeStyle = 'rgba(185, 232, 255, 0.42)';
+    fctx.lineWidth = 1.0;
+    drawFrostBranch(26, 2, 0.44, 62, 2);
+    drawFrostBranch(2, 26, 1.12, 62, 2);
+  }
+  cachedFrostCornerStamp = c;
   return c;
 }
 
@@ -386,11 +482,13 @@ export function renderLayerBackdrop(
   isSky: boolean,
   isDive: boolean,
   isGlowdeep: boolean = false,
-  isMoonRoad: boolean = false
+  isMoonRoad: boolean = false,
+  season: SeasonId = 'spring'
 ): void {
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
   const safeCx = Number.isFinite(cx) ? cx : 0;
   const safeCy = Number.isFinite(cy) ? cy : 0;
+  const wt = SEASON_THEMES[season]?.world || SEASON_THEMES.spring.world;
 
   ctx.save();
   if (isMoonRoad) {
@@ -452,10 +550,10 @@ export function renderLayerBackdrop(
   }
 
   if (isSky) {
-    const strip = getBackdropGradientStrip('sky', h, [
-      [0, '#4691e2'],
-      [0.5, '#7cc6f6'],
-      [1, '#c5ecff'],
+    const strip = getBackdropGradientStrip(`sky:${season}`, h, [
+      [0, wt.skyBackdrop[0]],
+      [0.5, wt.skyBackdrop[1]],
+      [1, wt.skyBackdrop[2]],
     ]);
     safeDrawImage(ctx, strip, 0, 0, w, h);
 
@@ -468,7 +566,7 @@ export function renderLayerBackdrop(
         ((((seedX - safeCx * 0.22 + t * (7 + (i % 4) * 2.2)) % (w + 420)) + (w + 420)) % (w + 420)) - 210;
       const py = ((((seedY - safeCy * 0.22) % (h + 320)) + (h + 320)) % (h + 320)) - 160;
 
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.36)';
+      ctx.fillStyle = season === 'autumn' ? 'rgba(255, 236, 220, 0.36)' : 'rgba(255, 255, 255, 0.36)';
       ctx.beginPath();
       ctx.arc(px, py, rad, 0, Math.PI * 2);
       ctx.arc(px + rad * 0.65, py + rad * 0.14, rad * 0.72, 0, Math.PI * 2);
@@ -490,10 +588,10 @@ export function renderLayerBackdrop(
     return;
   }
 
-  // Deep ocean base with gentle depth gradient
-  const strip = getBackdropGradientStrip('surface', h, [
-    [0, '#2e7cb6'],
-    [1, '#3b8ec9'],
+  // Deep ocean base with gentle seasonal depth gradient
+  const strip = getBackdropGradientStrip(`surface:${season}`, h, [
+    [0, wt.surfaceBackdrop[0]],
+    [1, wt.surfaceBackdrop[1]],
   ]);
   safeDrawImage(ctx, strip, 0, 0, w, h);
   ctx.restore();
@@ -556,6 +654,8 @@ export function renderTerrainLayer(
   const bounds = clampTileRange(startX, endX, startY, endY);
   if (!bounds.valid) return;
   const t = W.time;
+  const season = W.season || 'spring';
+  const wt = SEASON_THEMES[season]?.world || SEASON_THEMES.spring.world;
 
   ctx.save();
   for (let y = bounds.minY; y <= bounds.maxY; y++) {
@@ -567,8 +667,8 @@ export function renderTerrainLayer(
       const h1 = hash(x, y, 301);
       const h2 = hash(x, y, 302);
 
-      // Base Biome Fill
-      ctx.fillStyle = BIOME_COLORS[b] || '#9ee087';
+      // Base Seasonal Biome Fill
+      ctx.fillStyle = getSeasonalBiomeColor(b, season);
       ctx.fillRect(sx, sy, T + 1, T + 1);
 
       // Water wave shimmer & shoreline foam (Ocean b===0, Shallows b===1)
@@ -591,7 +691,7 @@ export function renderTerrainLayer(
             const glint = Math.max(0, Math.sin(t * 3.1 + x * 2.1 + y));
             if (glint > 0.4) {
               ctx.globalAlpha = glint * 0.55;
-              ctx.fillStyle = '#fffce8';
+              ctx.fillStyle = season === 'winter' ? '#e6f7ff' : '#fffce8';
               ctx.beginPath();
               ctx.arc(sx + 20, sy + 14, 2.2, 0, Math.PI * 2);
               ctx.fill();
@@ -636,14 +736,14 @@ export function renderTerrainLayer(
               ctx.fillRect(sx + T - foamW, sy, foamW, T + 1);
             }
           } else if (h1 < 0.045) {
-            // Cozy lilypad & pink water blossom in calm shallows
-            ctx.fillStyle = '#5bb870';
+            // Cozy seasonal lilypad & water blossom in calm shallows
+            ctx.fillStyle = wt.lilypadColor;
             ctx.beginPath();
             ctx.arc(sx + T * 0.5, sy + T * 0.5, 6.5, 0.35, Math.PI * 1.9);
             ctx.lineTo(sx + T * 0.5, sy + T * 0.5);
             ctx.fill();
             if (h2 > 0.45) {
-              ctx.fillStyle = '#ff9ebb';
+              ctx.fillStyle = wt.lilyBlossomColor;
               ctx.beginPath();
               ctx.arc(sx + T * 0.5 + 1, sy + T * 0.5 - 1, 2.4, 0, Math.PI * 2);
               ctx.fill();
@@ -655,7 +755,7 @@ export function renderTerrainLayer(
         if (y > 0) {
           const upB = W.B[(y - 1) * N + x];
           if (upB >= 2 && upB !== b) {
-            ctx.fillStyle = BIOME_COLORS[upB] || '#9ee087';
+            ctx.fillStyle = getSeasonalBiomeColor(upB, season);
             ctx.beginPath();
             ctx.arc(sx + 10, sy + 1, 8, 0, Math.PI);
             ctx.arc(sx + 28, sy + 1, 9, 0, Math.PI);
@@ -665,7 +765,7 @@ export function renderTerrainLayer(
         if (x > 0) {
           const leftB = W.B[y * N + (x - 1)];
           if (leftB >= 2 && leftB !== b) {
-            ctx.fillStyle = BIOME_COLORS[leftB] || '#9ee087';
+            ctx.fillStyle = getSeasonalBiomeColor(leftB, season);
             ctx.beginPath();
             ctx.arc(sx + 1, sy + 11, 8, -Math.PI / 2, Math.PI / 2);
             ctx.arc(sx + 1, sy + 28, 8.5, -Math.PI / 2, Math.PI / 2);
@@ -691,9 +791,16 @@ export function renderTerrainLayer(
           ctx.fillRect(sx, sy, T + 1, T + 1);
         }
 
-        // Dappled warm sunlight pockets in Whisper Woods & Blossom Grove
+        // Dappled sunlight / seasonal ground pockets in Whisper Woods & Blossom Grove
         if ((b === 4 || b === 5) && h1 > 0.78) {
-          ctx.fillStyle = b === 5 ? 'rgba(255, 230, 240, 0.18)' : 'rgba(255, 246, 190, 0.16)';
+          ctx.fillStyle =
+            season === 'autumn'
+              ? 'rgba(255, 198, 130, 0.18)'
+              : season === 'winter'
+              ? 'rgba(255, 255, 255, 0.24)'
+              : b === 5
+              ? 'rgba(255, 230, 240, 0.18)'
+              : 'rgba(255, 246, 190, 0.16)';
           ctx.beginPath();
           ctx.ellipse(sx + T * 0.5, sy + T * 0.5, 14, 10, h2, 0, Math.PI * 2);
           ctx.fill();
@@ -701,7 +808,7 @@ export function renderTerrainLayer(
 
         // Biome ground micro-details
         if (b === 2 && h1 < 0.3) {
-          ctx.fillStyle = h2 > 0.5 ? '#e7c88a' : '#fff5dd';
+          ctx.fillStyle = season === 'winter' ? '#ffffff' : h2 > 0.5 ? '#e7c88a' : '#fff5dd';
           ctx.beginPath();
           ctx.arc(sx + 10 + h1 * 45, sy + 12 + h2 * 18, 2.3, 0, Math.PI * 2);
           ctx.fill();
@@ -709,7 +816,7 @@ export function renderTerrainLayer(
           const sway = Math.sin(t * 2.4 + x * 0.7 + y * 0.5) * 1.8;
           const gx = sx + 8 + h2 * 22;
           const gy = sy + 16 + h1 * 18;
-          ctx.strokeStyle = b === 4 ? '#398a4e' : '#6db85f';
+          ctx.strokeStyle = b === 4 ? wt.grassDark : wt.grassLight;
           ctx.lineWidth = 1.7;
           ctx.lineCap = 'round';
           ctx.beginPath();
@@ -718,13 +825,36 @@ export function renderTerrainLayer(
           ctx.moveTo(gx + 3.5, gy + 5);
           ctx.lineTo(gx + 4.5 + sway, gy - 3.5);
           ctx.stroke();
+
+          if (season === 'autumn' && h1 < 0.16) {
+            ctx.fillStyle = h2 > 0.5 ? '#e06035' : '#ffb838';
+            ctx.beginPath();
+            ctx.ellipse(sx + 26, sy + 12, 2.8, 1.6, h2 * 3, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (season === 'winter' && h1 < 0.18) {
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(sx + 26, sy + 12, 1.7, 0, Math.PI * 2);
+            ctx.fill();
+          }
         } else if (b === 5 && h1 < 0.4 && W.DK[i] === 0) {
-          ctx.fillStyle = h2 > 0.5 ? 'rgba(255, 165, 200, 0.8)' : 'rgba(255, 236, 245, 0.88)';
+          ctx.fillStyle =
+            season === 'autumn'
+              ? h2 > 0.5
+                ? 'rgba(224, 92, 52, 0.82)'
+                : 'rgba(255, 196, 84, 0.88)'
+              : season === 'winter'
+              ? h2 > 0.5
+                ? 'rgba(182, 224, 255, 0.82)'
+                : 'rgba(255, 255, 255, 0.9)'
+              : h2 > 0.5
+              ? 'rgba(255, 165, 200, 0.8)'
+              : 'rgba(255, 236, 245, 0.88)';
           ctx.beginPath();
           ctx.ellipse(sx + 10 + h2 * 22, sy + 12 + h1 * 20, 3, 1.7, h2 * 3, 0, Math.PI * 2);
           ctx.fill();
         } else if (b === 6 && h1 < 0.34) {
-          ctx.strokeStyle = 'rgba(218, 162, 72, 0.4)';
+          ctx.strokeStyle = season === 'winter' ? 'rgba(165, 198, 224, 0.4)' : 'rgba(218, 162, 72, 0.4)';
           ctx.lineWidth = 1.8;
           ctx.beginPath();
           ctx.moveTo(sx + 6, sy + 20);
@@ -739,7 +869,7 @@ export function renderTerrainLayer(
           ctx.fill();
           ctx.globalAlpha = 1;
         } else if (b === 8 && h1 < 0.35) {
-          ctx.fillStyle = 'rgba(65, 62, 84, 0.24)';
+          ctx.fillStyle = season === 'winter' ? 'rgba(255, 255, 255, 0.42)' : 'rgba(65, 62, 84, 0.24)';
           ctx.beginPath();
           ctx.roundRect(sx + 8 + h2 * 16, sy + 10 + h1 * 18, 7, 4.5, 2);
           ctx.fill();
@@ -748,11 +878,11 @@ export function renderTerrainLayer(
 
       // Town Plaza Lawn & Cobblestone Roads
       if (W.TW[i] === 1) {
-        ctx.fillStyle = 'rgba(182, 234, 152, 0.58)';
+        ctx.fillStyle = wt.townLawn;
         ctx.fillRect(sx, sy, T + 1, T + 1);
         if (h1 < 0.14 && !W.DK[i]) {
-          // Delicate plaza clover
-          ctx.fillStyle = '#fff5c8';
+          // Delicate plaza clover / snow puff
+          ctx.fillStyle = season === 'winter' ? '#ffffff' : season === 'autumn' ? '#f5b858' : '#fff5c8';
           ctx.beginPath();
           ctx.arc(sx + 18, sy + 20, 1.8, 0, Math.PI * 2);
           ctx.fill();
@@ -1046,9 +1176,11 @@ function drawStorybookCottage(
   ctx: CanvasRenderingContext2D,
   tx: number,
   ty: number,
-  t: number
+  t: number,
+  season: SeasonId = 'spring'
 ): void {
   const pal = TOWN_ROOF_PALETTES[Math.abs(tx * 7 + ty * 13) % TOWN_ROOF_PALETTES.length];
+  const wt = SEASON_THEMES[season]?.world || SEASON_THEMES.spring.world;
   const left = tx * T - 6;
   const top = (ty - 1) * T - 18;
   const w = T * 3 + 12;
@@ -1184,6 +1316,18 @@ function drawStorybookCottage(
     ctx.stroke();
   }
 
+  // Soft snow frost crest across cottage roof ridge in Winter
+  if (wt.snowTrim) {
+    ctx.fillStyle = 'rgba(244, 250, 255, 0.92)';
+    ctx.beginPath();
+    ctx.moveTo(left + 6, top + 34);
+    ctx.lineTo(cx, top - 2);
+    ctx.lineTo(left + w - 6, top + 34);
+    ctx.quadraticCurveTo(cx, top + 20, left + 6, top + 34);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   // Gable Accent Triangle & Attic Round Window
   ctx.fillStyle = pal.trim;
   ctx.strokeStyle = OUTLINE;
@@ -1289,15 +1433,17 @@ function drawSurfacePropAt(
   x: number,
   y: number,
   t: number,
-  towns: Town[]
+  towns: Town[],
+  season: SeasonId = 'spring'
 ): void {
   const cx = x * T + T / 2;
   const cy = y * T + T / 2;
   const h1 = hash(x, y, 601);
   const h2 = hash(x, y, 602);
+  const wt = SEASON_THEMES[season]?.world || SEASON_THEMES.spring.world;
 
   if (dk === 10) {
-    drawStorybookCottage(ctx, x, y, t);
+    drawStorybookCottage(ctx, x, y, t, season);
     return;
   }
   if (dk === 14) {
@@ -1399,13 +1545,13 @@ function drawSurfacePropAt(
   }
 
   if (dk === 1) {
-    // Flowering Shrub Bush with Rim Lighting
+    // Flowering Shrub Bush with Seasonal Foliage & Blossoms
     ctx.fillStyle = 'rgba(30, 50, 38, 0.2)';
     ctx.beginPath();
     ctx.ellipse(cx, cy + 10, 14, 5.5, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = '#3b8b51';
+    ctx.fillStyle = wt.bushLeafDark;
     ctx.strokeStyle = OUTLINE;
     ctx.lineWidth = 1.4;
     ctx.beginPath();
@@ -1416,13 +1562,13 @@ function drawSurfacePropAt(
     ctx.stroke();
 
     // Bright upper leaf puff
-    ctx.fillStyle = '#63be74';
+    ctx.fillStyle = wt.bushLeafLight;
     ctx.beginPath();
     ctx.arc(cx - 1, cy - 5, 7, 0, Math.PI * 2);
     ctx.fill();
 
-    // Blossoms
-    ctx.fillStyle = h1 > 0.5 ? '#ff8fb8' : '#ffe373';
+    // Blossoms / berries
+    ctx.fillStyle = h1 > 0.5 ? wt.bushBlossoms[0] : wt.bushBlossoms[1];
     ctx.beginPath();
     ctx.arc(cx - 5, cy - 3, 2.4, 0, Math.PI * 2);
     ctx.arc(cx + 5, cy + 1, 2.4, 0, Math.PI * 2);
@@ -1432,7 +1578,7 @@ function drawSurfacePropAt(
   }
 
   if (dk === 2 || dk === 4 || dk === 7) {
-    // Lush Storybook Trees (Whisper Oak = 2, Cherry Blossom = 4, Frost Pine = 7)
+    // Lush Seasonal Storybook Trees (Oak = 2, Blossom/Maple = 4, Pine = 7)
     const sway = Math.sin(t * 1.35 + x * 0.5 + y * 0.3) * 1.7;
     ctx.fillStyle = 'rgba(26, 28, 45, 0.25)';
     ctx.beginPath();
@@ -1440,7 +1586,7 @@ function drawSurfacePropAt(
     ctx.fill();
 
     // Flared Roots & Bark Trunk
-    ctx.fillStyle = dk === 4 ? '#724952' : '#6b4939';
+    ctx.fillStyle = dk === 4 ? wt.blossomBark : '#6b4939';
     ctx.strokeStyle = OUTLINE;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
@@ -1457,13 +1603,8 @@ function drawSurfacePropAt(
     ctx.fillRect(cx - 2.5, cy - 6, 2.5, 16);
 
     if (dk === 7) {
-      // Multi-tiered Snow-Frosted Evergreen Pine
-      const tiers = [
-        { dy: -3, w: 20, h: 19, c: '#34685e', cap: '#629d91' },
-        { dy: -14, w: 15.5, h: 16.5, c: '#447f73', cap: '#cceaff' },
-        { dy: -25, w: 10.5, h: 14, c: '#6eb2a3', cap: '#eef9ff' },
-      ];
-      tiers.forEach((tier, idx) => {
+      // Multi-tiered Seasonal Evergreen Pine
+      wt.pineTiers.forEach((tier, idx) => {
         const sxTip = cx + sway * (0.4 + idx * 0.3);
         ctx.fillStyle = tier.c;
         ctx.strokeStyle = OUTLINE;
@@ -1477,7 +1618,7 @@ function drawSurfacePropAt(
         ctx.stroke();
 
         // Snow/sunlight frost cap on upper slope
-        if (idx > 0) {
+        if (idx > 0 || wt.snowTrim) {
           ctx.fillStyle = tier.cap;
           ctx.beginPath();
           ctx.moveTo(sxTip, cy + tier.dy - tier.h + 1);
@@ -1488,10 +1629,7 @@ function drawSurfacePropAt(
         }
       });
     } else {
-      const shades =
-        dk === 4
-          ? ['#e57da8', '#fba7c8', '#ffd5e7']
-          : ['#327d4e', '#469e64', '#72cb86'];
+      const shades = dk === 4 ? wt.blossomShades : wt.oakShades;
 
       // Deep lower bough cluster (with crisp outline)
       ctx.fillStyle = shades[0];
@@ -1510,22 +1648,22 @@ function drawSurfacePropAt(
       ctx.fill();
       ctx.stroke();
 
-      // Sunlit crown puff
+      // Sunlit / snow-topped crown puff
       ctx.fillStyle = shades[2];
       ctx.beginPath();
       ctx.arc(cx - 3 + sway, cy - 23, 11, 0, Math.PI * 2);
       ctx.fill();
 
-      // Apples / Blossoms inside canopy
+      // Apples / Blossoms / Ice crystals inside canopy
       if (dk === 4) {
-        ctx.fillStyle = '#fff5fa';
+        ctx.fillStyle = wt.blossomPetal;
         [[-8, -15], [6, -18], [-1, -8]].forEach(([bx, by]) => {
           ctx.beginPath();
           ctx.arc(cx + bx + sway * 0.7, cy + by, 2.2, 0, Math.PI * 2);
           ctx.fill();
         });
       } else if (h1 < 0.45) {
-        ctx.fillStyle = h2 > 0.5 ? '#ff7b7b' : '#ffd23f';
+        ctx.fillStyle = h2 > 0.5 ? wt.oakFruit[0] : wt.oakFruit[1];
         [[-7, -14], [7, -16], [1, -9]].forEach(([fx, fy]) => {
           ctx.beginPath();
           ctx.arc(cx + fx + sway * 0.7, cy + fy, 2.2, 0, Math.PI * 2);
@@ -1622,9 +1760,9 @@ function drawSurfacePropAt(
     ctx.closePath();
     ctx.fill();
 
-    // Cozy Moss Cushion Cap on stone
+    // Cozy Moss / Autumn Lichen / Winter Snow Cap on stone
     if (h1 < 0.72) {
-      ctx.fillStyle = '#65be78';
+      ctx.fillStyle = wt.boulderCap;
       ctx.beginPath();
       ctx.ellipse(cx - 3, cy - 7.5, 6.5, 3.2, -0.2, 0, Math.PI * 2);
       ctx.fill();
@@ -1656,25 +1794,249 @@ function drawSurfacePropAt(
   }
 
   if (dk === 9) {
-    // Swaying Trio of Wildflowers
+    // Swaying Trio of Seasonal Wildflowers
     const sw = Math.sin(t * 2.3 + x + y) * 1.6;
-    const colors = ['#ff7aa8', '#ffd84d', '#8ed0ff'];
+    const colors = wt.flowerPetals;
     [
       [-6, 3, 0],
       [0, -4, 1],
       [6, 4, 2],
     ].forEach(([ox, oy, ci]) => {
-      ctx.fillStyle = '#5bb367';
+      ctx.fillStyle = wt.flowerStems;
       ctx.fillRect(cx + ox - 0.8, cy + oy + 2, 1.6, 6);
       ctx.fillStyle = colors[(ci + Math.floor(h1 * 3)) % 3];
       ctx.beginPath();
       ctx.arc(cx + ox + sw, cy + oy, 3.3, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#fff7cc';
+      ctx.fillStyle = wt.flowerCenter;
       ctx.beginPath();
       ctx.arc(cx + ox + sw, cy + oy, 1.25, 0, Math.PI * 2);
       ctx.fill();
     });
+    return;
+  }
+
+  if (dk === 17) {
+    // Market Stall with Striped Awning & Merchant Counter
+    const accentColors = ['#ff7aa8', '#4fd1c5', '#ffb347', '#8f7bff'];
+    const stripeCol = accentColors[Math.floor(h1 * accentColors.length) % accentColors.length];
+    ctx.fillStyle = 'rgba(28, 22, 46, 0.24)';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 12, 18, 6.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#7e523a';
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.roundRect(cx - 14, cy - 2, 28, 12, 3);
+    ctx.fill();
+    ctx.stroke();
+
+    // Goods crates & potion jars on counter
+    ctx.fillStyle = '#ffd27d';
+    ctx.fillRect(cx - 10, cy - 5, 7, 4);
+    ctx.fillStyle = '#7de0ff';
+    ctx.beginPath();
+    ctx.arc(cx + 5, cy - 4, 2.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Canopy posts & striped roof
+    ctx.fillStyle = '#6f4734';
+    ctx.fillRect(cx - 13, cy - 16, 2.8, 15);
+    ctx.fillRect(cx + 10.2, cy - 16, 2.8, 15);
+    ctx.fillStyle = '#fff8ee';
+    ctx.beginPath();
+    ctx.roundRect(cx - 16, cy - 21, 32, 9, 3.5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = stripeCol;
+    for (let sx = -12; sx <= 10; sx += 8) {
+      ctx.fillRect(cx + sx, cy - 20.5, 4.2, 8);
+    }
+    return;
+  }
+
+  if (dk === 18) {
+    // Stone Town Well with Peak Shingle Roof
+    ctx.fillStyle = 'rgba(28, 22, 46, 0.24)';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 11, 15, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#9aa0b4';
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 4, 12, 7.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#5bbce6';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 2.5, 7.5, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#6f4c38';
+    ctx.fillRect(cx - 10, cy - 13, 2.6, 15);
+    ctx.fillRect(cx + 7.4, cy - 13, 2.6, 15);
+
+    ctx.fillStyle = '#c86a52';
+    ctx.beginPath();
+    ctx.moveTo(cx - 14, cy - 11);
+    ctx.lineTo(cx, cy - 24);
+    ctx.lineTo(cx + 14, cy - 11);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    return;
+  }
+
+  if (dk === 19) {
+    // Walkable Festival Bunting Archway
+    ctx.fillStyle = '#6b4534';
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 1.3;
+    ctx.fillRect(cx - 16, cy - 20, 3.5, 29);
+    ctx.strokeRect(cx - 16, cy - 20, 3.5, 29);
+    ctx.fillRect(cx + 12.5, cy - 20, 3.5, 29);
+    ctx.strokeRect(cx + 12.5, cy - 20, 3.5, 29);
+
+    ctx.strokeStyle = '#6b4534';
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.moveTo(cx - 15, cy - 19);
+    ctx.quadraticCurveTo(cx, cy - 11, cx + 15, cy - 19);
+    ctx.stroke();
+
+    const pennantCols = ['#ff7aa8', '#ffd23f', '#6ce0ff', '#7bd88f'];
+    pennantCols.forEach((pCol, idx) => {
+      const px = cx - 9 + idx * 6;
+      const py = cy - 15 + (idx === 1 || idx === 2 ? 2.2 : 0);
+      ctx.fillStyle = pCol;
+      ctx.beginPath();
+      ctx.moveTo(px - 2.4, py);
+      ctx.lineTo(px + 2.4, py);
+      ctx.lineTo(px, py + 5);
+      ctx.closePath();
+      ctx.fill();
+    });
+    return;
+  }
+
+  if (dk === 20) {
+    // Flower Cart Overflowing with Wildflowers
+    ctx.fillStyle = 'rgba(28, 22, 46, 0.22)';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 11, 15, 5.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#8b5a3c';
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.roundRect(cx - 13, cy - 4, 24, 10, 3);
+    ctx.fill();
+    ctx.stroke();
+
+    // Wheels
+    ctx.fillStyle = '#5a3a29';
+    ctx.beginPath();
+    ctx.arc(cx - 7, cy + 7, 4.5, 0, Math.PI * 2);
+    ctx.arc(cx + 7, cy + 7, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Flower mounds
+    const blooms = ['#ff7aa8', '#ffd23f', '#9b7dff', '#7bd88f'];
+    blooms.forEach((bCol, idx) => {
+      ctx.fillStyle = bCol;
+      ctx.beginPath();
+      ctx.arc(cx - 8 + idx * 5, cy - 6 - (idx % 2) * 2.5, 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    return;
+  }
+
+  if (dk === 21) {
+    // Tea Café Bistro Set with Striped Parasol
+    ctx.fillStyle = 'rgba(28, 22, 46, 0.22)';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 11, 14, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#8b5a3c';
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 1.2;
+    ctx.fillRect(cx - 11, cy + 2, 5, 7);
+    ctx.fillRect(cx + 6, cy + 2, 5, 7);
+    ctx.fillStyle = '#f6ecd9';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 1, 7.5, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Parasol
+    ctx.fillStyle = '#6b4534';
+    ctx.fillRect(cx - 1, cy - 16, 2, 16);
+    ctx.fillStyle = '#ff9ebb';
+    ctx.beginPath();
+    ctx.arc(cx, cy - 13, 12, Math.PI, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    return;
+  }
+
+  if (dk === 22) {
+    // Harbor Pier Bollard & Crate Cluster
+    ctx.fillStyle = '#7c533c';
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.roundRect(cx - 12, cy - 2, 11, 10, 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#9c6e4e';
+    ctx.beginPath();
+    ctx.roundRect(cx + 1, cy - 5, 9, 13, 3);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#ffe270';
+    ctx.beginPath();
+    ctx.arc(cx + 5.5, cy - 7, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+
+  if (dk === 23) {
+    // Community Town Noticeboard
+    ctx.fillStyle = 'rgba(28, 22, 46, 0.22)';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 11, 13, 4.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#6f4c38';
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 1.4;
+    ctx.fillRect(cx - 10, cy - 4, 3, 15);
+    ctx.fillRect(cx + 7, cy - 4, 3, 15);
+
+    ctx.fillStyle = '#c8925a';
+    ctx.beginPath();
+    ctx.roundRect(cx - 13, cy - 18, 26, 15, 2.5);
+    ctx.fill();
+    ctx.stroke();
+
+    // Parchment flyers
+    ctx.fillStyle = '#fff9e6';
+    ctx.fillRect(cx - 9, cy - 15, 7, 8);
+    ctx.fillStyle = '#ffe0ea';
+    ctx.fillRect(cx + 1, cy - 14, 8, 7);
+    ctx.fillStyle = '#ffd23f';
+    ctx.beginPath();
+    ctx.arc(cx, cy - 19, 2.6, 0, Math.PI * 2);
+    ctx.fill();
   }
 }
 
@@ -1693,6 +2055,7 @@ export function collectSurfacePropDrawables(
   const bounds = clampTileRange(startX, endX, startY, endY, 4, 4);
   if (!bounds.valid) return items;
   const t = W.time;
+  const season = W.season || 'spring';
   const minX = bounds.minX;
   const maxX = bounds.maxX;
   const minY = bounds.minY;
@@ -1706,20 +2069,251 @@ export function collectSurfacePropDrawables(
 
       if (dk === 8 || dk === 9) {
         // Ground-hugging shells & wildflowers always draw under creatures
-        drawSurfacePropAt(ctx, dk, x, y, t, W.towns);
+        drawSurfacePropAt(ctx, dk, x, y, t, W.towns, season);
         continue;
       }
 
-      const sortY = dk === 10 ? y * T + T * 0.92 : y * T + T * 0.72;
+      const sortY = dk === 10 ? y * T + T * 0.92 : dk === 19 ? y * T + T * 0.86 : y * T + T * 0.72;
       const tileX = x;
       const tileY = y;
       const dkId = dk;
       items.push({
         sortY,
-        draw: () => drawSurfacePropAt(ctx, dkId, tileX, tileY, t, W.towns),
+        draw: () => drawSurfacePropAt(ctx, dkId, tileX, tileY, t, W.towns, season),
       });
     }
   }
+  // Surface Island Settlement Monuments (matching World Atlas & 3D Landmarks)
+  const monumentTownNames = new Set([
+    'Wildflower Mill',
+    'Tidepool Haven',
+    'Cinder Spas',
+    'Lily Pavilion',
+    'Aurora Station',
+    'Bellwood Treetops',
+    'Dawn Spire Summit',
+  ]);
+  for (const tw of W.towns) {
+    if (tw.w !== 0 || !monumentTownNames.has(tw.n)) continue;
+    const mx = tw.x;
+    const my = tw.y - 4.4;
+    if (mx < minX - 3 || mx > maxX + 3 || my < minY - 3 || my > maxY + 3) continue;
+    const cx = mx * T + T / 2;
+    const cy = my * T + T / 2;
+    const townName = tw.n;
+    items.push({
+      sortY: cy + T * 0.45,
+      draw: () => {
+        ctx.save();
+        ctx.fillStyle = 'rgba(28, 22, 46, 0.24)';
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 12, 34, 11, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (townName === 'Wildflower Mill') {
+          ctx.fillStyle = '#fff1cf';
+          ctx.strokeStyle = OUTLINE;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(cx - 18, cy + 12);
+          ctx.lineTo(cx - 12, cy - 34);
+          ctx.lineTo(cx + 12, cy - 34);
+          ctx.lineTo(cx + 18, cy + 12);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = '#e87058';
+          ctx.beginPath();
+          ctx.moveTo(cx - 16, cy - 34);
+          ctx.lineTo(cx, cy - 54);
+          ctx.lineTo(cx + 16, cy - 34);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = '#8d5b42';
+          ctx.fillRect(cx - 5, cy - 2, 10, 14);
+          ctx.strokeRect(cx - 5, cy - 2, 10, 14);
+
+          ctx.save();
+          ctx.translate(cx, cy - 26);
+          ctx.rotate(-t * 1.15);
+          for (let b = 0; b < 4; b++) {
+            ctx.rotate(Math.PI / 2);
+            ctx.strokeStyle = '#6f4c38';
+            ctx.lineWidth = 2.4;
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(0, -28);
+            ctx.stroke();
+            ctx.fillStyle = '#fffaf0';
+            ctx.strokeStyle = OUTLINE;
+            ctx.lineWidth = 1.1;
+            ctx.fillRect(1, -26, 8, 18);
+            ctx.strokeRect(1, -26, 8, 18);
+          }
+          ctx.restore();
+        } else if (townName === 'Tidepool Haven') {
+          // Lighthouse + sweeping golden beam
+          const sweep = Math.sin(t * 1.1) * 0.45;
+          drawGlowHalo(ctx, '255, 232, 130', cx, cy - 52, 46, 0.72);
+          ctx.fillStyle = 'rgba(255, 232, 140, 0.22)';
+          ctx.beginPath();
+          ctx.moveTo(cx, cy - 52);
+          ctx.lineTo(cx + Math.cos(sweep - 0.25) * 85, cy - 52 + Math.sin(sweep - 0.25) * 40);
+          ctx.lineTo(cx + Math.cos(sweep + 0.25) * 85, cy - 52 + Math.sin(sweep + 0.25) * 40);
+          ctx.closePath();
+          ctx.fill();
+
+          const stripes: [number, number, string][] = [
+            [cy - 6, 14, '#fbf8ff'],
+            [cy - 22, 12, '#f25f7c'],
+            [cy - 38, 10, '#fbf8ff'],
+          ];
+          stripes.forEach(([sy, hw, col]) => {
+            ctx.fillStyle = col;
+            ctx.strokeStyle = OUTLINE;
+            ctx.lineWidth = 1.4;
+            ctx.fillRect(cx - hw, sy - 8, hw * 2, 18);
+            ctx.strokeRect(cx - hw, sy - 8, hw * 2, 18);
+          });
+          ctx.fillStyle = '#ffe57f';
+          ctx.fillRect(cx - 7, cy - 56, 14, 10);
+          ctx.strokeRect(cx - 7, cy - 56, 14, 10);
+          ctx.fillStyle = '#f25f7c';
+          ctx.beginPath();
+          ctx.moveTo(cx - 11, cy - 56);
+          ctx.lineTo(cx, cy - 68);
+          ctx.lineTo(cx + 11, cy - 56);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        } else if (townName === 'Cinder Spas') {
+          ctx.fillStyle = '#4c4252';
+          ctx.strokeStyle = OUTLINE;
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy + 2, 32, 16, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#4de6dc';
+          ctx.beginPath();
+          ctx.ellipse(cx, cy + 1, 24, 11, 0, 0, Math.PI * 2);
+          ctx.fill();
+          [-26, 26].forEach((lx) => {
+            drawGlowHalo(ctx, '255, 110, 50', cx + lx, cy - 18, 24, 0.75);
+            ctx.fillStyle = '#ff7b3b';
+            ctx.strokeStyle = OUTLINE;
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.ellipse(cx + lx, cy - 18, 5, 8, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          });
+          for (let s = 0; s < 3; s++) {
+            const ph = (t * 0.5 + s * 0.33) % 1;
+            ctx.fillStyle = `rgba(255,255,255,${(0.6 - ph * 0.5).toFixed(2)})`;
+            ctx.beginPath();
+            ctx.arc(cx + Math.sin(t * 2 + s) * 9, cy - 4 - ph * 28, 5 + ph * 4, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        } else if (townName === 'Lily Pavilion') {
+          ctx.fillStyle = '#3ec47c';
+          ctx.strokeStyle = OUTLINE;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy + 4, 34, 14, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#fbf8ff';
+          ctx.fillRect(cx - 20, cy - 24, 5, 28);
+          ctx.fillRect(cx + 15, cy - 24, 5, 28);
+          ctx.fillStyle = '#9b72e8';
+          ctx.beginPath();
+          ctx.arc(cx, cy - 24, 24, Math.PI, 0);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#ffd23f';
+          ctx.beginPath();
+          ctx.arc(cx, cy - 50, 4.5, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (townName === 'Aurora Station') {
+          drawGlowHalo(ctx, '95, 245, 184', cx, cy - 28, 54, 0.65);
+          ctx.strokeStyle = '#5ff5b8';
+          ctx.lineWidth = 7;
+          ctx.beginPath();
+          ctx.arc(cx, cy - 12, 22, Math.PI, 0);
+          ctx.stroke();
+          ctx.fillStyle = '#9ef0ff';
+          ctx.strokeStyle = '#4f91a8';
+          ctx.lineWidth = 1.4;
+          ctx.fillRect(cx - 25, cy - 14, 9, 24);
+          ctx.strokeRect(cx - 25, cy - 14, 9, 24);
+          ctx.fillRect(cx + 16, cy - 14, 9, 24);
+          ctx.strokeRect(cx + 16, cy - 14, 9, 24);
+        } else if (townName === 'Bellwood Treetops') {
+          ctx.fillStyle = '#8d5b42';
+          ctx.strokeStyle = OUTLINE;
+          ctx.lineWidth = 1.5;
+          ctx.fillRect(cx - 20, cy - 30, 5, 42);
+          ctx.strokeRect(cx - 20, cy - 30, 5, 42);
+          ctx.fillRect(cx + 15, cy - 30, 5, 42);
+          ctx.strokeRect(cx + 15, cy - 30, 5, 42);
+          ctx.fillStyle = '#57b181';
+          ctx.beginPath();
+          ctx.moveTo(cx - 28, cy - 30);
+          ctx.lineTo(cx, cy - 48);
+          ctx.lineTo(cx + 28, cy - 30);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.save();
+          ctx.translate(cx, cy - 28);
+          ctx.rotate(Math.sin(t * 1.9) * 0.16);
+          ctx.fillStyle = '#ffd23f';
+          ctx.beginPath();
+          ctx.moveTo(-7, 2);
+          ctx.lineTo(7, 2);
+          ctx.lineTo(11, 18);
+          ctx.lineTo(-11, 18);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        } else if (townName === 'Dawn Spire Summit') {
+          drawGlowHalo(ctx, '255, 210, 63', cx, cy - 36, 58, 0.72);
+          ctx.fillStyle = '#fbf8ff';
+          ctx.strokeStyle = OUTLINE;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy + 6, 30, 11, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(cx - 11, cy + 4);
+          ctx.lineTo(cx - 4, cy - 48);
+          ctx.lineTo(cx + 4, cy - 48);
+          ctx.lineTo(cx + 11, cy + 4);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.strokeStyle = '#ffd23f';
+          ctx.lineWidth = 2.6;
+          ctx.beginPath();
+          ctx.arc(cx, cy - 58, 10, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillStyle = '#ffd23f';
+          ctx.beginPath();
+          ctx.arc(cx, cy - 58, 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      },
+    });
+  }
+
   ctx.restore();
   return items;
 }
@@ -1851,6 +2445,165 @@ export function collectSkyPropDrawables(
       });
     }
   }
+  // Sky Kingdom Landmarks: Cirrus Castle, Nimbus Market, Sunrise Updraft Spire, Aether Sky Garden
+  const inRangeSky = (tx: number, ty: number) =>
+    tx >= bounds.minX - 4 && tx <= bounds.maxX + 4 && ty >= bounds.minY - 4 && ty <= bounds.maxY + 4;
+
+  const { cirrusCastle, nimbusMarket, sunriseUpdraftSpire, aetherGarden } = WORLD_ANCHORS.sky;
+
+  if (inRangeSky(cirrusCastle.tx, cirrusCastle.ty)) {
+    const cx = cirrusCastle.tx * T + T / 2;
+    const cy = cirrusCastle.ty * T + T / 2;
+    items.push({
+      sortY: cy + 16,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 224, 130', cx, cy - 26, 68, 0.58);
+        ctx.fillStyle = '#fbf8ff';
+        ctx.strokeStyle = '#7590c2';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.roundRect(cx - 28, cy - 20, 56, 32, 6);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#7cb0ff';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 20, 26, Math.PI, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.moveTo(cx - 6, cy - 46);
+        ctx.lineTo(cx, cy - 62);
+        ctx.lineTo(cx + 6, cy - 46);
+        ctx.closePath();
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeSky(nimbusMarket.tx, nimbusMarket.ty)) {
+    const cx = nimbusMarket.tx * T + T / 2;
+    const cy = nimbusMarket.ty * T + T / 2;
+    items.push({
+      sortY: cy + 16,
+      draw: () => {
+        // Woven circular cloudstone plaza rug
+        ctx.save();
+        ctx.fillStyle = '#fff6e6';
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 6, 44, 22, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Five arc-arranged pastel sky market stalls
+        [
+          [-34, -6, '#ff7aa8'],
+          [-18, -16, '#6ac7ff'],
+          [0, -20, '#ffc64d'],
+          [18, -16, '#9b7dff'],
+          [34, -6, '#7bd88f'],
+        ].forEach(([ox, oy, col]) => {
+          const sx = cx + (ox as number);
+          const sy = cy + (oy as number);
+          ctx.fillStyle = '#8d5b42';
+          ctx.fillRect(sx - 8, sy - 4, 16, 10);
+          ctx.fillStyle = col as string;
+          ctx.strokeStyle = OUTLINE;
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.roundRect(sx - 10, sy - 14, 20, 8, 3);
+          ctx.fill();
+          ctx.stroke();
+        });
+
+        // Central crystal bazaar finial
+        drawGlowHalo(ctx, '255, 224, 130', cx, cy - 8, 28, 0.5);
+        ctx.fillStyle = '#ffe57f';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - 26 + Math.sin(t * 2.5) * 2.5);
+        ctx.lineTo(cx + 8, cy - 12);
+        ctx.lineTo(cx, cy + 2);
+        ctx.lineTo(cx - 8, cy - 12);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      },
+    });
+  }
+  if (inRangeSky(sunriseUpdraftSpire.tx, sunriseUpdraftSpire.ty)) {
+    const cx = sunriseUpdraftSpire.tx * T + T / 2;
+    const cy = sunriseUpdraftSpire.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 224, 122', cx, cy - 24, 54, 0.72);
+        ctx.fillStyle = '#ffd23f';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(cx - 10, cy + 8);
+        ctx.lineTo(cx - 3, cy - 44);
+        ctx.lineTo(cx + 3, cy - 44);
+        ctx.lineTo(cx + 10, cy + 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy - 18 + Math.sin(t * 2.5) * 4, 22, 7, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      },
+    });
+  }
+  if (inRangeSky(aetherGarden.tx, aetherGarden.ty)) {
+    const cx = aetherGarden.tx * T + T / 2;
+    const cy = aetherGarden.ty * T + T / 2;
+    items.push({
+      sortY: cy + 15,
+      draw: () => {
+        drawGlowHalo(ctx, '143, 213, 255', cx, cy - 18, 58, 0.6);
+        ctx.fillStyle = '#e7fbff';
+        ctx.strokeStyle = '#6da6d8';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 6, 36, 15, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // Wind Harp Pavilion arch & golden harp strings
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 6, 22, Math.PI, 0);
+        ctx.stroke();
+        ctx.strokeStyle = '#fff3b0';
+        ctx.lineWidth = 1.2;
+        for (let s = -2; s <= 2; s++) {
+          ctx.beginPath();
+          ctx.moveTo(cx + s * 6, cy - 24 + Math.abs(s) * 2);
+          ctx.lineTo(cx + s * 6, cy + 2);
+          ctx.stroke();
+        }
+        // Pastel cloud blossoms flanking the arch
+        [
+          [-26, 2, '#ff8eb8'],
+          [26, 2, '#a7efb0'],
+          [0, -32 + Math.sin(t * 2.2) * 2, '#ffe57f'],
+        ].forEach(([ox, oy, col]) => {
+          ctx.fillStyle = col as string;
+          ctx.beginPath();
+          ctx.arc(cx + (ox as number), cy + (oy as number), 5.5, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      },
+    });
+  }
+
   return items;
 }
 
@@ -2034,6 +2787,134 @@ export function collectReefPropDrawables(
         ctx.arc(5.1, -1.2, 0.9, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
+      },
+    });
+  }
+
+  // Undersea Reef Landmarks: Coral Concert Hall, Atoll Sunken Ruins, Starlit Kelp Trench, Driftwood Dive Lagoon, Sunken Pearl Grotto
+  const inRangeReef = (tx: number, ty: number) =>
+    tx >= bounds.minX - 4 && tx <= bounds.maxX + 4 && ty >= bounds.minY - 4 && ty <= bounds.maxY + 4;
+
+  const {
+    coralConcertHall,
+    atollSunkenRuins,
+    starlitKelpTrench,
+    driftwoodDiveLagoon,
+    sunkenPearlGrotto,
+  } = WORLD_ANCHORS.reef;
+
+  if (inRangeReef(coralConcertHall.tx, coralConcertHall.ty)) {
+    const cx = coralConcertHall.tx * T + T / 2;
+    const cy = coralConcertHall.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 122, 168', cx, cy - 10, 56, 0.58);
+        ctx.fillStyle = '#ffe4f0';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 6, 32, 13, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        const cols = ['#ff6b9e', '#ff9f43', '#b48cff', '#52d6c6', '#ff7aa8'];
+        for (let i = -2; i <= 2; i++) {
+          const h = 24 + (2 - Math.abs(i)) * 9 + Math.sin(t * 3 + i) * 3;
+          ctx.fillStyle = cols[i + 2];
+          ctx.beginPath();
+          ctx.roundRect(cx + i * 9 - 3, cy - h, 6, h, 3);
+          ctx.fill();
+          ctx.stroke();
+        }
+      },
+    });
+  }
+  if (inRangeReef(atollSunkenRuins.tx, atollSunkenRuins.ty)) {
+    const cx = atollSunkenRuins.tx * T + T / 2;
+    const cy = atollSunkenRuins.ty * T + T / 2;
+    items.push({
+      sortY: cy + 12,
+      draw: () => {
+        ctx.fillStyle = '#7db3b0';
+        ctx.fillRect(cx - 24, cy + 2, 48, 8);
+        ctx.fillStyle = '#fbf8ff';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.3;
+        ctx.fillRect(cx - 18, cy - 28, 6, 32);
+        ctx.strokeRect(cx - 18, cy - 28, 6, 32);
+        ctx.fillRect(cx + 12, cy - 28, 6, 32);
+        ctx.strokeRect(cx + 12, cy - 28, 6, 32);
+        ctx.fillRect(cx - 22, cy - 32, 44, 6);
+        ctx.strokeRect(cx - 22, cy - 32, 44, 6);
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.ellipse(cx, cy - 2, 5, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeReef(starlitKelpTrench.tx, starlitKelpTrench.ty)) {
+    const cx = starlitKelpTrench.tx * T + T / 2;
+    const cy = starlitKelpTrench.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '78, 245, 255', cx, cy - 12, 48, 0.65);
+        ctx.fillStyle = '#0e2948';
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 6, 28, 11, 0, 0, Math.PI * 2);
+        ctx.fill();
+        for (let k = -2; k <= 2; k++) {
+          const sw = Math.sin(t * 2 + k) * 6;
+          ctx.strokeStyle = '#1fc488';
+          ctx.lineWidth = 4.5;
+          ctx.beginPath();
+          ctx.moveTo(cx + k * 9, cy + 6);
+          ctx.quadraticCurveTo(cx + k * 9 + sw, cy - 18, cx + k * 9 - sw * 0.5, cy - 42);
+          ctx.stroke();
+        }
+      },
+    });
+  }
+  if (inRangeReef(driftwoodDiveLagoon.tx, driftwoodDiveLagoon.ty)) {
+    const cx = driftwoodDiveLagoon.tx * T + T / 2;
+    const cy = driftwoodDiveLagoon.ty * T + T / 2;
+    items.push({
+      sortY: cy + 10,
+      draw: () => {
+        drawGlowHalo(ctx, '82, 242, 224', cx, cy, 38, 0.62);
+        ctx.strokeStyle = '#52f2e0';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 2, 22, 11, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      },
+    });
+  }
+  if (inRangeReef(sunkenPearlGrotto.tx, sunkenPearlGrotto.ty)) {
+    const cx = sunkenPearlGrotto.tx * T + T / 2;
+    const cy = sunkenPearlGrotto.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '180, 248, 255', cx, cy - 10, 52, 0.68);
+        ctx.fillStyle = '#f8e6f6';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 5, 26, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = '#6fe6df';
+        ctx.lineWidth = 3.2;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 4, 18, Math.PI, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#fffaf0';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 2 + Math.sin(t * 2.2) * 2, 6.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
       },
     });
   }
@@ -2230,9 +3111,10 @@ export function collectGlowdeepPropDrawables(
     }
   }
 
-  // Nana Mochi's Soup Cauldron at Rooted Rest (130, 130)
-  const cauldronX = 130 * T + T / 2;
-  const cauldronY = 130 * T + T / 2;
+  // Nana Mochi's Soup Cauldron at Rooted Rest
+  const { rootedRest, sporeGrotto, magmaGeode, prismIce, crystalConservatory } = WORLD_ANCHORS.glowdeep;
+  const cauldronX = rootedRest.tx * T + T / 2;
+  const cauldronY = rootedRest.ty * T + T / 2;
   items.push({
     sortY: cauldronY + 8,
     draw: () => {
@@ -2253,7 +3135,7 @@ export function collectGlowdeepPropDrawables(
     },
   });
 
-  // Surface Ascent Root Portal inside Glowdeep at (130, 126)
+  // Surface Ascent Root Portal inside Glowdeep
   const retX = GLOWDEEP_RETURN_TILE.x * T + T / 2;
   const retY = GLOWDEEP_RETURN_TILE.y * T + T / 2;
   items.push({
@@ -2282,6 +3164,105 @@ export function collectGlowdeepPropDrawables(
       ctx.fillText('↑ Meadow Ascent', retX, retY - 35);
     },
   });
+
+  // Additional Glowdeep Landmarks: Spore Grotto Pier, Magma Geode Vault, Prism Ice Grotto, Crystal Conservatory
+  const inRangeGlow = (tx: number, ty: number) =>
+    tx >= bounds.minX - 4 && tx <= bounds.maxX + 4 && ty >= bounds.minY - 4 && ty <= bounds.maxY + 4;
+
+  if (inRangeGlow(sporeGrotto.tx, sporeGrotto.ty)) {
+    const cx = sporeGrotto.tx * T + T / 2;
+    const cy = sporeGrotto.ty * T + T / 2;
+    items.push({
+      sortY: cy + 12,
+      draw: () => {
+        drawGlowHalo(ctx, '100, 245, 193', cx, cy, 42, 0.55);
+        ctx.fillStyle = '#8d5b42';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.fillRect(cx - 24, cy - 12, 48, 16);
+        ctx.strokeRect(cx - 24, cy - 12, 48, 16);
+        const bob = Math.sin(t * 2.1) * 2.5;
+        ctx.fillStyle = '#c298ff';
+        ctx.beginPath();
+        ctx.ellipse(cx + 6, cy + 12 + bob, 22, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      },
+    });
+  }
+  if (inRangeGlow(magmaGeode.tx, magmaGeode.ty)) {
+    const cx = magmaGeode.tx * T + T / 2;
+    const cy = magmaGeode.ty * T + T / 2;
+    items.push({
+      sortY: cy + 12,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 160, 77', cx, cy - 8, 52, 0.72);
+        ctx.fillStyle = '#ffae4d';
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 4, 24, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+        [[-18, '#c978ff'], [0, '#ff8b4d'], [18, '#c978ff']].forEach(([ox, col]) => {
+          ctx.fillStyle = col as string;
+          ctx.beginPath();
+          ctx.moveTo(cx + (ox as number), cy - 26);
+          ctx.lineTo(cx + (ox as number) + 8, cy + 2);
+          ctx.lineTo(cx + (ox as number) - 8, cy + 2);
+          ctx.closePath();
+          ctx.fill();
+        });
+      },
+    });
+  }
+  if (inRangeGlow(prismIce.tx, prismIce.ty)) {
+    const cx = prismIce.tx * T + T / 2;
+    const cy = prismIce.ty * T + T / 2;
+    items.push({
+      sortY: cy + 12,
+      draw: () => {
+        drawGlowHalo(ctx, '107, 240, 255', cx, cy - 14, 52, 0.68);
+        [[-18, '#6bf0ff'], [-6, '#c8a6ff'], [8, '#6bf0ff'], [20, '#c8a6ff']].forEach(([ox, col], idx) => {
+          ctx.fillStyle = col as string;
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.2;
+          ctx.fillRect(cx + (ox as number) - 4, cy - 26 - (idx % 2) * 8, 8, 30 + (idx % 2) * 8);
+          ctx.strokeRect(cx + (ox as number) - 4, cy - 26 - (idx % 2) * 8, 8, 30 + (idx % 2) * 8);
+        });
+      },
+    });
+  }
+  if (inRangeGlow(crystalConservatory.tx, crystalConservatory.ty)) {
+    const cx = crystalConservatory.tx * T + T / 2;
+    const cy = crystalConservatory.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '124, 245, 200', cx, cy - 14, 58, 0.72);
+        ctx.fillStyle = '#2c2240';
+        ctx.strokeStyle = '#6bf5c9';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 5, 30, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = '#c89bff';
+        ctx.lineWidth = 2.6;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 6, 20, Math.PI, 0);
+        ctx.stroke();
+        [[-10, '#64f5c1'], [0, '#ffe57f'], [10, '#c89bff']].forEach(([ox, col], idx) => {
+          const bob = Math.sin(t * 2.4 + idx) * 2.5;
+          ctx.fillStyle = col as string;
+          ctx.beginPath();
+          ctx.moveTo(cx + (ox as number), cy - 30 + bob);
+          ctx.lineTo(cx + (ox as number) + 6, cy - 10 + bob);
+          ctx.lineTo(cx + (ox as number), cy + 2 + bob);
+          ctx.lineTo(cx + (ox as number) - 6, cy - 10 + bob);
+          ctx.closePath();
+          ctx.fill();
+        });
+      },
+    });
+  }
 
   return items;
 }
@@ -2399,9 +3380,10 @@ export function collectMoonRoadPropDrawables(
     }
   }
 
-  // The Moon's Tea House Canopy at (130, 123)
-  const teaX = 130 * T + T / 2;
-  const teaY = 123 * T + T / 2;
+  // The Moon's Tea House Canopy
+  const { teaHouse, twinStars, unsungShrine, edgeOfSilence, crescentBelvedere } = WORLD_ANCHORS.moonroad;
+  const teaX = teaHouse.tx * T + T / 2;
+  const teaY = teaHouse.ty * T + T / 2;
   items.push({
     sortY: teaY + 14,
     draw: () => {
@@ -2440,7 +3422,7 @@ export function collectMoonRoadPropDrawables(
     },
   });
 
-  // Meadow Return Silver Gate at MOONROAD_RETURN_TILE (130, 128)
+  // Meadow Return Silver Gate
   const retX = MOONROAD_RETURN_TILE.x * T + T / 2;
   const retY = MOONROAD_RETURN_TILE.y * T + T / 2;
   items.push({
@@ -2469,6 +3451,120 @@ export function collectMoonRoadPropDrawables(
       ctx.fillText('↓ Return to Meadow', retX, retY - 34);
     },
   });
+
+  // Additional Moon Road Landmarks: Twin Stars Gazebo, Shrine of the Unsung Verse, Edge of Silence Tower, Crescent Belvedere
+  const inRangeMoon = (tx: number, ty: number) =>
+    tx >= bounds.minX - 4 && tx <= bounds.maxX + 4 && ty >= bounds.minY - 4 && ty <= bounds.maxY + 4;
+
+  if (inRangeMoon(twinStars.tx, twinStars.ty)) {
+    const cx = twinStars.tx * T + T / 2;
+    const cy = twinStars.ty * T + T / 2;
+    items.push({
+      sortY: cy + 12,
+      draw: () => {
+        drawGlowHalo(ctx, '180, 140, 255', cx, cy - 16, 54, 0.65);
+        ctx.fillStyle = '#fbf8ff';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.fillRect(cx - 20, cy - 28, 5, 34);
+        ctx.fillRect(cx + 15, cy - 28, 5, 34);
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 2.6;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy - 28, 22, 6, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        const sOff = Math.sin(t * 1.4) * 10;
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.arc(cx + sOff, cy - 40, 4.5, 0, Math.PI * 2);
+        ctx.arc(cx - sOff, cy - 40, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeMoon(unsungShrine.tx, unsungShrine.ty)) {
+    const cx = unsungShrine.tx * T + T / 2;
+    const cy = unsungShrine.ty * T + T / 2;
+    items.push({
+      sortY: cy + 12,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 128, 176', cx, cy - 18, 50, 0.68);
+        ctx.fillStyle = '#fbf8ff';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.fillRect(cx - 18, cy - 28, 7, 34);
+        ctx.strokeRect(cx - 18, cy - 28, 7, 34);
+        ctx.fillRect(cx + 11, cy - 28, 7, 34);
+        ctx.strokeRect(cx + 11, cy - 28, 7, 34);
+        ctx.strokeStyle = '#ff80b0';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 22, 12, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 22, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeMoon(edgeOfSilence.tx, edgeOfSilence.ty)) {
+    const cx = edgeOfSilence.tx * T + T / 2;
+    const cy = edgeOfSilence.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 224, 150', cx, cy - 36, 48, 0.56);
+        ctx.fillStyle = '#3b425c';
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(cx - 14, cy - 36, 28, 44, 3);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#ffe8a6';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 44, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#2d3348';
+        ctx.beginPath();
+        ctx.moveTo(cx - 16, cy - 50);
+        ctx.lineTo(cx, cy - 68);
+        ctx.lineTo(cx + 16, cy - 50);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      },
+    });
+  }
+  if (inRangeMoon(crescentBelvedere.tx, crescentBelvedere.ty)) {
+    const cx = crescentBelvedere.tx * T + T / 2;
+    const cy = crescentBelvedere.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '182, 224, 255', cx, cy - 16, 56, 0.65);
+        ctx.fillStyle = '#f5f2ff';
+        ctx.strokeStyle = '#9aa8cc';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 5, 28, 11, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillRect(cx - 16, cy - 26, 4.5, 30);
+        ctx.fillRect(cx + 11.5, cy - 26, 4.5, 30);
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 30, 16, Math.PI * 0.15, Math.PI * 1.15);
+        ctx.stroke();
+        ctx.fillStyle = '#8fd5ff';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 18 + Math.sin(t * 2) * 2, 5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
 
   return items;
 }
@@ -2792,9 +3888,11 @@ export function renderGreatLanternTree(
   x: number,
   y: number,
   t: number,
-  lit: boolean
+  lit: boolean,
+  season: SeasonId = 'spring'
 ): void {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  const wt = SEASON_THEMES[season]?.world || SEASON_THEMES.spring.world;
   ctx.save();
 
   const glowRad = lit ? 155 : 75;
@@ -2832,9 +3930,9 @@ export function renderGreatLanternTree(
   ctx.fill();
   ctx.stroke();
 
-  // Multi-clustered storybook canopy
+  // Multi-clustered storybook canopy (adapts to current seasonal palette)
   const palette = lit
-    ? ['#43a86e', '#5fc784', '#86e09c', '#b7f5be']
+    ? wt.greatTreeLit
     : ['#3b4966', '#4a5c7a', '#5a7094', '#708ab2'];
   const clusters: [number, number, number, number][] = [
     [0, -92, 50, 0],
@@ -2885,7 +3983,7 @@ export function renderGreatLanternTree(
 
 /**
  * Renders drifting world-space ambient fireflies (surface), bubbles (reef), golden motes (sky),
- * bioluminescent spores (glowdeep), or starlight dust (moonroad).
+ * bioluminescent spores (glowdeep), starlight dust (moonroad), plus unique weather-reactive motes.
  */
 export function renderAmbientWorldMotes(
   ctx: CanvasRenderingContext2D,
@@ -2898,18 +3996,39 @@ export function renderAmbientWorldMotes(
   isDive: boolean,
   isGlowdeep: boolean = false,
   isMoonRoad: boolean = false,
-  lowQuality: boolean = false
+  lowQuality: boolean = false,
+  season: SeasonId = 'spring',
+  weatherId: WeatherId = 'sunny'
 ): void {
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
   const safeCx = Number.isFinite(cx) ? cx : 0;
   const safeCy = Number.isFinite(cy) ? cy : 0;
+  const wt = SEASON_THEMES[season]?.world || SEASON_THEMES.spring.world;
   ctx.save();
   const count = lowQuality ? 12 : 28;
   for (let i = 0; i < count; i++) {
     const bx = hash(i, 1, 909) * 1600;
     const by = hash(i, 2, 909) * 1000;
-    const speedY = isDive ? -18 - (i % 4) * 5 : Math.sin(t * 0.7 + i) * 14;
-    const wx = safeCx + (((bx - safeCx + Math.sin(t * 0.6 + i * 1.3) * 26) % (w + 80)) + (w + 80)) % (w + 80) - 40;
+    const isWeatherSurface = !isGlowdeep && !isMoonRoad && !isDive;
+
+    const speedY = isDive
+      ? -18 - (i % 4) * 5
+      : isWeatherSurface && weatherId === 'drizzle'
+      ? 24 + (i % 4) * 7
+      : isWeatherSurface && weatherId === 'aurora'
+      ? -10 - (i % 3) * 4
+      : !isGlowdeep && !isMoonRoad && !isSky && (season === 'autumn' || season === 'winter' || weatherId === 'snowy')
+      ? 14 + (i % 3) * 6
+      : Math.sin(t * 0.7 + i) * 14;
+    const driftX =
+      isWeatherSurface && weatherId === 'muffin_rain'
+        ? t * 24 + Math.sin(t * 1.6 + i) * 20
+        : isWeatherSurface && weatherId === 'drizzle'
+        ? -t * 14 + Math.sin(t * 1.1 + i) * 12
+        : !isGlowdeep && !isMoonRoad && !isDive && season === 'autumn'
+        ? t * 18 + Math.sin(t * 1.4 + i) * 24
+        : Math.sin(t * 0.6 + i * 1.3) * 26;
+    const wx = safeCx + (((bx - safeCx + driftX) % (w + 80)) + (w + 80)) % (w + 80) - 40;
     const wy = safeCy + (((by - safeCy + t * speedY) % (h + 80)) + (h + 80)) % (h + 80) - 40;
     const alpha = 0.25 + 0.52 * Math.abs(Math.sin(t * 1.8 + i * 2.1));
 
@@ -2927,31 +4046,297 @@ export function renderAmbientWorldMotes(
       ctx.fill();
     } else if (isDive) {
       ctx.globalAlpha = alpha * 0.85;
-      ctx.strokeStyle = '#d7f8ff';
+      ctx.strokeStyle = weatherId === 'stardust' || weatherId === 'aurora' ? '#c8efff' : '#d7f8ff';
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.arc(wx, wy, 2 + (i % 3) * 1.1, 0, Math.PI * 2);
       ctx.stroke();
+    } else if (weatherId === 'snowy' && i % 2 === 0) {
+      // Crisp rotating hexagonal ice-crystal mote
+      ctx.save();
+      ctx.translate(wx, wy);
+      ctx.rotate(t * 1.2 + i);
+      ctx.globalAlpha = alpha * 0.88;
+      ctx.strokeStyle = i % 4 === 0 ? '#d8f3ff' : '#ffffff';
+      ctx.lineWidth = 1.15;
+      const r = 3.2 + (i % 2) * 1.1;
+      ctx.beginPath();
+      for (let a = 0; a < 3; a++) {
+        const ang = (a * Math.PI) / 3;
+        ctx.moveTo(-Math.cos(ang) * r, -Math.sin(ang) * r);
+        ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+      }
+      ctx.stroke();
+      ctx.restore();
+    } else if (weatherId === 'stardust' && i % 2 === 0) {
+      // Rotating 4-point celestial starlet
+      ctx.save();
+      ctx.translate(wx, wy);
+      ctx.rotate(t * 1.4 + i);
+      ctx.globalAlpha = alpha * 0.92;
+      ctx.fillStyle = i % 4 === 0 ? '#ffe68c' : '#e2b8ff';
+      const sr = 3.6 + (i % 3) * 0.9;
+      ctx.beginPath();
+      ctx.moveTo(0, -sr);
+      ctx.quadraticCurveTo(0, 0, sr * 0.28, 0);
+      ctx.quadraticCurveTo(0, 0, 0, sr);
+      ctx.quadraticCurveTo(0, 0, -sr * 0.28, 0);
+      ctx.quadraticCurveTo(0, 0, 0, -sr);
+      ctx.moveTo(-sr, 0);
+      ctx.quadraticCurveTo(0, 0, 0, sr * 0.28);
+      ctx.quadraticCurveTo(0, 0, sr, 0);
+      ctx.quadraticCurveTo(0, 0, 0, -sr * 0.28);
+      ctx.quadraticCurveTo(0, 0, -sr, 0);
+      ctx.fill();
+      ctx.restore();
+    } else if (weatherId === 'drizzle' && i % 3 === 0) {
+      // Cool mist wisp & shimmering water droplet glint
+      ctx.globalAlpha = alpha * 0.42;
+      ctx.fillStyle = '#cbe7ff';
+      ctx.beginPath();
+      ctx.ellipse(wx, wy, 7 + (i % 3) * 3, 2.6, -0.15, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (weatherId === 'aurora' && i % 2 === 0) {
+      // Rising polar aurora wisp
+      ctx.globalAlpha = alpha * 0.72;
+      ctx.fillStyle = i % 4 === 0 ? '#64f5c1' : '#be9cff';
+      ctx.beginPath();
+      ctx.ellipse(wx, wy, 2.2, 4.4, Math.sin(t + i) * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (weatherId === 'muffin_rain' && i % 2 === 0) {
+      // Sweet bakery sugar sparkle & pastel crumb
+      ctx.globalAlpha = alpha * 0.85;
+      ctx.fillStyle = i % 4 === 0 ? '#ffd88a' : '#ff9ec2';
+      ctx.beginPath();
+      ctx.arc(wx, wy, 2.4 + (i % 2) * 0.9, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (weatherId === 'sunny' && !isSky && i % 3 === 0) {
+      // Golden sunlit prism dust
+      ctx.globalAlpha = alpha * 0.76;
+      ctx.fillStyle = i % 6 === 0 ? '#fff6bd' : '#ffdf78';
+      ctx.beginPath();
+      ctx.arc(wx, wy, 2.5 + (i % 2), 0, Math.PI * 2);
+      ctx.fill();
     } else if (isSky) {
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = '#fff0a5';
+      ctx.fillStyle = season === 'winter' ? '#e3f4ff' : season === 'autumn' ? '#ffd085' : '#fff0a5';
       ctx.beginPath();
       ctx.arc(wx, wy, 2 + (i % 2), 0, Math.PI * 2);
       ctx.fill();
     } else {
       ctx.globalAlpha = i % 3 === 0 ? alpha * 0.78 : alpha;
-      ctx.fillStyle = i % 3 === 0 ? '#ffc3dc' : '#fff091';
-      ctx.beginPath();
-      ctx.arc(wx, wy, 2.2 + (i % 2) * 0.8, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.fillStyle = i % 3 === 0 ? wt.moteColors[0] : wt.moteColors[1];
+      if (season === 'autumn' && i % 2 === 0) {
+        // Drifting maple leaf silhouette
+        ctx.save();
+        ctx.translate(wx, wy);
+        ctx.rotate(t * 1.8 + i);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 3.6, 1.9, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      } else {
+        ctx.beginPath();
+        ctx.arc(wx, wy, 2.2 + (i % 2) * 0.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
   ctx.restore();
 }
 
 /**
+ * Renders screen-space optical filters and reactive weather overlays:
+ * - Sunny: warm solar bloom & subtle diagonal multi-ring optical lens flares
+ * - Snowy: animated crystalline frost filigree in screen corners + winter edge shimmer
+ * - Drizzle: soft cool mist haze & translucent droplet bokeh glints
+ * - Stardust: celestial violet-gold shimmer & corner star-prism flares
+ * - Aurora: undulating polar emerald-violet curtain filter across upper screen
+ * - Muffin Rain: warm golden bakery glow & soft pastel bokeh
+ */
+const SUN_FLARE_NODES = [
+  { pos: 0.28, r: 24, color: 'rgba(255, 240, 175, 0.085)', ring: false },
+  { pos: 0.48, r: 13, color: 'rgba(255, 215, 130, 0.11)', ring: true },
+  { pos: 0.66, r: 34, color: 'rgba(255, 245, 200, 0.065)', ring: true },
+  { pos: 0.88, r: 17, color: 'rgba(185, 235, 255, 0.075)', ring: false },
+  { pos: 1.15, r: 28, color: 'rgba(255, 205, 155, 0.065)', ring: true },
+] as const;
+
+export function renderWeatherScreenFilter(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  weatherId: WeatherId,
+  isSky: boolean,
+  isDive: boolean,
+  isGlowdeep: boolean = false,
+  isMoonRoad: boolean = false,
+  lowQuality: boolean = false
+): void {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+  if (isGlowdeep || isMoonRoad) return;
+
+  ctx.save();
+
+  if (weatherId === 'sunny' && !isDive) {
+    // Subtle sun-axis optical bloom & translucent hexagonal/circular lens flares
+    const sunX = w * 0.86 + Math.sin(t * 0.28) * 14;
+    const sunY = h * 0.14 + Math.cos(t * 0.24) * 10;
+    const centerX = w * 0.5;
+    const centerY = h * 0.5;
+    const flarePulse = 0.85 + 0.15 * Math.sin(t * 1.3);
+
+    if (!lowQuality) {
+      ctx.globalCompositeOperation = 'lighter';
+    }
+    drawGlowHalo(
+      ctx,
+      '255, 232, 148',
+      sunX,
+      sunY,
+      Math.min(w, h) * (isSky ? 0.34 : 0.27),
+      (lowQuality ? 0.14 : 0.22) * flarePulse
+    );
+
+    if (!lowQuality) {
+      // Diagonal optical lens flare elements projecting softly across the sun-center axis
+      for (let i = 0; i < SUN_FLARE_NODES.length; i++) {
+        const node = SUN_FLARE_NODES[i];
+        const fx = sunX + (centerX - sunX) * node.pos;
+        const fy = sunY + (centerY - sunY) * node.pos;
+        const rad = node.r * (0.95 + 0.06 * Math.sin(t * 1.6 + i));
+        ctx.fillStyle = node.color;
+        ctx.beginPath();
+        ctx.arc(fx, fy, rad, 0, Math.PI * 2);
+        ctx.fill();
+        if (node.ring) {
+          ctx.strokeStyle = 'rgba(255, 248, 215, 0.11)';
+          ctx.lineWidth = 1.25;
+          ctx.stroke();
+        }
+      }
+    }
+  } else if (weatherId === 'snowy' && !isDive) {
+    // Cool crisp icy color filter + animated corner crystalline frost patterns
+    ctx.fillStyle = 'rgba(195, 230, 255, 0.07)';
+    ctx.fillRect(0, 0, w, h);
+
+    const stamp = getFrostCornerStampCanvas();
+    const cornerScale = Math.max(0.65, Math.min(1.2, Math.min(w, h) / 680));
+    const sw = stamp.width * cornerScale;
+    const sh = stamp.height * cornerScale;
+    const corners = [
+      { x: 0, y: 0, sx: 1, sy: 1, phase: 0 },
+      { x: w, y: 0, sx: -1, sy: 1, phase: 1.4 },
+      { x: 0, y: h, sx: 1, sy: -1, phase: 2.8 },
+      { x: w, y: h, sx: -1, sy: -1, phase: 4.1 },
+    ];
+    for (let i = 0; i < corners.length; i++) {
+      const c = corners[i];
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      ctx.scale(c.sx, c.sy);
+      ctx.globalAlpha = (lowQuality ? 0.24 : 0.34) + 0.09 * Math.sin(t * 1.15 + c.phase);
+      safeDrawImage(ctx, stamp, 0, 0, sw, sh);
+      ctx.restore();
+    }
+
+    // Animated ice-diamond glints flickering along the frosted corners
+    if (!lowQuality) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = '#eaf7ff';
+      for (let i = 0; i < 8; i++) {
+        const corner = corners[i % 4];
+        const rx = 18 + hash(i, 3, 412) * sw * 0.72;
+        const ry = 18 + hash(i, 4, 412) * sh * 0.72;
+        const gx = corner.x + corner.sx * rx;
+        const gy = corner.y + corner.sy * ry;
+        const twinkle = Math.max(0, Math.sin(t * 2.6 + i * 1.7));
+        if (twinkle < 0.15) continue;
+        ctx.globalAlpha = twinkle * 0.45;
+        ctx.beginPath();
+        ctx.arc(gx, gy, 1.4 + twinkle * 1.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else if (weatherId === 'drizzle' && !isDive) {
+    // Cool rainy overcast screen filter + drifting raindrop bokeh on viewport edges
+    ctx.fillStyle = 'rgba(42, 72, 118, 0.08)';
+    ctx.fillRect(0, 0, w, h);
+    if (!lowQuality) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 6; i++) {
+        const bx = (hash(i, 7, 515) * w + t * (4 + i)) % w;
+        const by = (hash(i, 8, 515) * h + Math.sin(t * 0.6 + i) * 18 + h) % h;
+        const pulse = 0.5 + 0.5 * Math.sin(t * 1.5 + i * 2.2);
+        ctx.strokeStyle = `rgba(180, 222, 255, ${(0.07 + pulse * 0.07).toFixed(3)})`;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(bx, by, 10 + (i % 3) * 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  } else if (weatherId === 'stardust') {
+    // Celestial violet-gold corner sheen & twinkling prism bokeh orbs
+    if (!lowQuality) {
+      ctx.globalCompositeOperation = 'lighter';
+      drawGlowHalo(ctx, '182, 128, 255', w * 0.15, h * 0.15, Math.min(w, h) * 0.3, 0.13);
+      drawGlowHalo(ctx, '255, 222, 130', w * 0.85, h * 0.2, Math.min(w, h) * 0.24, 0.11);
+      for (let i = 0; i < 6; i++) {
+        const px = w * (0.1 + i * 0.16) + Math.sin(t * 0.5 + i) * 18;
+        const py = h * (0.14 + (i % 2) * 0.68) + Math.cos(t * 0.4 + i) * 14;
+        const glow = 0.06 + 0.06 * Math.abs(Math.sin(t * 1.7 + i));
+        ctx.fillStyle = i % 2 === 0 ? `rgba(255, 226, 136, ${glow.toFixed(3)})` : `rgba(210, 165, 255, ${glow.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(px, py, 14 + (i % 3) * 7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      ctx.fillStyle = 'rgba(130, 88, 200, 0.05)';
+      ctx.fillRect(0, 0, w, h);
+    }
+  } else if (weatherId === 'aurora' && !isDive) {
+    // Upper screen-space polar curtain glow filter
+    if (!lowQuality) {
+      ctx.globalCompositeOperation = 'lighter';
+    }
+    const bands = lowQuality ? 2 : 4;
+    for (let i = 0; i < bands; i++) {
+      const bx = w * (0.18 + i * 0.22) + Math.sin(t * 0.45 + i * 1.3) * 42;
+      const by = h * 0.12 + Math.cos(t * 0.35 + i) * 18;
+      drawGlowHalo(
+        ctx,
+        i % 2 === 0 ? '98, 245, 198' : '168, 132, 255',
+        bx,
+        by,
+        Math.min(w, h) * 0.28,
+        (lowQuality ? 0.075 : 0.11) + 0.03 * Math.sin(t * 1.1 + i)
+      );
+    }
+  } else if (weatherId === 'muffin_rain' && !isDive) {
+    // Warm golden-peach bakery glow & drifting sugar bokeh
+    ctx.fillStyle = 'rgba(255, 224, 178, 0.065)';
+    ctx.fillRect(0, 0, w, h);
+    if (!lowQuality) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 6; i++) {
+        const px = ((hash(i, 2, 622) * w + t * 14) % (w + 60)) - 30;
+        const py = ((hash(i, 3, 622) * h + t * 8) % (h + 60)) - 30;
+        ctx.fillStyle = i % 2 === 0 ? 'rgba(255, 224, 152, 0.085)' : 'rgba(255, 182, 208, 0.075)';
+        ctx.beginPath();
+        ctx.arc(px, py, 15 + (i % 3) * 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  ctx.restore();
+}
+
+/**
  * Renders drifting soft cloud shadows, 7-minute Day -> Golden Hour -> Starlight ambiance,
- * warm luminous lantern glows at dusk/night, and a gentle storybook corner vignette.
+ * warm luminous lantern glows at dusk/night, weather screen filters, and a gentle storybook corner vignette.
  */
 export function renderWorldLightingAndAtmosphere(
   ctx: CanvasRenderingContext2D,
@@ -2966,11 +4351,14 @@ export function renderWorldLightingAndAtmosphere(
   towns: Town[],
   isGlowdeep: boolean = false,
   isMoonRoad: boolean = false,
-  lowQuality: boolean = false
+  lowQuality: boolean = false,
+  season: SeasonId = 'spring',
+  weatherId: WeatherId = 'sunny'
 ): void {
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
   const safeCx = Number.isFinite(cx) ? cx : 0;
   const safeCy = Number.isFinite(cy) ? cy : 0;
+  const wt = SEASON_THEMES[season]?.world || SEASON_THEMES.spring.world;
   // 1. Drifting translucent cloud shadows across surface islands (gives depth without hurting clarity)
   if (!lowQuality && !isDive && !isSky && !isGlowdeep && !isMoonRoad) {
     ctx.save();
@@ -3038,12 +4426,27 @@ export function renderWorldLightingAndAtmosphere(
     }
   }
 
+  // 2b. Subtle Seasonal Atmosphere Glaze
+  if (!isDive && !isGlowdeep && !isMoonRoad && wt.ambientTint) {
+    ctx.fillStyle = wt.ambientTint;
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  // 2c. Reactive Screen-Space Weather Filters (lens flares, corner frost, mist bokeh, aurora curtains)
+  renderWeatherScreenFilter(ctx, w, h, t, weatherId, isSky, isDive, isGlowdeep, isMoonRoad, lowQuality);
+
   // 3. Cached Soft Storybook Edge Vignette (zero per-frame gradient allocations)
   if (!lowQuality) {
     const edgeColor = isDive
       ? 'rgba(4, 14, 34, 0.34)'
       : isGlowdeep || isMoonRoad
       ? 'rgba(10, 4, 24, 0.36)'
+      : weatherId === 'snowy'
+      ? 'rgba(18, 42, 72, 0.2)'
+      : season === 'autumn'
+      ? 'rgba(46, 22, 14, 0.18)'
+      : season === 'winter'
+      ? 'rgba(18, 36, 62, 0.18)'
       : 'rgba(32, 18, 46, 0.16)';
     safeDrawImage(ctx, getWorldVignetteCanvas(w, h, edgeColor), 0, 0);
   }
@@ -3060,8 +4463,10 @@ export function renderPlayerMochiHouse(
   y: number,
   t: number,
   ownerName: string = 'Mochi',
-  fireplaceLit: boolean = true
+  fireplaceLit: boolean = true,
+  season: SeasonId = 'spring'
 ): void {
+  const wt = SEASON_THEMES[season]?.world || SEASON_THEMES.spring.world;
   const mainW = 94;
   const mainH = 74;
   const wingW = 36;
@@ -3112,12 +4517,12 @@ export function renderPlayerMochiHouse(
       ctx.stroke();
     }
     // Blossom bush beside fence
-    ctx.fillStyle = '#5bb870';
+    ctx.fillStyle = wt.bushLeafLight;
     ctx.beginPath();
     ctx.arc(startX + (side === -1 ? 4 : 18), baseY - 2, 7.5, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = side === -1 ? '#ff8fb8' : '#ffd23f';
+    ctx.fillStyle = side === -1 ? wt.bushBlossoms[0] : wt.bushBlossoms[1];
     ctx.beginPath();
     ctx.arc(startX + (side === -1 ? 2 : 16), baseY - 4, 2.3, 0, Math.PI * 2);
     ctx.arc(startX + (side === -1 ? 7 : 20), baseY - 2, 2.1, 0, Math.PI * 2);
@@ -3222,8 +4627,8 @@ export function renderPlayerMochiHouse(
   ctx.fillRect(left + mainW - 12, top + 40, 7, baseY - (top + 49));
   ctx.fillRect(left + 5, top + 40, mainW - 10, 5);
 
-  // 7. Two-Tier Storybook Rose-Quartz Shingled Roof
-  ctx.fillStyle = '#bd4769';
+  // 7. Two-Tier Storybook Seasonal Shingled Roof
+  ctx.fillStyle = wt.houseRoofDark;
   ctx.beginPath();
   ctx.moveTo(left - 6, top + 44);
   ctx.lineTo(cx, top - 6);
@@ -3231,7 +4636,7 @@ export function renderPlayerMochiHouse(
   ctx.closePath();
   ctx.fill();
 
-  ctx.fillStyle = '#ef6f95';
+  ctx.fillStyle = wt.houseRoof;
   ctx.strokeStyle = OUTLINE;
   ctx.lineWidth = 2.1;
   ctx.beginPath();
@@ -3243,8 +4648,8 @@ export function renderPlayerMochiHouse(
   ctx.stroke();
 
   // Sunlit roof highlight + scalloped shingles
-  ctx.fillStyle = '#ff9fc0';
-  ctx.globalAlpha = 0.38;
+  ctx.fillStyle = wt.houseRoofHi;
+  ctx.globalAlpha = wt.snowTrim ? 0.65 : 0.38;
   ctx.beginPath();
   ctx.moveTo(left + 1, top + 40);
   ctx.lineTo(cx, top - 4);
@@ -3253,7 +4658,7 @@ export function renderPlayerMochiHouse(
   ctx.fill();
   ctx.globalAlpha = 1;
 
-  ctx.strokeStyle = '#c5496d';
+  ctx.strokeStyle = wt.houseRoofDark;
   ctx.lineWidth = 1.2;
   for (let row = 0; row < 2; row++) {
     const ry = top + 16 + row * 13;
@@ -3263,6 +4668,18 @@ export function renderPlayerMochiHouse(
       ctx.arc(sx + 5.5, ry, 5.5, 0, Math.PI);
     }
     ctx.stroke();
+  }
+
+  // Winter snow crest across Mochi's House roof
+  if (wt.snowTrim) {
+    ctx.fillStyle = 'rgba(244, 250, 255, 0.92)';
+    ctx.beginPath();
+    ctx.moveTo(left + 4, top + 34);
+    ctx.lineTo(cx, top - 7);
+    ctx.lineTo(left + mainW - 4, top + 34);
+    ctx.quadraticCurveTo(cx, top + 18, left + 4, top + 34);
+    ctx.closePath();
+    ctx.fill();
   }
 
   // Crescent Moon Roof Finial
@@ -3339,7 +4756,7 @@ export function renderPlayerMochiHouse(
   [-29, 29].forEach((ox) => {
     const wx = cx + ox - 8;
     const wy = baseY - 32;
-    ctx.fillStyle = '#ef6f95';
+    ctx.fillStyle = wt.houseRoof;
     ctx.strokeStyle = OUTLINE;
     ctx.lineWidth = 1.2;
     ctx.fillRect(wx - 4, wy + 1, 4, 15);
@@ -3362,9 +4779,9 @@ export function renderPlayerMochiHouse(
     // Window flower box
     ctx.fillStyle = '#7c523c';
     ctx.fillRect(wx - 2, wy + 15.5, 20, 4.2);
-    ctx.fillStyle = '#5bb870';
+    ctx.fillStyle = wt.housePlanterLeaf;
     ctx.fillRect(wx - 1, wy + 13.5, 18, 2.5);
-    ctx.fillStyle = '#ff7aa8';
+    ctx.fillStyle = wt.housePlanterBlossom;
     ctx.beginPath();
     ctx.arc(wx + 3, wy + 14, 2.4, 0, Math.PI * 2);
     ctx.arc(wx + 8, wy + 13.2, 2.4, 0, Math.PI * 2);

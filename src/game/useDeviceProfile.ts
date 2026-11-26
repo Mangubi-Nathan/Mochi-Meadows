@@ -9,6 +9,7 @@ export interface DeviceProfile {
   isDesktop: boolean;
   isLandscapePhone: boolean;
   isCompactPhone: boolean;
+  isLowEnd: boolean;
   isTouch: boolean;
   isIOS: boolean;
   isAndroid: boolean;
@@ -52,14 +53,21 @@ function computeProfile(): DeviceProfile {
   }
 
   const isCompactPhone = (screenType === 'phone' && width < 395) || (isLandscapePhone && height <= 430);
+  const hardwareCores = isClient && typeof navigator.hardwareConcurrency === 'number' ? navigator.hardwareConcurrency : 8;
+  const deviceMemGb = isClient && typeof (navigator as any).deviceMemory === 'number' ? (navigator as any).deviceMemory : 8;
+  const isLowEnd =
+    screenType === 'phone' ||
+    isCompactPhone ||
+    hardwareCores <= 4 ||
+    deviceMemGb <= 4;
 
-  // Adaptive DPR cap: keeps phones cool & smooth by avoiding 2x-3x redundant pixel fill on small screens
+  // Adaptive DPR cap: keeps phones, tablets & integrated-GPU PCs smooth without redundant fill-rate
   const pixelRatio = isClient
     ? screenType === 'phone'
-      ? Math.min(rawDpr, isCompactPhone ? 1.25 : 1.35)
+      ? Math.min(rawDpr, isCompactPhone || isLowEnd ? 1.15 : 1.25)
       : screenType === 'tablet'
-      ? Math.min(rawDpr, 1.5)
-      : Math.min(rawDpr, 1.75)
+      ? Math.min(rawDpr, isLowEnd ? 1.25 : 1.4)
+      : Math.min(rawDpr, isLowEnd ? 1.35 : 1.65)
     : 1;
 
   // Proportional world camera zoom so phones aren't cramped, tablets are balanced,
@@ -84,6 +92,7 @@ function computeProfile(): DeviceProfile {
     isDesktop: screenType === 'desktop',
     isLandscapePhone,
     isCompactPhone,
+    isLowEnd,
     isTouch,
     isIOS,
     isAndroid,
@@ -106,6 +115,7 @@ export function useDeviceProfile(): DeviceProfile {
         prev.height === next.height &&
         prev.orientation === next.orientation &&
         prev.screenType === next.screenType &&
+        prev.isLowEnd === next.isLowEnd &&
         prev.isTouch === next.isTouch &&
         prev.viewScale === next.viewScale &&
         prev.pixelRatio === next.pixelRatio

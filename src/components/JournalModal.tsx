@@ -5,16 +5,24 @@
 
 import React, { useState } from 'react';
 import { LoreEntry, Quest, ReveilleVerse, MoonDiaryEntry, MemoryEcho } from '../game/engine';
-import { MAGIC_SPELLS, SPELL_HARMONIES } from '../game/constants';
+import { MAGIC_SPELLS, SPELL_HARMONIES, SeasonId, ACHIEVEMENTS } from '../game/constants';
+import { SEASON_THEMES, SEASON_ORDER, normalizeSeasonId } from '../game/seasons';
+import { getSeasonalSpellVariant } from '../game/seasonalSpells';
 import { VERSES_OF_REVEILLE, UNSUNG_VERSE, MOON_DIARY_PAGES, MEMORY_ECHOES, STORY_CHAPTERS } from '../game/worldData';
 import { audio } from '../game/audio';
+
+type JournalTab = 'quests' | 'chapters' | 'reveille' | 'achievements' | 'diary' | 'harmonies' | 'theater';
 
 interface JournalModalProps {
   objective: string;
   lore: LoreEntry[];
   quests: Quest[];
   unlockedCutscenes: string[];
+  unlockedAchievements?: string[];
   currentChapter: number;
+  lullabyDone?: boolean;
+  initialTab?: JournalTab;
+  season?: SeasonId;
   onClose: () => void;
   onPlayCutscene: (sceneKey: string) => void;
 }
@@ -24,11 +32,17 @@ export const JournalModal: React.FC<JournalModalProps> = ({
   lore,
   quests,
   unlockedCutscenes,
+  unlockedAchievements = [],
   currentChapter,
+  lullabyDone = false,
+  initialTab = 'quests',
+  season = 'spring',
   onClose,
   onPlayCutscene,
 }) => {
-  const [activeTab, setActiveTab] = useState<'quests' | 'chapters' | 'reveille' | 'diary' | 'harmonies' | 'theater'>('quests');
+  const activeSeason = normalizeSeasonId(season);
+  const [activeTab, setActiveTab] = useState<JournalTab>(initialTab);
+  const [previewSeason, setPreviewSeason] = useState<SeasonId>(activeSeason);
 
   const cutsceneTitles: Record<string, string> = {
     intro: 'The Moon’s Lullaby & Hollow King',
@@ -74,10 +88,11 @@ export const JournalModal: React.FC<JournalModalProps> = ({
         <div className="flex storybook-well p-1 rounded-xl sm:rounded-2xl gap-1 w-full overflow-x-auto select-none scrollbar-none shrink-0">
           {[
             ['quests', 'Quests', '🎯', `${completedQuestsCount}/${quests.length}`],
-            ['chapters', 'Story Acts', '📜', `Ch. ${currentChapter}/12`],
+            ['chapters', 'Story Acts', '📜', lullabyDone ? '12/12 ✨' : `Ch. ${currentChapter}/12`],
+            ['achievements', 'Achievements', '🏆', `${unlockedAchievements.length}/${ACHIEVEMENTS.length}`],
             ['reveille', 'Reveille', '🌅', '7+1'],
             ['diary', 'Moon Diary', '🌙', `${MOON_DIARY_PAGES.length}`],
-            ['harmonies', 'Harmonies', '🎶', `${SPELL_HARMONIES.length}`],
+            ['harmonies', 'Magic & Combos', '🎶', `${MAGIC_SPELLS.length}+${SPELL_HARMONIES.length}`],
             ['theater', 'Theater', '🎬', ''],
           ].map(([tabKey, label, icon, badge]) => {
             const isActive = activeTab === tabKey;
@@ -171,15 +186,30 @@ export const JournalModal: React.FC<JournalModalProps> = ({
 
           {/* ================= 2. STORY CHAPTERS TAB ================= */}
           {activeTab === 'chapters' && (
-            <div className="space-y-2.5 py-1">
-              <div className="text-xs font-bold opacity-75">
-                The 12-Chapter Saga of Mochi Meadows 2 spans 3 Epic Acts:
+            <div className="space-y-3 py-1">
+              <div className="storybook-card rounded-2xl p-3 space-y-1.5">
+                <div className="flex items-center justify-between text-xs font-black">
+                  <span className="text-[#d85784] dark:text-[#ff9ec0]">
+                    {lullabyDone ? '✨ Everlight Finale Complete!' : `Active Saga Progress · Chapter ${currentChapter} of 12`}
+                  </span>
+                  <span className="tabular-nums opacity-80">
+                    {lullabyDone ? 12 : Math.max(0, currentChapter - 1)} / 12 Completed
+                  </span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-[#ecdbe6] dark:bg-[#191124] overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-linear-to-r from-[#ff7aa8] via-[#ffb36b] to-[#ffd23f] transition-all duration-300"
+                    style={{
+                      width: `${Math.round(((lullabyDone ? 12 : Math.max(0, currentChapter - 1)) / 12) * 100)}%`,
+                    }}
+                  />
+                </div>
               </div>
 
               <div className="space-y-2">
                 {STORY_CHAPTERS.map((ch) => {
-                  const isCurrent = currentChapter === ch.num;
-                  const isPast = currentChapter > ch.num;
+                  const isCurrent = !lullabyDone && currentChapter === ch.num;
+                  const isPast = lullabyDone || currentChapter > ch.num;
                   return (
                     <div
                       key={ch.num}
@@ -187,8 +217,8 @@ export const JournalModal: React.FC<JournalModalProps> = ({
                         isCurrent
                           ? 'bg-[#ffd23f]/15 border-[#ffd23f] shadow-md'
                           : isPast
-                          ? 'bg-white/70 dark:bg-black/25 border-[#7bd88f] opacity-90'
-                          : 'bg-black/5 dark:bg-white/5 border-dashed border-gray-300 dark:border-gray-700 opacity-50'
+                          ? 'bg-white/75 dark:bg-black/25 border-[#7bd88f] opacity-95'
+                          : 'bg-black/5 dark:bg-white/5 border-dashed border-gray-300 dark:border-gray-700 opacity-55'
                       }`}
                     >
                       <div className="flex items-center justify-between text-xs font-black">
@@ -213,6 +243,66 @@ export const JournalModal: React.FC<JournalModalProps> = ({
             </div>
           )}
 
+          {/* ================= 2B. ACHIEVEMENTS TAB ================= */}
+          {activeTab === 'achievements' && (
+            <div className="space-y-3 py-1">
+              <div className="storybook-card rounded-2xl p-3 space-y-1.5">
+                <div className="flex items-center justify-between text-xs font-black">
+                  <span className="text-[#d85784] dark:text-[#ff9ec0] flex items-center gap-1.5">
+                    <span>🏆</span>
+                    <span>Archipelago Milestones & Trophies</span>
+                  </span>
+                  <span className="tabular-nums opacity-85">
+                    {unlockedAchievements.length} / {ACHIEVEMENTS.length} Unlocked
+                  </span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-[#ecdbe6] dark:bg-[#191124] overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-linear-to-r from-[#ff7aa8] via-[#ffb36b] to-[#ffd23f] transition-all duration-300"
+                    style={{
+                      width: `${Math.round((unlockedAchievements.length / Math.max(1, ACHIEVEMENTS.length)) * 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {ACHIEVEMENTS.map((ach) => {
+                  const unlocked = unlockedAchievements.includes(ach.id);
+                  return (
+                    <div
+                      key={ach.id}
+                      className={`p-3 rounded-2xl border-2 transition-all ${
+                        unlocked
+                          ? 'bg-white/85 dark:bg-black/30 border-[#ffd23f] shadow-xs'
+                          : 'bg-black/5 dark:bg-white/5 border-dashed border-gray-300 dark:border-gray-700 opacity-60'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 font-black text-xs">
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-base shrink-0">{unlocked ? ach.icon : '🔒'}</span>
+                          <span className="truncate">{ach.title}</span>
+                        </span>
+                        <span
+                          className={`text-[9.5px] px-1.5 py-0.5 rounded-full shrink-0 ${
+                            unlocked
+                              ? 'bg-[#7bd88f]/25 text-[#226e37] dark:text-[#9ef0b0]'
+                              : 'bg-black/5 dark:bg-white/10 opacity-70'
+                          }`}
+                        >
+                          {unlocked ? 'Earned ✓' : 'Locked'}
+                        </span>
+                      </div>
+                      <div className="text-[11px] opacity-80 mt-1 font-bold leading-snug">
+                        {ach.desc}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* ================= 3. VERSES OF REVEILLE TAB ================= */}
           {activeTab === 'reveille' && (
             <div className="space-y-3 py-1">
@@ -221,37 +311,52 @@ export const JournalModal: React.FC<JournalModalProps> = ({
               </div>
 
               <div className="space-y-2">
-                {VERSES_OF_REVEILLE.map((v) => (
-                  <div
-                    key={v.num}
-                    className="p-3 storybook-card rounded-2xl"
-                  >
-                    <div className="flex justify-between items-center text-xs font-black gap-2">
-                      <span className="flex items-center gap-1.5 text-[#d85784] dark:text-[#ff9ec0]">
-                        <span>🌅</span>
-                        <span>Verse {v.num}: {v.title}</span>
-                      </span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#ffd3e2]/45 text-[#4a3550] dark:text-[#fdeeff] font-mono shrink-0">
-                        {v.island}
-                      </span>
+                {VERSES_OF_REVEILLE.map((v) => {
+                  const restored = lore.some((l) => l.id === `verse-${v.num}`) || currentChapter >= v.num + 3 || lullabyDone;
+                  return (
+                    <div
+                      key={v.num}
+                      className={`p-3 rounded-2xl border-2 transition-all ${
+                        restored
+                          ? 'storybook-card border-[#ffd23f]'
+                          : 'bg-black/5 dark:bg-white/5 border-dashed border-gray-300 dark:border-gray-700 opacity-65'
+                      }`}
+                    >
+                      <div className="flex justify-between items-center text-xs font-black gap-2">
+                        <span className="flex items-center gap-1.5 text-[#d85784] dark:text-[#ff9ec0]">
+                          <span>{restored ? '🌅' : '🔒'}</span>
+                          <span>Verse {v.num}: {v.title}</span>
+                        </span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#ffd3e2]/45 text-[#4a3550] dark:text-[#fdeeff] font-mono shrink-0">
+                          {restored ? 'Restored · ' : ''}{v.island}
+                        </span>
+                      </div>
+                      <div className="italic text-xs font-black text-[#9b6200] dark:text-[#ffd23f] mt-1">
+                        “{v.quote}”
+                      </div>
+                      <div className="text-[11px] opacity-75 mt-0.5">
+                        Keeper: {v.keeper} · {v.origin}
+                      </div>
                     </div>
-                    <div className="italic text-xs font-black text-[#9b6200] dark:text-[#ffd23f] mt-1">
-                      “{v.quote}”
-                    </div>
-                    <div className="text-[11px] opacity-75 mt-0.5">
-                      Keeper: {v.keeper} · {v.origin}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {/* The Unsung Verse */}
-                <div className="p-3 bg-linear-to-r from-[#ffe4e6] to-[#fef3c7] dark:from-[#3b2345] dark:to-[#2e1d38] border border-[#ff7aa8] rounded-2xl shadow-md">
+                <div
+                  className={`p-3 rounded-2xl border transition-all ${
+                    lullabyDone
+                      ? 'bg-linear-to-r from-[#ffe4e6] to-[#fef3c7] dark:from-[#3b2345] dark:to-[#2e1d38] border-[#ff7aa8] shadow-md'
+                      : 'bg-black/5 dark:bg-white/5 border-dashed border-gray-300 dark:border-gray-700 opacity-60'
+                  }`}
+                >
                   <div className="flex justify-between items-center text-xs font-black gap-2">
                     <span className="flex items-center gap-1.5 text-[#d85784] dark:text-[#ff9ec0]">
-                      <span>✨</span>
+                      <span>{lullabyDone ? '✨' : '🔒'}</span>
                       <span>The 9th Unsung Verse: {UNSUNG_VERSE.title}</span>
                     </span>
-                    <span className="text-[10px] font-mono text-[#9b6200] dark:text-[#ffd23f] uppercase shrink-0">The Lost Duet</span>
+                    <span className="text-[10px] font-mono text-[#9b6200] dark:text-[#ffd23f] uppercase shrink-0">
+                      {lullabyDone ? 'Restored · Dawn Duet' : 'The Lost Duet (Ch. 12)'}
+                    </span>
                   </div>
                   <div className="italic text-xs font-black text-[#d85784] dark:text-[#ff9ec0] mt-1">
                     “{UNSUNG_VERSE.quote}”
@@ -294,31 +399,128 @@ export const JournalModal: React.FC<JournalModalProps> = ({
             </div>
           )}
 
-          {/* ================= 5. COMBINATION HARMONIES TAB ================= */}
+          {/* ================= 5. SEASONAL SPELLS & COMBINATION HARMONIES TAB ================= */}
           {activeTab === 'harmonies' && (
-            <div className="space-y-3 py-1">
-              <div className="bg-[#ffd23f]/15 border-2 border-[#ffd23f] p-3 rounded-2xl text-xs leading-relaxed">
-                <span className="font-black text-[#ff7aa8]">Spell Combination Harmonies:</span> Cast any two complementary spells within 3 seconds of each other to produce a magnificent musical and magical duet!
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {SPELL_HARMONIES.map((h, idx) => (
-                  <div
-                    key={idx}
-                    className="p-2.5 bg-white/80 dark:bg-black/30 border-2 border-[#ffd3e2] dark:border-[#6b4a7a] rounded-2xl shadow-xs text-xs"
-                  >
-                    <div className="flex items-center justify-between font-black text-[#ff7aa8]">
-                      <span>🎶 {h.name}</span>
-                      <span className="text-[10px] opacity-70 font-mono">Combo #{idx + 1}</span>
+            <div className="space-y-4 py-1">
+              {/* Seasonal Spell Variations Almanac */}
+              <div className="space-y-2.5">
+                <div className="storybook-card rounded-2xl p-3 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-black text-[#d85784] dark:text-[#ff9ec0] flex items-center gap-1.5">
+                        <span>{SEASON_THEMES[previewSeason].icon}</span>
+                        <span>Seasonal Spell Variations</span>
+                      </div>
+                      <p className="text-[11px] opacity-80 leading-snug mt-0.5">
+                        Every spell attunes to the current season, reshaping its aura, burst colors, and magical bonus.
+                      </p>
                     </div>
-                    <div className="text-[11px] font-bold mt-1 text-[#4a3550] dark:text-[#fdeeff]">
-                      {h.spells[0]} + {h.spells[1]}
-                    </div>
-                    <div className="text-[10px] opacity-75 mt-0.5">
-                      {h.desc}
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {SEASON_ORDER.map((sId) => {
+                        const sTheme = SEASON_THEMES[sId];
+                        const isSelected = previewSeason === sId;
+                        const isLive = activeSeason === sId;
+                        return (
+                          <button
+                            key={sId}
+                            onClick={() => {
+                              audio.noteSpeech?.(95);
+                              setPreviewSeason(sId);
+                            }}
+                            className={`px-2 py-1 rounded-xl text-[10.5px] font-black transition-all cursor-pointer flex items-center gap-1 ${
+                              isSelected
+                                ? 'bg-[#ff7aa8] text-white shadow-xs'
+                                : 'bg-white/70 dark:bg-black/25 text-[#4a3550] dark:text-[#fdeeff] hover:bg-[#ffd3e2]/55'
+                            }`}
+                          >
+                            <span>{sTheme.icon}</span>
+                            <span>{sTheme.name.split(' ')[0]}</span>
+                            {isLive && (
+                              <span
+                                className={`text-[8.5px] px-1 rounded uppercase ${
+                                  isSelected ? 'bg-white/25 text-white' : 'bg-[#7bd88f]/35 text-[#226e37] dark:text-[#9ef0b0]'
+                                }`}
+                              >
+                                Live
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
-                ))}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {MAGIC_SPELLS.map((spell) => {
+                    const variant = getSeasonalSpellVariant(spell.id, previewSeason);
+                    const isLocked = currentChapter < spell.unlockChapter;
+                    return (
+                      <div
+                        key={spell.id}
+                        className={`p-2.5 bg-white/80 dark:bg-black/30 border-2 rounded-2xl shadow-xs text-xs flex flex-col gap-1 ${
+                          isLocked
+                            ? 'border-dashed border-gray-300 dark:border-gray-700 opacity-60'
+                            : 'border-[#ffd3e2] dark:border-[#6b4a7a]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-black text-[#4a3550] dark:text-[#fdeeff] flex items-center gap-1.5 min-w-0">
+                            <span className="text-base shrink-0">{spell.icon}</span>
+                            <span className="truncate">
+                              {variant ? `${variant.seasonBadge} ${variant.variantName}` : spell.name}
+                            </span>
+                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {variant && (
+                              <span
+                                className="w-2.5 h-2.5 rounded-full ring-1 ring-black/10 dark:ring-white/20"
+                                style={{ backgroundColor: variant.ringColor }}
+                                title="Seasonal Aura Color"
+                              />
+                            )}
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-black/5 dark:bg-white/10">
+                              {spell.cost} MP
+                            </span>
+                          </div>
+                        </div>
+                        <div className="text-[10px] font-bold text-[#d85784] dark:text-[#ff9ec0]">
+                          Base: {spell.name} {isLocked ? `· Unlocks Ch. ${spell.unlockChapter}` : ''}
+                        </div>
+                        <div className="text-[10.5px] opacity-85 leading-snug">
+                          {variant?.bonusSummary || spell.desc}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Combination Harmonies */}
+              <div className="space-y-2 pt-1">
+                <div className="bg-[#ffd23f]/15 border-2 border-[#ffd23f] p-3 rounded-2xl text-xs leading-relaxed">
+                  <span className="font-black text-[#ff7aa8]">Spell Combination Harmonies:</span> Cast any two complementary spells within 3 seconds of each other to produce a magnificent musical and magical duet!
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {SPELL_HARMONIES.map((h, idx) => (
+                    <div
+                      key={idx}
+                      className="p-2.5 bg-white/80 dark:bg-black/30 border-2 border-[#ffd3e2] dark:border-[#6b4a7a] rounded-2xl shadow-xs text-xs"
+                    >
+                      <div className="flex items-center justify-between font-black text-[#ff7aa8]">
+                        <span>🎶 {h.name}</span>
+                        <span className="text-[10px] opacity-70 font-mono">Combo #{idx + 1}</span>
+                      </div>
+                      <div className="text-[11px] font-bold mt-1 text-[#4a3550] dark:text-[#fdeeff]">
+                        {h.spells[0]} + {h.spells[1]}
+                      </div>
+                      <div className="text-[10px] opacity-75 mt-0.5">
+                        {h.desc}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}

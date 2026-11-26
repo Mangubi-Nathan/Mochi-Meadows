@@ -7,6 +7,9 @@
 import { N, T, SEED, BIOME_NAMES, BIOME_COLORS, FISH_SPECIES } from './constants';
 export { N, T, SEED, BIOME_NAMES, BIOME_COLORS, FISH_SPECIES };
 
+export type CoatFinish = 'plush' | 'velvet' | 'pearl' | 'silk';
+export type CompanionId = 'none' | 'gloom' | 'gloria' | 'gary' | 'moth' | 'whale' | 'bee' | 'frog';
+
 export interface PlayerLook {
   sp: string;
   col: string;
@@ -14,6 +17,13 @@ export interface PlayerLook {
   ac: string;
   eyeCol?: string;
   noseCol?: string;
+  patCol?: string;
+  hatCol?: string;
+  cheeks?: number;
+  coatFinish?: CoatFinish;
+  earScale?: number;
+  tailScale?: number;
+  chonk?: number;
   dye2?: string;
   size?: 'tiny' | 'small' | 'normal' | 'plump';
   hat: string;
@@ -21,9 +31,18 @@ export interface PlayerLook {
   mouth: number;
   pat: number;
   out: number;
+  outTop?: string;
+  outBottom?: string;
+  outLayer?: string;
+  outShoes?: string;
+  outCol1?: string;
+  outCol2?: string;
+  outCol3?: string;
+  hair?: string;
+  hairCol?: string;
   face: number;
   aura: number;
-  companion?: 'none' | 'gloom' | 'gloria' | 'gary' | 'moth' | 'whale';
+  companion?: CompanionId;
   name: string;
   isHollow?: boolean;
   hollowColorBloom?: number; // 0 = grey, 1 = radiant color
@@ -89,6 +108,43 @@ export interface NPC {
   duetPartner?: boolean;
   weatherBehavior?: 'dancing' | 'sheltering' | 'stargazing' | 'shivering' | 'idle';
   weatherPoseY?: number;
+  merchantType?: string;
+}
+
+export type WorldLayerId = 0 | 1 | 2 | 3 | 4;
+
+export function getNpcLayer(
+  npc: Pick<NPC, 'sea' | 'sky' | 'glowdeep' | 'moonroad'>
+): WorldLayerId {
+  if (npc.moonroad) return 4;
+  if (npc.glowdeep) return 3;
+  if (npc.sky) return 2;
+  if (npc.sea) return 1;
+  return 0;
+}
+
+export function getPlayerLayer(player: {
+  dive?: boolean;
+  sky?: boolean;
+  glowdeep?: boolean;
+  moonroad?: boolean;
+}): WorldLayerId {
+  if (player.moonroad) return 4;
+  if (player.glowdeep) return 3;
+  if (player.sky) return 2;
+  if (player.dive) return 1;
+  return 0;
+}
+
+export function isNpcOnPlayerLayer(
+  npc: Pick<NPC, 'sea' | 'sky' | 'glowdeep' | 'moonroad'>,
+  player: { dive?: boolean; sky?: boolean; glowdeep?: boolean; moonroad?: boolean }
+): boolean {
+  return getNpcLayer(npc) === getPlayerLayer(player);
+}
+
+export function hasNpcDialogue(npc: Pick<NPC, 'g' | 't'>): boolean {
+  return Boolean(npc.g?.trim() || (npc.t && npc.t.length > 0));
 }
 
 export interface LoreEntry {
@@ -237,6 +293,8 @@ export function shadeColor(hex: string, percent: number): string {
 }
 
 // Particle System
+export type ParticleShape = 'orb' | 'petal' | 'spark' | 'crystal' | 'leaf' | 'heart' | 'note' | 'ring';
+
 export interface Particle {
   x: number;
   y: number;
@@ -244,7 +302,20 @@ export interface Particle {
   vy: number;
   l: number;
   c: string;
+  maxL?: number;
+  z?: number;
+  vz?: number;
+  ax?: number;
+  ay?: number;
+  az?: number;
+  drag?: number;
+  swirl?: number;
+  spin?: number;
+  size?: number;
+  shape?: ParticleShape;
 }
+
+export type TownArchStyle = 'meadow' | 'coastal' | 'desert' | 'nordic' | 'blossom';
 
 export interface Town {
   n: string;
@@ -253,6 +324,9 @@ export interface Town {
   w: number; // 0 = ground, 1 = sea, 2 = sky, 3 = glowdeep, 4 = moonroad
   vis: number;
   island?: string;
+  bi?: number;
+  arch?: TownArchStyle;
+  prosperity?: number; // 1 = Cozy Hamlet, 2 = Bustling Square, 3 = Grand Festival Bazaar
 }
 
 export interface StarGem {

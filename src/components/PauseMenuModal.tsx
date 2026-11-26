@@ -4,7 +4,9 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { ACHIEVEMENTS, FISH_SPECIES, MUSIC_TRACKS, WEATHER_TYPES, WeatherId } from '../game/constants';
+import { ACHIEVEMENTS, FISH_SPECIES, MUSIC_TRACKS, WEATHER_TYPES, WeatherConfig, WeatherId, SeasonId } from '../game/constants';
+import { SEASON_ORDER, SEASON_THEMES, SEASON_DURATION_SEC, WEATHER_UI_THEMES, normalizeSeasonId } from '../game/seasons';
+import { getWeatherForecast } from '../game/weather';
 import { audio } from '../game/audio';
 import {
   BackupSlotMeta,
@@ -13,6 +15,7 @@ import {
   uploadBackupSlotOfflineFirst,
 } from '../game/offlineStore';
 import { PWAInstallButton } from './PWAInstallButton';
+import { WeatherEffectBadges } from './WeatherEffectBadges';
 
 interface PauseMenuModalProps {
   completionPercentage: number;
@@ -41,17 +44,22 @@ interface PauseMenuModalProps {
     night: number;
     auto: number;
     hints: number;
+    camPreset?: number;
   };
   onUpdateSettings: (key: string, val: number) => void;
   onExportSave: () => any;
   onImportSave: (data: any) => boolean;
+  currentSeason?: SeasonId;
+  seasonRemainingSec?: number;
+  currentWeather?: WeatherConfig;
   currentWeatherId?: WeatherId;
-  onSelectWeather?: (id: WeatherId) => void;
+  weatherRemainingSec?: number;
   initialTab?: 'menu' | 'progress' | 'settings' | 'cloud' | 'help';
   isTitleScreen?: boolean;
   onOpenMap?: () => void;
   onOpenSongWeaver?: () => void;
   onOpenCottage?: () => void;
+  onOpenBottles?: () => void;
   currentTrackIndex?: number;
   onSelectTrack?: (idx: number) => void;
 }
@@ -81,13 +89,17 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
   onUpdateSettings,
   onExportSave,
   onImportSave,
+  currentSeason = 'spring',
+  seasonRemainingSec = SEASON_DURATION_SEC,
+  currentWeather,
   currentWeatherId,
-  onSelectWeather,
+  weatherRemainingSec = 140,
   initialTab = 'menu',
   isTitleScreen = false,
   onOpenMap,
   onOpenSongWeaver,
   onOpenCottage,
+  onOpenBottles,
   currentTrackIndex = 0,
   onSelectTrack,
 }) => {
@@ -99,6 +111,20 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
   const [downloadingTrackIdx, setDownloadingTrackIdx] = useState<number | null>(null);
   const [isDownloadingAll, setIsDownloadingAll] = useState<boolean>(false);
   const [trackDownloadMsg, setTrackDownloadMsg] = useState<string>('');
+
+  const formatMinSec = (totalSec: number) => {
+    const clamped = Math.max(0, Math.round(totalSec));
+    const mins = Math.floor(clamped / 60);
+    const secs = clamped % 60;
+    return `${mins}m ${String(secs).padStart(2, '0')}s`;
+  };
+
+  const activeWeatherCfg =
+    currentWeather ||
+    WEATHER_TYPES.find((w) => w.id === currentWeatherId) ||
+    WEATHER_TYPES[0];
+  const activeWeatherMood = WEATHER_UI_THEMES[activeWeatherCfg.id];
+  const weatherForecast = getWeatherForecast(activeWeatherCfg.id, weatherRemainingSec, 3);
 
   // Sync initialTab if changed
   useEffect(() => {
@@ -440,24 +466,127 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
                   </button>
                 )}
 
+                {onOpenBottles && !isTitleScreen && (
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onOpenBottles();
+                    }}
+                    className="p-3.5 bg-white/70 dark:bg-black/25 border-2 border-[#6cc4e8] dark:border-[#4b92b5] hover:border-[#ff7aa8] font-black text-sm rounded-2xl shadow-xs transition-all hover:scale-[1.01] active:scale-95 flex items-center justify-between cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <span className="text-xl">🍾</span>
+                      <div className="text-left">
+                        <div className="leading-tight">Messages in a Bottle</div>
+                        <div className="text-[10px] opacity-75 font-bold">Read &amp; float seaside postcards</div>
+                      </div>
+                    </div>
+                  </button>
+                )}
+
                 {onOpenMap && !isTitleScreen && (
                   <button
                     onClick={() => {
                       onClose();
                       onOpenMap();
                     }}
-                    className="col-span-1 sm:col-span-2 p-3.5 bg-linear-to-r from-[#ffd23f]/25 to-[#ff9ebb]/25 dark:bg-white/5 border-2 border-[#ffd23f] dark:border-[#8f7bff] hover:border-[#ff7aa8] font-black text-sm rounded-2xl shadow-xs transition-all hover:scale-[1.01] active:scale-95 flex items-center justify-between cursor-pointer"
+                    className={`${onOpenBottles ? '' : 'col-span-1 sm:col-span-2 '}p-3.5 bg-linear-to-r from-[#ffd23f]/25 to-[#ff9ebb]/25 dark:bg-white/5 border-2 border-[#ffd23f] dark:border-[#8f7bff] hover:border-[#ff7aa8] font-black text-sm rounded-2xl shadow-xs transition-all hover:scale-[1.01] active:scale-95 flex items-center justify-between cursor-pointer`}
                   >
                     <div className="flex items-center gap-2.5">
                       <span className="text-xl">🗺️</span>
                       <div className="text-left">
                         <div className="leading-tight">Interactive World Atlas</div>
-                        <div className="text-[10px] opacity-75 font-bold">Inspect all 8 islands & 5 interconnected layers</div>
+                        <div className="text-[10px] opacity-75 font-bold">Inspect all 8 islands &amp; 5 layers</div>
                       </div>
                     </div>
                     <span className="text-xs opacity-75">Key M</span>
                   </button>
                 )}
+              </div>
+
+              {/* Weather Forecast Planner Card */}
+              <div className="storybook-card rounded-2xl p-3.5 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-black flex items-center gap-1.5 text-[var(--ac)]">
+                      <span>🔭</span> Weather Forecast
+                    </div>
+                    <div className="text-[10px] font-bold opacity-75">
+                      Plan treks, sprinting, and spellcasting around the predicted weather cycle
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      audio.noteSpeech(80);
+                      setActiveTab('settings');
+                    }}
+                    className="px-2 py-1 rounded-lg bg-[var(--bd)]/35 hover:bg-[var(--ac)] hover:text-white text-[10px] font-black transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Full Almanac →
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {/* Current Active Weather */}
+                  <div
+                    className="p-2.5 rounded-xl bg-[var(--card)] border-2 space-y-1.5"
+                    style={{ borderColor: activeWeatherMood.accentHint }}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span
+                        className="px-1.5 py-0.5 rounded-md text-white text-[8.5px] font-black uppercase tracking-wider"
+                        style={{ backgroundColor: activeWeatherMood.accentHint }}
+                      >
+                        Now
+                      </span>
+                      <span className="text-[10px] font-extrabold opacity-80 tabular-nums">
+                        {formatMinSec(weatherRemainingSec)} left
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-lg shrink-0">{activeWeatherCfg.icon}</span>
+                      <span className="text-xs font-black truncate text-[var(--fg)]">
+                        {activeWeatherCfg.name}
+                      </span>
+                    </div>
+                    <WeatherEffectBadges badges={activeWeatherCfg.effectBadges} compact />
+                  </div>
+
+                  {/* Next Two Upcoming Weather States */}
+                  {weatherForecast.slice(0, 2).map((entry, idx) => {
+                    const entryMood = WEATHER_UI_THEMES[entry.weather.id];
+                    return (
+                      <div
+                        key={`${entry.weather.id}-${idx}`}
+                        className="p-2.5 rounded-xl bg-[var(--card)] border border-[var(--bd)] space-y-1.5 flex flex-col justify-between"
+                      >
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between gap-1">
+                            <span
+                              className="px-1.5 py-0.5 rounded-md text-[8.5px] font-black uppercase tracking-wider text-white"
+                              style={{ backgroundColor: entryMood.accentHint }}
+                            >
+                              {idx === 0 ? 'Next Up' : 'After That'}
+                            </span>
+                            <span className="text-[10px] font-extrabold opacity-80 tabular-nums">
+                              In {formatMinSec(entry.startsInSec)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-lg shrink-0">{entry.weather.icon}</span>
+                            <span className="text-xs font-black truncate text-[var(--fg)]">
+                              {entry.weather.name}
+                            </span>
+                          </div>
+                          <WeatherEffectBadges badges={entry.weather.effectBadges} compact />
+                        </div>
+                        <div className="text-[9.5px] font-bold opacity-75 leading-snug line-clamp-2 pt-0.5">
+                          {entry.explorationTip}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Install & Offline Mode Card */}
@@ -624,6 +753,170 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
                 </div>
               </div>
 
+              {/* Live Natural World Cycles (Automatic Seasons & Weather) */}
+              {(() => {
+                const activeSeasonId = normalizeSeasonId(currentSeason);
+                const activeSeason = SEASON_THEMES[activeSeasonId];
+                const seasonElapsed = Math.max(0, SEASON_DURATION_SEC - seasonRemainingSec);
+                const seasonPct = Math.min(100, Math.max(4, Math.round((seasonElapsed / SEASON_DURATION_SEC) * 100)));
+                const sMin = Math.floor(seasonRemainingSec / 60);
+                const sSec = seasonRemainingSec % 60;
+
+                const weatherDur = activeWeatherCfg.duration || 140;
+                const weatherElapsed = Math.max(0, weatherDur - weatherRemainingSec);
+                const weatherPct = Math.min(100, Math.max(4, Math.round((weatherElapsed / weatherDur) * 100)));
+                const wMin = Math.floor(weatherRemainingSec / 60);
+                const wSec = weatherRemainingSec % 60;
+                const weatherMood = activeWeatherMood;
+
+                return (
+                  <div className="storybook-card rounded-2xl p-3.5 space-y-3">
+                    <div className="flex flex-wrap justify-between items-center gap-1 text-xs font-black">
+                      <span className="flex items-center gap-1.5 text-[var(--ac)]">
+                        <span>🌍</span> Natural World Cycles &amp; Living UI
+                      </span>
+                      <span className="text-[10.5px] opacity-75 font-bold">
+                        Seasons &amp; weather progress automatically
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {/* Active Season Read-Only Card */}
+                      <div className="p-3 rounded-2xl bg-[var(--card)] border border-[var(--bd)] space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-2xl">{activeSeason.icon}</span>
+                            <div className="min-w-0">
+                              <div className="font-black text-xs text-[var(--fg)] truncate">
+                                {activeSeason.name} · {activeSeason.subtitle}
+                              </div>
+                              <div className="text-[10px] font-bold opacity-75 truncate">
+                                Next season in {sMin}m {String(sSec).padStart(2, '0')}s
+                              </div>
+                            </div>
+                          </div>
+                          <span
+                            className="px-2 py-0.5 rounded-md text-white text-[9px] font-black uppercase tracking-wider shrink-0"
+                            style={{ backgroundColor: activeSeason.ui.accent }}
+                          >
+                            12m Cycle
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-700"
+                            style={{ width: `${seasonPct}%`, backgroundColor: activeSeason.ui.accent }}
+                          />
+                        </div>
+                        <div className="grid grid-cols-4 gap-1 pt-0.5">
+                          {SEASON_ORDER.map((sid) => {
+                            const st = SEASON_THEMES[sid];
+                            const isCur = sid === activeSeasonId;
+                            return (
+                              <div
+                                key={sid}
+                                className={`px-1 py-1 rounded-lg text-[10px] font-black flex items-center justify-center gap-1 ${
+                                  isCur ? 'text-white shadow-xs' : 'bg-black/5 dark:bg-white/5 opacity-60'
+                                }`}
+                                style={isCur ? { backgroundColor: st.ui.accent } : undefined}
+                              >
+                                <span>{st.icon}</span>
+                                <span className="truncate">{st.name}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Active Weather Read-Only Card */}
+                      <div className="p-3 rounded-2xl bg-[var(--card)] border border-[var(--bd)] space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-2xl">{activeWeatherCfg.icon}</span>
+                            <div className="min-w-0">
+                              <div className="font-black text-xs text-[var(--fg)] truncate">
+                                {activeWeatherCfg.name} · {weatherMood.moodLabel}
+                              </div>
+                              <div className="text-[10px] font-bold opacity-75 truncate">
+                                Next weather in {wMin}m {String(wSec).padStart(2, '0')}s
+                              </div>
+                            </div>
+                          </div>
+                          <span
+                            className="px-2 py-0.5 rounded-md text-white text-[9px] font-black uppercase tracking-wider shrink-0"
+                            style={{ backgroundColor: weatherMood.accentHint }}
+                          >
+                            ~2.4m Cycle
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-700"
+                            style={{ width: `${weatherPct}%`, backgroundColor: weatherMood.accentHint }}
+                          />
+                        </div>
+                        <div className="text-[10px] font-bold opacity-75 leading-snug line-clamp-2">
+                          {activeWeatherCfg.description}
+                        </div>
+                        <div className="pt-0.5 flex flex-wrap items-center gap-1.5">
+                          <WeatherEffectBadges badges={activeWeatherCfg.effectBadges} showLabels />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Detailed Upcoming Weather Forecast */}
+                    <div className="p-3 rounded-2xl bg-[var(--card)] border border-[var(--bd)] space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[11px] font-black flex items-center gap-1.5 text-[var(--fg)]">
+                          <span>🔭</span> Upcoming Weather Forecast (Next 3 Spells)
+                        </div>
+                        <span className="text-[9.5px] font-bold opacity-70">
+                          Deterministic archipelago cycle
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {weatherForecast.map((entry, idx) => {
+                          const entryMood = WEATHER_UI_THEMES[entry.weather.id];
+                          return (
+                            <div
+                              key={`${entry.weather.id}-almanac-${idx}`}
+                              className="p-2.5 rounded-xl bg-black/[0.03] dark:bg-white/[0.04] border border-[var(--bd)]/70 space-y-1.5"
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <span
+                                  className="px-1.5 py-0.5 rounded-md text-white text-[8.5px] font-black uppercase tracking-wider"
+                                  style={{ backgroundColor: entryMood.accentHint }}
+                                >
+                                  {idx === 0 ? 'Next' : idx === 1 ? '+2 Spells' : '+3 Spells'}
+                                </span>
+                                <span className="text-[10px] font-extrabold opacity-75 tabular-nums">
+                                  In {formatMinSec(entry.startsInSec)}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="text-lg shrink-0">{entry.weather.icon}</span>
+                                <div className="min-w-0">
+                                  <div className="text-[11px] font-black truncate text-[var(--fg)]">
+                                    {entry.weather.name}
+                                  </div>
+                                  <div className="text-[9px] font-bold opacity-70">
+                                    Lasts {formatMinSec(entry.durationSec)}
+                                  </div>
+                                </div>
+                              </div>
+                              <WeatherEffectBadges badges={entry.weather.effectBadges} showLabels />
+                              <div className="text-[9.5px] font-bold opacity-75 leading-snug">
+                                {entry.explorationTip}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Island Soundtrack & Offline Downloads */}
               <div className="storybook-card rounded-2xl p-3.5 space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -683,6 +976,48 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
                 </div>
               </div>
 
+              {/* 3D Camera & Perspective */}
+              <div className="storybook-card rounded-2xl p-3.5 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-black flex items-center gap-1.5 text-[var(--ac)]">
+                      <span>🎥</span> 3D Camera &amp; Perspective
+                    </div>
+                    <div className="text-[10.5px] font-bold opacity-75">
+                      Choose your camera preset, or drag in-world to orbit and scroll to zoom <span className="opacity-75 hidden sm:inline">(Key V)</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-1.5 border-t border-[var(--bd)]/50 space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {[
+                      { val: 0, label: 'Cozy 3/4' },
+                      { val: 1, label: 'Close Up' },
+                      { val: 2, label: 'Scenic Vista' },
+                      { val: 3, label: '1st Person' },
+                      { val: 4, label: '3rd Person (Forward)' },
+                      { val: 5, label: '3rd Person (Backward)' },
+                    ].map((cam) => {
+                      const active = (settings.camPreset ?? 0) === cam.val;
+                      return (
+                        <button
+                          key={cam.val}
+                          onClick={() => onUpdateSettings('camPreset', cam.val)}
+                          className={`px-2.5 py-1 rounded-xl border text-[10.5px] font-black transition-all cursor-pointer ${
+                            active
+                              ? 'bg-[var(--ac)] text-white border-[var(--ac)] shadow-xs'
+                              : 'bg-white/75 dark:bg-[#1f1629] border-[var(--bd)] hover:border-[var(--ac)]'
+                          }`}
+                        >
+                          {cam.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
               {/* Game Toggles (iOS-style tactile switches) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {[
@@ -723,51 +1058,6 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
                     </button>
                   );
                 })}
-              </div>
-
-              {/* Active Weather System Controls */}
-              <div className="storybook-card rounded-2xl p-3.5 space-y-2.5">
-                <div className="flex justify-between items-center text-xs font-black">
-                  <span className="flex items-center gap-1.5 text-[#d85784] dark:text-[#ff9ec0]">
-                    <span>🌦️</span> Island Weather Simulation
-                  </span>
-                  <span className="text-[11px] opacity-70">Cycles every 2.5 minutes</span>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {WEATHER_TYPES.map((w) => {
-                    const isSelected = currentWeatherId === w.id;
-                    return (
-                      <button
-                        key={w.id}
-                        onClick={() => {
-                          audio.chime();
-                          onSelectWeather?.(w.id);
-                        }}
-                        className={`p-2.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                          isSelected
-                            ? 'bg-[#fffaf2] dark:bg-[#33283f] border-[#ff7aa8] shadow-sm ring-2 ring-[#ff7aa8]/30'
-                            : 'bg-black/5 dark:bg-white/5 border-[#f0c7d8]/60 dark:border-[#5b3b6b]/60 opacity-80 hover:opacity-100 hover:border-[#ff7aa8]'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-2xl">{w.icon}</span>
-                          {isSelected && (
-                            <span className="px-1.5 py-0.5 rounded-md bg-[#ff7aa8] text-white text-[9px] font-black uppercase tracking-wider">
-                              Active
-                            </span>
-                          )}
-                        </div>
-                        <div className="font-black text-xs mt-1.5 text-[#4a3550] dark:text-[#fdeeff] truncate">
-                          {w.name}
-                        </div>
-                        <div className="text-[10px] opacity-75 mt-0.5 leading-snug line-clamp-2">
-                          {w.description}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
               </div>
             </div>
           )}
@@ -881,13 +1171,18 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
                   </div>
 
                   <div className="flex items-center justify-between p-1.5 bg-black/5 dark:bg-white/5 rounded-xl">
-                    <span>Sprint / Run</span>
+                    <span>Sprint / Freestyle Swim</span>
                     <kbd className="px-1.5 py-0.5 bg-white dark:bg-gray-800 rounded border border-gray-300 font-mono text-[11px]">Shift</kbd>
                   </div>
 
                   <div className="flex items-center justify-between p-1.5 bg-black/5 dark:bg-white/5 rounded-xl">
-                    <span>Quick Dash</span>
+                    <span>Jump / Dolphin Leap</span>
                     <kbd className="px-1.5 py-0.5 bg-white dark:bg-gray-800 rounded border border-gray-300 font-mono text-[11px]">Space</kbd>
+                  </div>
+
+                  <div className="flex items-center justify-between p-1.5 bg-black/5 dark:bg-white/5 rounded-xl">
+                    <span>Quick Dash</span>
+                    <kbd className="px-1.5 py-0.5 bg-white dark:bg-gray-800 rounded border border-gray-300 font-mono text-[11px]">Q</kbd>
                   </div>
 
                   <div className="flex items-center justify-between p-1.5 bg-black/5 dark:bg-white/5 rounded-xl">
@@ -926,6 +1221,14 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
                       <kbd className="px-1.5 py-0.5 bg-white dark:bg-gray-800 rounded border border-gray-300">C</kbd>
                     </div>
                   </div>
+
+                  <div className="flex items-center justify-between p-1.5 bg-black/5 dark:bg-white/5 rounded-xl">
+                    <span>Cycle Camera / Look Around</span>
+                    <div className="flex items-center gap-1 font-mono text-[11px]">
+                      <kbd className="px-1.5 py-0.5 bg-white dark:bg-gray-800 rounded border border-gray-300">V</kbd>
+                      <span>· Drag</span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -935,8 +1238,9 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
                   <span>📱</span> Phone & Tablet Controls
                 </div>
                 <ul className="space-y-1 text-xs opacity-90 list-disc list-inside">
-                  <li><strong>Virtual Analog Joystick:</strong> Bottom-left thumbstick moves Mochi in any direction. Push outward to auto-sprint!</li>
-                  <li><strong>Action Cluster:</strong> Bottom-right buttons trigger Dash (⚡), Talk (💬), Fish (🎣), and Dive (🤿).</li>
+                  <li><strong>Virtual Analog Joystick:</strong> Bottom-left thumbstick moves Mochi in any direction. Push outward to sprint or freestyle swim!</li>
+                  <li><strong>Action Cluster:</strong> Bottom-right buttons trigger Jump / Dolphin Leap (⬆️/🐬), Dash (⚡), Talk (💬), Fish (🎣), and Dive (🤿).</li>
+                  <li><strong>Camera Look &amp; Modes:</strong> Drag anywhere on the open screen to look or orbit, and switch between 1st Person, 3rd Person Forward/Backward, and 3/4 views via 🎥/Settings.</li>
                   <li><strong>Interactive World Map:</strong> Tap the minimap in the top-right to view the full island atlas with pan, pinch-to-zoom, and area details.</li>
                 </ul>
               </div>
