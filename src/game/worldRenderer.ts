@@ -53,6 +53,8 @@ export interface WorldRenderState {
   moonGatePortal?: { x: number; y: number; open: boolean };
   playerHomePortal?: { x: number; y: number; doorX: number; doorY: number };
   iceMap: Map<number, number>;
+  lilyMap?: Map<number, number>;
+  frostGlowTimer?: number;
   time: number;
   season?: SeasonId;
 }
@@ -897,12 +899,13 @@ export function renderTerrainLayer(
         }
       }
 
-      // Frost Bridge Ice Tile
+      // Frost Bridge Ice Tile (illuminates with Frost Glow constellations when active)
       if (W.iceMap.has(i) && W.iceMap.get(i)! > t) {
-        ctx.fillStyle = 'rgba(216, 246, 255, 0.94)';
+        const hasFrostGlow = (W.frostGlowTimer || 0) > 0;
+        ctx.fillStyle = hasFrostGlow ? 'rgba(184, 236, 255, 0.96)' : 'rgba(216, 246, 255, 0.94)';
         ctx.fillRect(sx, sy, T + 1, T + 1);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
-        ctx.lineWidth = 1.6;
+        ctx.strokeStyle = hasFrostGlow ? 'rgba(255, 232, 130, 0.9)' : 'rgba(255, 255, 255, 0.92)';
+        ctx.lineWidth = hasFrostGlow ? 2 : 1.6;
         ctx.strokeRect(sx + 2, sy + 2, T - 4, T - 4);
         ctx.beginPath();
         ctx.moveTo(sx + 9, sy + 9);
@@ -910,6 +913,48 @@ export function renderTerrainLayer(
         ctx.moveTo(sx + T - 9, sy + 11);
         ctx.lineTo(sx + T - 16, sy + 18);
         ctx.stroke();
+        if (hasFrostGlow) {
+          const pulse = 0.55 + Math.sin(t * 4.5 + x * 0.9 + y * 0.7) * 0.35;
+          ctx.fillStyle = `rgba(255, 224, 102, ${pulse})`;
+          ctx.beginPath();
+          ctx.arc(sx + T / 2, sy + T / 2, 3.2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(140, 210, 255, 0.72)';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(sx + 6, sy + T / 2);
+          ctx.lineTo(sx + T - 6, sy + T / 2);
+          ctx.moveTo(sx + T / 2, sy + 6);
+          ctx.lineTo(sx + T / 2, sy + T - 6);
+          ctx.stroke();
+        }
+      }
+
+      // Lily Path Living Water-Lily Bridge Tile
+      if (W.lilyMap && W.lilyMap.has(i) && W.lilyMap.get(i)! > t) {
+        const lcx = sx + T / 2;
+        const lcy = sy + T / 2 + Math.sin(t * 2.2 + x + y) * 1.1;
+        ctx.fillStyle = '#38b566';
+        ctx.strokeStyle = '#247344';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(lcx, lcy, T * 0.43, 0.25, Math.PI * 2 - 0.25);
+        ctx.lineTo(lcx, lcy);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // Pink/Cream Lotus Blossom
+        ctx.fillStyle = (x + y) % 2 === 0 ? '#ff94bd' : '#fff2d6';
+        for (let p = 0; p < 5; p++) {
+          const pa = (p / 5) * Math.PI * 2 + t * 0.4;
+          ctx.beginPath();
+          ctx.arc(lcx + Math.cos(pa) * 4.2, lcy + Math.sin(pa) * 3.8, 2.8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.arc(lcx, lcy, 2.3, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
   }

@@ -143,7 +143,7 @@ export const SongWeaverModal: React.FC<SongWeaverModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-modal-safe bg-black/55 backdrop-blur-sm pointer-events-auto select-none animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-modal-safe bg-[#160f24]/92 pointer-events-auto select-none animate-in fade-in duration-200">
       <div className="w-full max-w-3xl storybook-modal rounded-2xl sm:rounded-3xl p-3 sm:p-5 flex flex-col gap-2 sm:gap-3 max-h-[94dvh] overflow-hidden">
         {/* Header Bar */}
         <div className="flex items-center justify-between border-b border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 pb-2 shrink-0">

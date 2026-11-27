@@ -243,7 +243,7 @@ export const GazetteModal: React.FC<GazetteModalProps> = ({
     : issue.liveWire;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe bg-black/55 backdrop-blur-sm pointer-events-auto">
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe bg-[#160f24]/92 pointer-events-auto">
       <div className="w-full max-w-4xl bg-[#fbf8f1] dark:bg-[#2a2136] border border-[#3a2640]/35 dark:border-[#745694]/80 ring-4 ring-[#fbf8f1]/45 dark:ring-[#2a2136]/45 rounded-2xl sm:rounded-3xl shadow-2xl flex flex-col max-h-[94dvh] overflow-hidden text-[#2d1f33] dark:text-[#f8effc]">
         {/* Newspaper Masthead */}
         <header className="px-3.5 sm:px-6 pt-3.5 sm:pt-4 pb-2.5 sm:pb-3 border-b-2 border-[#3a2640]/20 dark:border-[#745694]/50 shrink-0 bg-[#f6efe2] dark:bg-[#231a2e]">
@@ -258,7 +258,7 @@ export const GazetteModal: React.FC<GazetteModalProps> = ({
                 <span aria-hidden="true" className="hidden sm:inline">·</span>
                 <span className="hidden sm:inline text-[#b83264] dark:text-[#ff9ec0]">{nextPrintText}</span>
                 {hotOffPressFlash && (
-                  <span className="px-1.5 py-0.5 rounded-md bg-[#ffd23f] text-[#4a3550] text-[10px] font-black animate-pulse">
+                  <span className="px-1.5 py-0.5 rounded-md bg-[#ffd23f] text-[#4a3550] text-[10px] font-black">
                     🔥 Hot Off the Press!
                   </span>
                 )}

@@ -513,6 +513,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
   const touchMovedRef = useRef(false);
   const lastPinchRef = useRef<{ dist: number; midX: number; midY: number } | null>(null);
   const lastTapRef = useRef<{ time: number; x: number; y: number }>({ time: 0, x: 0, y: 0 });
+  const lastTouchTapZoomAtRef = useRef(0);
   const isInsetDraggingRef = useRef(false);
 
   // Pre-cached bitmaps for all 5 phases so each phase renders its own authentic map!
@@ -2463,6 +2464,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
   // Canvas Click & Double-Click Zoom
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (isDraggingRef.current || touchMovedRef.current) return;
+    if (Date.now() - lastTouchTapZoomAtRef.current < 450) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -2693,6 +2695,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         const now = Date.now();
         if (now - lastTapRef.current.time < 290 && Math.hypot(cx - lastTapRef.current.x, cy - lastTapRef.current.y) < 28) {
           lastTapRef.current = { time: 0, x: 0, y: 0 };
+          lastTouchTapZoomAtRef.current = now;
           const curZ = targetCamRef.current.zoom;
           zoomAtPoint(curZ >= 4.0 ? 1.2 : Math.min(MAX_ZOOM, curZ * 2.0), cx, cy);
         } else {
@@ -2770,7 +2773,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
   const zoomPercent = Math.round(zoomUi * 100);
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#160f22]/80 backdrop-blur-md flex flex-col items-center justify-center p-modal-safe select-none animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 bg-[#160f22]/94 flex flex-col items-center justify-center p-modal-safe select-none animate-in fade-in duration-200">
       <div className="relative w-full max-w-5xl h-[94dvh] storybook-modal rounded-2xl sm:rounded-3xl flex flex-col overflow-hidden">
         {/* Top Header Bar */}
         <div className="p-2.5 sm:p-3.5 border-b border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 flex flex-wrap items-center justify-between gap-2 bg-white/55 dark:bg-black/20 shrink-0">
@@ -2964,7 +2967,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
 
           {/* Active Phase Legend & Access Pill */}
           <div className="absolute left-2 top-2 sm:left-3 sm:top-3 pointer-events-none z-10 max-w-[78vw] sm:max-w-md flex flex-col gap-1">
-            <div className="bg-[#1b1228]/85 text-white border border-white/15 backdrop-blur-md px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl shadow-lg flex flex-col gap-0.5 sm:gap-1">
+            <div className="bg-[#1b1228]/92 text-white border border-white/15 px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl shadow-lg flex flex-col gap-0.5 sm:gap-1">
               <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-black">
                 <span className="truncate">{activePhase.label}</span>
                 <span className="hidden sm:inline opacity-40">·</span>
@@ -2991,7 +2994,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
 
             {/* Live Hover Coordinate & Micro-Terrain Badge */}
             {hoverInfo && (
-              <div className="self-start bg-[#1b1228]/85 text-white border border-white/15 backdrop-blur-md px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1.5 shadow-md">
+              <div className="self-start bg-[#1b1228]/92 text-white border border-white/15 px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1.5 shadow-md">
                 <span>{hoverInfo.icon}</span>
                 <span className="text-[#ffd23f] font-black">{hoverInfo.label}</span>
                 <span className="opacity-65">
@@ -3022,7 +3025,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
               style={{ left: 0, top: 0, opacity: 0, willChange: 'transform' }}
-              className="absolute z-30 w-56 sm:w-64 rounded-2xl bg-[#1b1228]/95 text-white border-2 border-[#ffd23f]/80 backdrop-blur-md shadow-2xl p-2.5 transition-opacity duration-100 pointer-events-auto"
+              className="absolute z-30 w-56 sm:w-64 rounded-2xl bg-[#1b1228]/95 text-white border-2 border-[#ffd23f]/80 shadow-2xl p-2.5 transition-opacity duration-100 pointer-events-auto"
             >
               {(() => {
                 const { town, title, subtitle, icon } = activeTooltipTown;
@@ -3286,7 +3289,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
 
           {/* Quick Helper Tip */}
           {zoomUi < 1.55 && (
-            <div className="absolute right-2.5 top-2.5 sm:right-3 sm:top-3 hidden md:block bg-black/45 text-white/90 text-[10px] px-2.5 py-1 rounded-lg backdrop-blur-xs pointer-events-none">
+            <div className="absolute right-2.5 top-2.5 sm:right-3 sm:top-3 hidden md:block bg-[#1b1228]/88 text-white/90 text-[10px] px-2.5 py-1 rounded-lg pointer-events-none">
               🖱️ Scroll or Double-Click to zoom cursor · Drag/WASD to pan · Click tiles to inspect
             </div>
           )}

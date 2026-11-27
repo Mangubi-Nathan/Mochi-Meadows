@@ -63,7 +63,7 @@ interface WardrobeModalProps {
   onClose: () => void;
   onSave: () => void;
   onCopySaveCode: () => void;
-  onLoadSaveCode: () => void;
+  onLoadSaveCode: (code?: string) => void;
   onNewGame: () => void;
   currentTrackIndex: number;
   onSelectTrack: (idx: number) => void;
@@ -93,6 +93,9 @@ export const WardrobeModal: React.FC<WardrobeModalProps> = ({
   const [savedSlots, setSavedSlots] = useState<SavedLookSlot[]>(loadSavedLookSlots);
   const [downloadingIdx, setDownloadingIdx] = useState<number | null>(null);
   const [downloadMsg, setDownloadMsg] = useState<string>('');
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const [loadCodeOpen, setLoadCodeOpen] = useState(false);
+  const [loadCodeText, setLoadCodeText] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const historyRef = useRef<PlayerLook[]>([]);
 
@@ -300,7 +303,7 @@ export const WardrobeModal: React.FC<WardrobeModalProps> = ({
   const activeCompanionDef = COMPANIONS_LIST.find((c) => c.id === activeCompanionId) ?? null;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe bg-black/50 backdrop-blur-sm pointer-events-auto">
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe bg-[#160f24]/92 pointer-events-auto">
       <div className="relative w-full max-w-5xl storybook-modal rounded-2xl sm:rounded-3xl p-3 sm:p-5 max-h-[95dvh] flex flex-col gap-2.5 sm:gap-3 animate-in fade-in zoom-in-95 duration-150 overflow-hidden">
         {/* Header Bar */}
         <div className="flex items-center justify-between border-b border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 pb-2 shrink-0 gap-2">
@@ -1872,8 +1875,8 @@ export const WardrobeModal: React.FC<WardrobeModalProps> = ({
                   </div>
 
                   {/* Save & Data Tools */}
-                  <div className="storybook-card rounded-2xl p-3">
-                    <div className="text-[11px] font-black uppercase tracking-wider text-[#d85784] dark:text-[#ff9ec0] mb-2">
+                  <div className="storybook-card rounded-2xl p-3 space-y-2">
+                    <div className="text-[11px] font-black uppercase tracking-wider text-[#d85784] dark:text-[#ff9ec0]">
                       Game Save Data
                     </div>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
@@ -1890,18 +1893,69 @@ export const WardrobeModal: React.FC<WardrobeModalProps> = ({
                         📋 Copy Code
                       </button>
                       <button
-                        onClick={onLoadSaveCode}
+                        onClick={() => {
+                          setConfirmResetOpen(false);
+                          setLoadCodeOpen((v) => !v);
+                        }}
                         className="px-2.5 py-1.5 rounded-xl border border-[#f0c7d8] dark:border-[#6b4a7a] bg-[#fffaf2] dark:bg-[#2b2137] hover:bg-[#ffd23f] hover:text-[#4a3550] hover:border-[#ffd23f] text-xs font-black transition-colors whitespace-nowrap cursor-pointer"
                       >
                         📥 Load Code
                       </button>
                       <button
-                        onClick={onNewGame}
+                        onClick={() => {
+                          setLoadCodeOpen(false);
+                          setConfirmResetOpen((v) => !v);
+                        }}
                         className="px-2.5 py-1.5 rounded-xl border border-[#f0c7d8] dark:border-[#6b4a7a] bg-[#fffaf2] dark:bg-[#2b2137] hover:bg-[#ff6b6b] hover:text-white hover:border-[#ff6b6b] text-xs font-black transition-colors whitespace-nowrap cursor-pointer"
                       >
                         🗑 Reset Save
                       </button>
                     </div>
+                    {loadCodeOpen && (
+                      <div className="flex gap-1.5 pt-1">
+                        <input
+                          type="text"
+                          value={loadCodeText}
+                          onChange={(e) => setLoadCodeText(e.target.value)}
+                          placeholder="Paste your save code here..."
+                          className="flex-1 px-2.5 py-1.5 text-xs font-bold rounded-xl border border-[#f0c7d8] dark:border-[#6b4a7a] bg-white dark:bg-[#1f1629] outline-none focus:border-[#ff7aa8]"
+                        />
+                        <button
+                          onClick={() => {
+                            if (loadCodeText.trim()) {
+                              onLoadSaveCode(loadCodeText.trim());
+                              setLoadCodeText('');
+                              setLoadCodeOpen(false);
+                            }
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-[#7bd88f] text-white text-xs font-black cursor-pointer hover:brightness-105"
+                        >
+                          Apply
+                        </button>
+                      </div>
+                    )}
+                    {confirmResetOpen && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 p-2 rounded-xl bg-[#ff6b6b]/15 border border-[#ff6b6b] text-xs font-bold">
+                        <span>Erase current slot and start a brand-new journey?</span>
+                        <div className="flex gap-1.5">
+                          <button
+                            onClick={() => {
+                              setConfirmResetOpen(false);
+                              onNewGame();
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-[#ff5c7c] text-white text-xs font-black cursor-pointer hover:brightness-105"
+                          >
+                            Yes, Start Fresh
+                          </button>
+                          <button
+                            onClick={() => setConfirmResetOpen(false)}
+                            className="px-2.5 py-1 rounded-lg storybook-well text-xs font-black cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

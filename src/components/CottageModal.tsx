@@ -395,24 +395,25 @@ const RoomInterior3DCanvas: React.FC<{
     const container = mountRef.current;
     if (!container) return;
 
+    const isCompactViewport = typeof window !== 'undefined' && (window.innerWidth < 640 || window.innerHeight <= 520);
     let renderer: THREE.WebGLRenderer;
     try {
       renderer = new THREE.WebGLRenderer({
-        antialias: true,
-        preserveDrawingBuffer: true,
-        powerPreference: 'high-performance',
+        antialias: !isCompactViewport,
+        preserveDrawingBuffer: false,
+        powerPreference: isCompactViewport ? 'default' : 'high-performance',
       });
     } catch {
       setWebglError(true);
       return;
     }
 
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isCompactViewport ? 1.1 : 1.5));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.08;
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = isCompactViewport ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
     renderer.domElement.style.display = 'block';
@@ -674,7 +675,7 @@ const RoomInterior3DCanvas: React.FC<{
       <div ref={mountRef} className="w-full h-full" />
 
       {/* 3D Orbit Hint Pill */}
-      <div className="pointer-events-none absolute top-2 left-2 px-2 py-0.5 rounded-lg bg-[#20142f]/75 text-[#fdeeff] text-[10px] font-extrabold backdrop-blur-xs">
+      <div className="pointer-events-none absolute top-2 left-2 px-2 py-0.5 rounded-lg bg-[#20142f]/85 text-[#fdeeff] text-[10px] font-extrabold">
         🔄 Drag to orbit 3D {ROOM_META[activeRoom].shortLabel}
       </div>
 
@@ -703,7 +704,7 @@ const RoomInterior3DCanvas: React.FC<{
             }`}
           >
             <span>{deco.icon}</span>
-            {effectHere && <span className="animate-bounce">✨</span>}
+            {effectHere && <span>✨</span>}
             {isArrangeMode && (
               <button
                 onClick={(e) => {
@@ -1484,7 +1485,7 @@ export const CottageModal: React.FC<CottageModalProps> = ({
 
   // Full Centered Modal with Real Interactive Three.js 3D Architectural Preview
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-modal-safe bg-black/60 backdrop-blur-sm pointer-events-auto select-none animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-modal-safe bg-[#160f24]/92 pointer-events-auto select-none animate-in fade-in duration-200">
       <div className="w-full max-w-5xl storybook-modal rounded-2xl sm:rounded-3xl p-3 sm:p-5 flex flex-col gap-2.5 sm:gap-3 max-h-[94dvh] overflow-hidden">
         {/* Top Header */}
         <div className="flex items-center justify-between gap-2 sm:gap-3 border-b border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 pb-2 shrink-0">

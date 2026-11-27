@@ -539,31 +539,86 @@ export function getNPCWeatherChatter(npc: NPC, weatherId: WeatherId): string {
   }
 }
 
-function pickTownWanderTarget(n: NPC, towns: Town[] | undefined, radiusMin: number, radiusSpan: number): [number, number] {
-  if (towns && towns.length > 0 && Math.random() < 0.55) {
-    const npcLayer = getNpcLayer(n);
-    let nearTown: Town | null = null;
-    let bestD2 = 280 * 280;
-    for (let i = 0; i < towns.length; i++) {
-      const tw = towns[i];
-      if (tw.w !== npcLayer) continue;
-      const cx = tw.x * T + T / 2;
-      const cy = tw.y * T + T / 2;
-      const d2 = (cx - n.hx) * (cx - n.hx) + (cy - n.hy) * (cy - n.hy);
-      if (d2 < bestD2) {
-        bestD2 = d2;
-        nearTown = tw;
+function pickTownWanderTarget(
+  n: NPC,
+  towns: Town[] | undefined,
+  radiusMin: number,
+  radiusSpan: number,
+  canWalk?: (x: number, y: number, npc: NPC) => boolean
+): [number, number] {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    let cx = n.hx;
+    let cy = n.hy;
+    let r = radiusMin + Math.random() * radiusSpan;
+    if (towns && towns.length > 0 && attempt < 4 && Math.random() < 0.55) {
+      const npcLayer = getNpcLayer(n);
+      let nearTown: Town | null = null;
+      let bestD2 = 280 * 280;
+      for (let i = 0; i < towns.length; i++) {
+        const tw = towns[i];
+        if (tw.w !== npcLayer) continue;
+        const tcx = tw.x * T + T / 2;
+        const tcy = tw.y * T + T / 2;
+        const d2 = (tcx - n.hx) * (tcx - n.hx) + (tcy - n.hy) * (tcy - n.hy);
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          nearTown = tw;
+        }
+      }
+      if (nearTown) {
+        cx = nearTown.x * T + T / 2;
+        cy = nearTown.y * T + T / 2;
+        r = 24 + Math.random() * 58;
       }
     }
-    if (nearTown) {
-      const a = Math.random() * Math.PI * 2;
-      const r = 24 + Math.random() * 58;
-      return [nearTown.x * T + T / 2 + Math.cos(a) * r, nearTown.y * T + T / 2 + Math.sin(a) * r];
+    const a = Math.random() * Math.PI * 2;
+    const candX = cx + Math.cos(a) * r;
+    const candY = cy + Math.sin(a) * r;
+    if (!canWalk || canWalk(candX, candY, n)) {
+      return [candX, candY];
     }
   }
-  const angle = Math.random() * Math.PI * 2;
-  const r = radiusMin + Math.random() * radiusSpan;
-  return [n.hx + Math.cos(angle) * r, n.hy + Math.sin(angle) * r];
+  return [n.hx, n.hy];
+}
+
+function stepNpcTowards(
+  n: NPC,
+  targetX: number,
+  targetY: number,
+  spd: number,
+  dt: number,
+  mvActive: number,
+  canWalk?: (x: number, y: number, npc: NPC) => boolean
+) {
+  const dx = targetX - n.x;
+  const dy = targetY - n.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= 4) {
+    n.mv = 0;
+    return;
+  }
+  const stepDist = Math.min(dist, spd * dt);
+  const nx = n.x + (dx / dist) * stepDist;
+  const ny = n.y + (dy / dist) * stepDist;
+  if (!canWalk || canWalk(nx, ny, n)) {
+    n.x = nx;
+    n.y = ny;
+    if (Math.abs(dx) > 0.5) n.f = dx > 0 ? 1 : -1;
+    n.mv = mvActive;
+  } else if (Math.abs(dx) > 0.5 && canWalk(nx, n.y, n)) {
+    n.x = nx;
+    n.f = dx > 0 ? 1 : -1;
+    n.mv = mvActive;
+  } else if (Math.abs(dy) > 0.5 && canWalk(n.x, ny, n)) {
+    n.y = ny;
+    n.mv = mvActive;
+  } else {
+    // Pick a fresh destination on next tick rather than walking into an obstacle/ocean
+    n.tx = n.hx;
+    n.ty = n.hy;
+    n.wt = 0;
+    n.mv = 0;
+  }
 }
 
 /**
@@ -575,7 +630,8 @@ export function updateNPCWeatherBehavior(
   time: number,
   dt: number,
   activeLayer?: WorldLayerId,
-  towns?: Town[]
+  towns?: Town[],
+  canWalk?: (x: number, y: number, npc: NPC) => boolean
 ) {
   for (const n of npcs) {
     // Only actively tick NPCs belonging to the player's current world layer
@@ -610,42 +666,22 @@ export function updateNPCWeatherBehavior(
         // === RAIN: Shelter under trees or stay huddled close to home ===
         n.weatherBehavior = 'sheltering';
 
-        // Find shelter target: either nearest tree point or within 10px of home
+        // Find shelter target: stay within 12px of home
         const shelterDist = 12;
         const distFromHome = Math.hypot(n.x - n.hx, n.y - n.hy);
 
         if (distFromHome > shelterDist) {
-          // Walk back quickly to home shelter
-          const dx = n.hx - n.x;
-          const dy = n.hy - n.y;
-          const len = Math.hypot(dx, dy);
-          if (len > 0) {
-            n.x += (dx / len) * 55 * dt;
-            n.y += (dy / len) * 55 * dt;
-            n.f = dx > 0 ? 1 : -1;
-            n.mv = 1;
-          }
+          stepNpcTowards(n, n.hx, n.hy, 55, dt, 1, canWalk);
         } else {
           // Huddled near shelter with periodic cozy shifting & soft shiver
           n.wt -= dt;
           if (n.wt <= 0) {
             n.wt = 2.0 + Math.random() * 2.5;
-            const a = Math.random() * Math.PI * 2;
-            const r = Math.random() * 8;
-            n.tx = n.hx + Math.cos(a) * r;
-            n.ty = n.hy + Math.sin(a) * r;
+            const [wx, wy] = pickTownWanderTarget(n, undefined, 0, 8, canWalk);
+            n.tx = wx;
+            n.ty = wy;
           }
-          const sdx = n.tx - n.x;
-          const sdy = n.ty - n.y;
-          const sdist = Math.hypot(sdx, sdy);
-          if (sdist > 2) {
-            n.x += (sdx / sdist) * 18 * dt;
-            n.y += (sdy / sdist) * 18 * dt;
-            if (Math.abs(sdx) > 0.5) n.f = sdx > 0 ? 1 : -1;
-            n.mv = 0.5;
-          } else {
-            n.mv = 0;
-          }
+          stepNpcTowards(n, n.tx, n.ty, 18, dt, 0.5, canWalk);
           n.weatherPoseY = Math.sin(time * 20 + n.ph) * 1.0; // soft shivering vibration
         }
         break;
@@ -658,25 +694,12 @@ export function updateNPCWeatherBehavior(
 
         if (n.wt <= 0) {
           n.wt = 2.5 + Math.random() * 3.5;
-          const [wx, wy] = pickTownWanderTarget(n, towns, 20, 45);
+          const [wx, wy] = pickTownWanderTarget(n, towns, 20, 45, canWalk);
           n.tx = wx;
           n.ty = wy;
         }
 
-        // Move towards target with dancing spring
-        const dx = n.tx - n.x;
-        const dy = n.ty - n.y;
-        const dist = Math.hypot(dx, dy);
-
-        if (dist > 4) {
-          const spd = 65;
-          n.x += (dx / dist) * spd * dt;
-          n.y += (dy / dist) * spd * dt;
-          n.f = dx > 0 ? 1 : -1;
-          n.mv = 1;
-        } else {
-          n.mv = 0;
-        }
+        stepNpcTowards(n, n.tx, n.ty, 65, dt, 1, canWalk);
 
         // Dancing leap pose
         n.weatherPoseY = -Math.abs(Math.sin(time * 7 + n.ph)) * 6.5;
@@ -691,24 +714,12 @@ export function updateNPCWeatherBehavior(
         n.wt -= dt;
         if (n.wt <= 0) {
           n.wt = 4 + Math.random() * 4;
-          const [wx, wy] = pickTownWanderTarget(n, towns, 15, 25);
+          const [wx, wy] = pickTownWanderTarget(n, towns, 15, 25, canWalk);
           n.tx = wx;
           n.ty = wy;
         }
 
-        const dx = n.tx - n.x;
-        const dy = n.ty - n.y;
-        const dist = Math.hypot(dx, dy);
-
-        if (dist > 4) {
-          const spd = 28;
-          n.x += (dx / dist) * spd * dt;
-          n.y += (dy / dist) * spd * dt;
-          n.f = dx > 0 ? 1 : -1;
-          n.mv = 1;
-        } else {
-          n.mv = 0;
-        }
+        stepNpcTowards(n, n.tx, n.ty, 28, dt, 1, canWalk);
 
         // Levitation offset
         n.weatherPoseY = -9 + Math.sin(time * 2.8 + n.ph) * 5;
@@ -722,24 +733,12 @@ export function updateNPCWeatherBehavior(
 
         if (n.wt <= 0) {
           n.wt = 3 + Math.random() * 4;
-          const [wx, wy] = pickTownWanderTarget(n, towns, 10, 30);
+          const [wx, wy] = pickTownWanderTarget(n, towns, 10, 30, canWalk);
           n.tx = wx;
           n.ty = wy;
         }
 
-        const dx = n.tx - n.x;
-        const dy = n.ty - n.y;
-        const dist = Math.hypot(dx, dy);
-
-        if (dist > 4) {
-          const spd = 40;
-          n.x += (dx / dist) * spd * dt;
-          n.y += (dy / dist) * spd * dt;
-          n.f = dx > 0 ? 1 : -1;
-          n.mv = 1;
-        } else {
-          n.mv = 0;
-        }
+        stepNpcTowards(n, n.tx, n.ty, 40, dt, 1, canWalk);
 
         // Soft frosty waddle / shiver
         n.weatherPoseY = Math.sin(time * 14 + n.ph) * 1.2;
@@ -753,24 +752,12 @@ export function updateNPCWeatherBehavior(
 
         if (n.wt <= 0) {
           n.wt = 4 + Math.random() * 4;
-          const [wx, wy] = pickTownWanderTarget(n, towns, 12, 32);
+          const [wx, wy] = pickTownWanderTarget(n, towns, 12, 32, canWalk);
           n.tx = wx;
           n.ty = wy;
         }
 
-        const dx = n.tx - n.x;
-        const dy = n.ty - n.y;
-        const dist = Math.hypot(dx, dy);
-
-        if (dist > 4) {
-          const spd = 30;
-          n.x += (dx / dist) * spd * dt;
-          n.y += (dy / dist) * spd * dt;
-          n.f = dx > 0 ? 1 : -1;
-          n.mv = 1;
-        } else {
-          n.mv = 0;
-        }
+        stepNpcTowards(n, n.tx, n.ty, 30, dt, 1, canWalk);
 
         n.weatherPoseY = -3 + Math.sin(time * 2.2 + n.ph) * 2.4;
         break;
@@ -784,24 +771,12 @@ export function updateNPCWeatherBehavior(
 
         if (n.wt <= 0) {
           n.wt = 2.2 + Math.random() * 3.0;
-          const [wx, wy] = pickTownWanderTarget(n, towns, 18, 44);
+          const [wx, wy] = pickTownWanderTarget(n, towns, 18, 44, canWalk);
           n.tx = wx;
           n.ty = wy;
         }
 
-        const dx = n.tx - n.x;
-        const dy = n.ty - n.y;
-        const dist = Math.hypot(dx, dy);
-
-        if (dist > 4) {
-          const spd = 58;
-          n.x += (dx / dist) * spd * dt;
-          n.y += (dy / dist) * spd * dt;
-          n.f = dx > 0 ? 1 : -1;
-          n.mv = 1;
-        } else {
-          n.mv = 0;
-        }
+        stepNpcTowards(n, n.tx, n.ty, 58, dt, 1, canWalk);
 
         n.weatherPoseY = -Math.abs(Math.sin(time * 6.5 + n.ph)) * 5.2;
         break;

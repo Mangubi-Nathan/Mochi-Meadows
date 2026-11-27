@@ -1,8 +1,9 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { CutsceneSlide } from '../game/cutscenes';
 import { Cutscene3DStageRenderer } from '../game/cutscene3D';
 import { SeasonId } from '../game/constants';
 import { PlayerLook } from '../game/engine';
+import { multiTouchTap } from '../utils/touchTap';
 
 interface CutsceneOverlayProps {
   slides: CutsceneSlide[];
@@ -29,11 +30,15 @@ export const CutsceneOverlay: React.FC<CutsceneOverlayProps> = ({
   const fadeOverlayRef = useRef<HTMLDivElement | null>(null);
   const stage3DRef = useRef<Cutscene3DStageRenderer | null>(null);
 
-  const currentSlide = slides[slideIdx];
+  const safeSlideIdx = slides.length > 0 ? Math.min(slideIdx, slides.length - 1) : 0;
+  const currentSlide = slides[safeSlideIdx];
   const has3D = Boolean(currentSlide?.scene3D);
 
-  const slideIdxRef = useRef(slideIdx);
-  slideIdxRef.current = slideIdx;
+  const slideIdxRef = useRef(safeSlideIdx);
+  slideIdxRef.current = safeSlideIdx;
+  const slidesLenRef = useRef(slides.length);
+  slidesLenRef.current = slides.length;
+  const slideDoneRef = useRef(false);
   const currentSlideRef = useRef(currentSlide);
   currentSlideRef.current = currentSlide;
   const playerLookRef = useRef(playerLook);
@@ -47,13 +52,40 @@ export const CutsceneOverlay: React.FC<CutsceneOverlayProps> = ({
 
   const sizeRef = useRef({ w: 800, h: 450, dpr: 1 });
 
-  const handleNext = () => {
-    if (slideIdxRef.current < slides.length - 1) {
+  useEffect(() => {
+    slideDoneRef.current = false;
+    setSlideIdx(0);
+  }, [slides]);
+
+  const handleNext = useCallback(() => {
+    if (slideDoneRef.current) return;
+    slideDoneRef.current = true;
+    if (slideIdxRef.current < slidesLenRef.current - 1) {
       setSlideIdx(slideIdxRef.current + 1);
     } else {
       onFinishRef.current();
     }
-  };
+  }, []);
+
+  const handleSkip = useCallback(() => {
+    if (slideDoneRef.current) return;
+    slideDoneRef.current = true;
+    onFinishRef.current();
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        handleSkip();
+      } else if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleNext();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleNext, handleSkip]);
 
   // Initialize persistent 3D Cutscene Stage Renderer once per overlay mount
   useEffect(() => {
@@ -99,7 +131,11 @@ export const CutsceneOverlay: React.FC<CutsceneOverlayProps> = ({
 
   // Configure current slide cast/environment & drive animation loop
   useEffect(() => {
-    if (!currentSlide) return;
+    slideDoneRef.current = false;
+    if (!currentSlide) {
+      onFinishRef.current();
+      return;
+    }
 
     const renderer3D = stage3DRef.current;
     if (renderer3D && currentSlide.scene3D) {
@@ -178,12 +214,12 @@ export const CutsceneOverlay: React.FC<CutsceneOverlayProps> = ({
       cancelAnimationFrame(animId);
       clearInterval(typeTimer);
     };
-  }, [slideIdx, currentSlide, season]);
+  }, [safeSlideIdx, currentSlide, season, handleNext]);
 
   return (
     <div
       onClick={handleNext}
-      className="fixed inset-0 z-50 bg-black cursor-pointer select-none pointer-events-auto flex flex-col justify-between pt-safe pb-safe pl-safe pr-safe"
+      className="fixed inset-0 z-50 bg-black cursor-pointer select-none pointer-events-auto touch-none flex flex-col justify-between pt-safe pb-safe pl-safe pr-safe"
     >
       {/* Top Cinema Letterbox Bar & Controls */}
       <div className="relative z-20 flex items-center justify-between px-3 sm:px-5 py-2 sm:py-3 shrink-0">
@@ -193,7 +229,7 @@ export const CutsceneOverlay: React.FC<CutsceneOverlayProps> = ({
               <span
                 key={i}
                 className={`h-1.5 rounded-full transition-all ${
-                  i === slideIdx ? 'w-5 bg-[#ffd23f]' : 'w-1.5 bg-white/30'
+                  i === safeSlideIdx ? 'w-5 bg-[#ffd23f]' : 'w-1.5 bg-white/30'
                 }`}
               />
             ))}
@@ -203,11 +239,9 @@ export const CutsceneOverlay: React.FC<CutsceneOverlayProps> = ({
         )}
 
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onFinish();
-          }}
-          className="min-h-[36px] px-4 py-1.5 rounded-full bg-white/15 hover:bg-white/30 border border-white/40 text-white font-black text-xs tracking-wider transition-colors backdrop-blur-xs cursor-pointer"
+          type="button"
+          {...multiTouchTap(handleSkip)}
+          className="min-h-[36px] px-4 py-1.5 touch-none rounded-full bg-[#241638]/80 hover:bg-[#362254]/90 border border-white/40 text-white font-black text-xs tracking-wider transition-colors cursor-pointer"
         >
           Skip ▸▸
         </button>

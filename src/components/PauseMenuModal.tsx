@@ -62,6 +62,8 @@ interface PauseMenuModalProps {
   onOpenBottles?: () => void;
   currentTrackIndex?: number;
   onSelectTrack?: (idx: number) => void;
+  currentSlot?: number;
+  onStartFreshInSlot?: () => void;
 }
 
 export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
@@ -102,6 +104,8 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
   onOpenBottles,
   currentTrackIndex = 0,
   onSelectTrack,
+  currentSlot = 1,
+  onStartFreshInSlot,
 }) => {
   const [activeTab, setActiveTab] = useState<'menu' | 'progress' | 'settings' | 'cloud' | 'help'>(initialTab);
   const [cloudSlots, setCloudSlots] = useState<BackupSlotMeta[]>([]);
@@ -111,6 +115,7 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
   const [downloadingTrackIdx, setDownloadingTrackIdx] = useState<number | null>(null);
   const [isDownloadingAll, setIsDownloadingAll] = useState<boolean>(false);
   const [trackDownloadMsg, setTrackDownloadMsg] = useState<string>('');
+  const [confirmResetSlot, setConfirmResetSlot] = useState(false);
 
   const formatMinSec = (totalSec: number) => {
     const clamped = Math.max(0, Math.round(totalSec));
@@ -237,7 +242,7 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe bg-black/50 backdrop-blur-sm pointer-events-auto">
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe bg-[#160f24]/92 pointer-events-auto">
       <div className="w-full max-w-3xl storybook-modal rounded-2xl sm:rounded-3xl p-3 sm:p-5 max-h-[94dvh] flex flex-col gap-2.5 sm:gap-3.5 animate-in fade-in zoom-in-95 duration-150 overflow-hidden">
         {/* Header Bar */}
         <div className="flex items-center justify-between border-b border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 pb-2 shrink-0">
@@ -594,13 +599,48 @@ export const PauseMenuModal: React.FC<PauseMenuModalProps> = ({
 
               {/* Save & Quit Button */}
               {!isTitleScreen && (
-                <button
-                  onClick={onQuitToTitle}
-                  className="w-full p-2.5 bg-[#ffd3e2]/30 hover:bg-[#ff6b6b] hover:text-white border-2 border-[#ffd3e2] dark:border-[#6b4a7a] font-black text-xs rounded-2xl transition-all cursor-pointer flex items-center justify-center gap-2 mt-1"
-                >
-                  <span>🏠</span>
-                  <span>Save Progress & Exit to Title Screen</span>
-                </button>
+                <div className="space-y-2 mt-1">
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <button
+                      onClick={onQuitToTitle}
+                      className="flex-1 p-2.5 bg-[#ffd3e2]/30 hover:bg-[#ff7aa8] hover:text-white border-2 border-[#ffd3e2] dark:border-[#6b4a7a] font-black text-xs rounded-2xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      <span>🏠</span>
+                      <span>Save Slot {currentSlot} &amp; Exit to Title</span>
+                    </button>
+                    {onStartFreshInSlot && (
+                      <button
+                        onClick={() => setConfirmResetSlot((v) => !v)}
+                        className="sm:w-auto px-3.5 p-2.5 bg-white/70 dark:bg-black/25 hover:bg-[#ff5c7c] hover:text-white border-2 border-[#ffd3e2] dark:border-[#6b4a7a] font-black text-xs rounded-2xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        <span>🔄</span>
+                        <span>Start Fresh (Slot {currentSlot})</span>
+                      </button>
+                    )}
+                  </div>
+                  {confirmResetSlot && onStartFreshInSlot && (
+                    <div className="p-3 rounded-2xl bg-[#ff5c7c]/15 border-2 border-[#ff5c7c] flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
+                      <span>Erase Slot {currentSlot} and begin a brand-new journey from Chapter 1?</span>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => {
+                            setConfirmResetSlot(false);
+                            onStartFreshInSlot();
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-[#ff5c7c] hover:brightness-105 text-white text-xs font-black cursor-pointer"
+                        >
+                          Yes, Start Fresh
+                        </button>
+                        <button
+                          onClick={() => setConfirmResetSlot(false)}
+                          className="px-3 py-1.5 rounded-xl storybook-well text-xs font-black cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}

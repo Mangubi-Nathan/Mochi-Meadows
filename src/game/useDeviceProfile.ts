@@ -108,29 +108,61 @@ export function useDeviceProfile(): DeviceProfile {
   const [profile, setProfile] = useState<DeviceProfile>(computeProfile);
 
   useEffect(() => {
-    const update = () => {
+    let timerId: number | null = null;
+
+    const applyUpdate = (isOrientation = false) => {
       const next = computeProfile();
-      setProfile((prev) =>
-        prev.width === next.width &&
-        prev.height === next.height &&
-        prev.orientation === next.orientation &&
-        prev.screenType === next.screenType &&
-        prev.isLowEnd === next.isLowEnd &&
-        prev.isTouch === next.isTouch &&
-        prev.viewScale === next.viewScale &&
-        prev.pixelRatio === next.pixelRatio
-          ? prev
-          : next
-      );
+      setProfile((prev) => {
+        const sameOrientation = prev.orientation === next.orientation;
+        const dw = Math.abs(prev.width - next.width);
+        const dh = Math.abs(prev.height - next.height);
+        // Ignore tiny iOS/Android URL bar hide-show vertical jitter when width & orientation are unchanged
+        if (
+          !isOrientation &&
+          sameOrientation &&
+          prev.screenType === next.screenType &&
+          (prev.isTouch || next.isTouch) &&
+          dw <= 2 &&
+          dh < 64 &&
+          prev.pixelRatio === next.pixelRatio
+        ) {
+          return prev;
+        }
+        if (
+          prev.width === next.width &&
+          prev.height === next.height &&
+          prev.orientation === next.orientation &&
+          prev.screenType === next.screenType &&
+          prev.isLowEnd === next.isLowEnd &&
+          prev.isTouch === next.isTouch &&
+          prev.viewScale === next.viewScale &&
+          prev.pixelRatio === next.pixelRatio
+        ) {
+          return prev;
+        }
+        return next;
+      });
     };
 
-    window.addEventListener('resize', update, { passive: true });
-    window.addEventListener('orientationchange', update, { passive: true });
-    window.visualViewport?.addEventListener('resize', update, { passive: true });
+    const scheduleUpdate = (delayMs: number, isOrientation = false) => {
+      if (timerId !== null) window.clearTimeout(timerId);
+      timerId = window.setTimeout(() => {
+        timerId = null;
+        applyUpdate(isOrientation);
+      }, delayMs);
+    };
+
+    const onResize = () => scheduleUpdate(140, false);
+    const onOrientation = () => scheduleUpdate(60, true);
+
+    window.addEventListener('resize', onResize, { passive: true });
+    window.addEventListener('orientationchange', onOrientation, { passive: true });
+    window.visualViewport?.addEventListener('resize', onResize, { passive: true });
     return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('orientationchange', update);
-      window.visualViewport?.removeEventListener('resize', update);
+      if (timerId !== null) window.clearTimeout(timerId);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onOrientation);
+      window.visualViewport?.removeEventListener('resize', onResize);
     };
   }, []);
 

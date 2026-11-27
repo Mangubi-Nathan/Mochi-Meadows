@@ -8,15 +8,25 @@ import { SEASON_THEMES, WEATHER_UI_THEMES, normalizeSeasonId } from '../game/sea
 import { useDeviceProfile } from '../game/useDeviceProfile';
 import { PWAInstallButton } from './PWAInstallButton';
 
+export interface SaveSlotSummary {
+  slot: number;
+  hasSave: boolean;
+  name?: string;
+  chapter?: number;
+  coins?: number;
+}
+
 interface TitleScreenProps {
   hasSavedGame: boolean;
   playerLook: PlayerLook;
   currentSlot: number;
+  slotSummaries: SaveSlotSummary[];
   season: SeasonId;
   weather: WeatherConfig;
   onSelectSlot: (slot: number) => void;
+  onDeleteSlot: (slot: number) => void;
   onContinue: () => void;
-  onNewGame: () => void;
+  onNewGame: (preserveEmptySlotLook?: boolean) => void;
   onCustomize: () => void;
   onOpenSettings: () => void;
   onOpenCredits: () => void;
@@ -29,9 +39,11 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   hasSavedGame,
   playerLook,
   currentSlot,
+  slotSummaries,
   season,
   weather,
   onSelectSlot,
+  onDeleteSlot,
   onContinue,
   onNewGame,
   onCustomize,
@@ -44,6 +56,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [showCarryOverModal, setShowCarryOverModal] = useState(false);
   const [mm1CodeInput, setMm1CodeInput] = useState('');
+  const [pendingSlotConfirm, setPendingSlotConfirm] = useState<'new' | 'clear' | null>(null);
   const device = useDeviceProfile();
   const deviceRef = useRef(device);
   deviceRef.current = device;
@@ -391,28 +404,97 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
         }`}
       >
         {/* Save Slot Selector Bar */}
-        <div className="w-full flex items-center justify-center gap-1.5 storybook-panel border border-[var(--bd)] p-1 sm:p-1.5 rounded-2xl">
-          <span className="text-[10px] font-black uppercase tracking-wider text-[var(--ac)] pl-2 pr-1 whitespace-nowrap">
-            Save Slot
-          </span>
-          {[1, 2, 3].map((slotNum) => (
-            <button
-              key={slotNum}
-              onClick={() => {
-                audio.noteSpeech?.(75 + slotNum * 2);
-                onSelectSlot(slotNum);
-              }}
-              className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-black transition-all cursor-pointer whitespace-nowrap ${
-                currentSlot === slotNum
-                  ? 'text-white shadow-[0_2px_8px_var(--season-glow)]'
-                  : 'text-[var(--fg)] hover:bg-[var(--ac)]/12 dark:hover:bg-white/10'
-              }`}
-              style={currentSlot === slotNum ? { backgroundColor: 'var(--ac)' } : undefined}
-            >
-              Slot {slotNum}
-            </button>
-          ))}
+        <div className="w-full flex flex-col gap-1 storybook-panel border border-[var(--bd)] p-1 sm:p-1.5 rounded-2xl">
+          <div className="w-full flex items-center justify-center gap-1.5">
+            <span className="text-[10px] font-black uppercase tracking-wider text-[var(--ac)] pl-2 pr-1 whitespace-nowrap">
+              Slots
+            </span>
+            {[1, 2, 3].map((slotNum) => {
+              const info = slotSummaries.find((s) => s.slot === slotNum);
+              const isSelected = currentSlot === slotNum;
+              return (
+                <button
+                  key={slotNum}
+                  onClick={() => {
+                    audio.noteSpeech?.(75 + slotNum * 2);
+                    setPendingSlotConfirm(null);
+                    onSelectSlot(slotNum);
+                  }}
+                  className={`flex-1 py-1 px-1.5 rounded-xl text-center transition-all cursor-pointer min-w-0 ${
+                    isSelected
+                      ? 'text-white shadow-[0_2px_8px_var(--season-glow)]'
+                      : 'text-[var(--fg)] hover:bg-[var(--ac)]/12 dark:hover:bg-white/10'
+                  }`}
+                  style={isSelected ? { backgroundColor: 'var(--ac)' } : undefined}
+                >
+                  <div className="text-[11px] font-black leading-tight whitespace-nowrap">Slot {slotNum}</div>
+                  <div
+                    className={`text-[9px] font-bold leading-tight truncate ${
+                      isSelected ? 'text-white/90' : 'opacity-70'
+                    }`}
+                  >
+                    {info?.hasSave ? `${info.name || 'Mochi'} · Ch.${info.chapter ?? 1}` : 'Empty'}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          {hasSavedGame && (() => {
+            const activeInfo = slotSummaries.find((s) => s.slot === currentSlot);
+            return (
+              <div className="flex items-center justify-between gap-2 px-2 pt-0.5 text-[10px] font-bold text-[var(--fg)]/80">
+                <span className="truncate">
+                  {activeInfo?.name || 'Mochi'} · Chapter {activeInfo?.chapter ?? 1} · {activeInfo?.coins ?? 0} 🪙
+                </span>
+                <button
+                  onClick={() => {
+                    audio.noteSpeech?.(68);
+                    setPendingSlotConfirm((prev) => (prev === 'clear' ? null : 'clear'));
+                  }}
+                  className="text-[10px] font-black text-[#d94a6a] dark:text-[#ff9bb2] hover:underline cursor-pointer shrink-0"
+                  title={`Erase save data in Slot ${currentSlot}`}
+                >
+                  🗑 Clear Slot
+                </button>
+              </div>
+            );
+          })()}
         </div>
+
+        {/* Inline Confirmation Banner when Overwriting or Clearing a Saved Slot */}
+        {pendingSlotConfirm && (
+          <div className="w-full storybook-panel border-2 border-[#ff6b8a] rounded-2xl p-2.5 flex flex-col gap-2 text-center animate-in fade-in duration-150">
+            <div className="text-[11px] font-black text-[var(--fg)] leading-snug">
+              {pendingSlotConfirm === 'clear'
+                ? `Erase all saved progress in Slot ${currentSlot}? This cannot be undone.`
+                : `Start a brand-new journey in Slot ${currentSlot}? Your previous Slot ${currentSlot} save will be replaced.`}
+            </div>
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => {
+                  const action = pendingSlotConfirm;
+                  setPendingSlotConfirm(null);
+                  if (action === 'clear') {
+                    audio.noteSpeech?.(62);
+                    onDeleteSlot(currentSlot);
+                  } else {
+                    audio.chime();
+                    onNewGame(false);
+                  }
+                }}
+                className="flex-1 py-1.5 px-2.5 rounded-xl bg-[#ff5c7c] hover:brightness-105 text-white text-[11px] font-black cursor-pointer transition-all active:scale-95"
+              >
+                {pendingSlotConfirm === 'clear' ? '🗑 Erase Slot' : '✨ Erase & Start Fresh'}
+              </button>
+              <button
+                onClick={() => setPendingSlotConfirm(null)}
+                className="px-3 py-1.5 rounded-xl storybook-well text-[11px] font-black text-[var(--fg)] cursor-pointer hover:opacity-80"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Read-Only Live World Season & Weather Status */}
         {(() => {
@@ -440,6 +522,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           <button
             onClick={() => {
               audio.chime();
+              setPendingSlotConfirm(null);
               onContinue();
             }}
             className={`w-full px-4 sm:px-6 bg-linear-to-b from-[#8ae49d] via-[#69ce7f] to-[#52b869] hover:brightness-105 text-white font-black text-sm sm:text-base rounded-2xl border border-[#b8f7c4]/60 shadow-[inset_0_1.5px_0_rgba(255,255,255,0.5),0_10px_24px_-6px_rgba(40,120,65,0.55)] transition-all hover:scale-[1.015] active:scale-95 flex items-center justify-center gap-2 cursor-pointer ${
@@ -447,20 +530,25 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             }`}
           >
             <span>▶</span>
-            <span>Continue Adventure</span>
+            <span>Continue Slot {currentSlot}</span>
           </button>
         )}
         <button
           onClick={() => {
+            if (hasSavedGame) {
+              audio.noteSpeech?.(70);
+              setPendingSlotConfirm('new');
+              return;
+            }
             audio.chime();
-            onNewGame();
+            onNewGame(true);
           }}
           className={`w-full px-4 sm:px-6 bg-linear-to-b from-[#ff8bb3] via-[#ff709e] to-[#eb5385] hover:brightness-105 text-white font-black text-sm sm:text-base rounded-2xl border border-[#ffc4da]/60 shadow-[inset_0_1.5px_0_rgba(255,255,255,0.5),0_10px_24px_-6px_rgba(180,45,95,0.5)] transition-all hover:scale-[1.015] active:scale-95 flex items-center justify-center gap-2 cursor-pointer ${
             isLandscapePhone ? 'py-2' : 'py-2.5 sm:py-3'
           }`}
         >
           <span>✨</span>
-          <span>{hasSavedGame ? 'Start New Journey' : 'Begin Dawn Duet'}</span>
+          <span>{hasSavedGame ? `Start New in Slot ${currentSlot}` : `Begin Dawn Duet (Slot ${currentSlot})`}</span>
         </button>
 
         <div className="flex gap-2 w-full">
@@ -529,7 +617,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
       {/* Carry Over Modal */}
       {showCarryOverModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-modal-safe bg-black/55 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-modal-safe bg-[#160f24]/88">
           <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto storybook-modal rounded-3xl p-5 flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <h3 className="font-display text-base sm:text-lg font-black text-[#4a3550] dark:text-[#fdeeff] flex items-center gap-2">

@@ -143,7 +143,7 @@ export const MarketModal: React.FC<MarketModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe pointer-events-auto bg-black/40 backdrop-blur-xs">
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe pointer-events-auto bg-[#160f24]/90">
       <div className="w-full max-w-3xl storybook-modal rounded-2xl sm:rounded-3xl p-4 sm:p-6 flex flex-col gap-3 max-h-[90dvh] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-start justify-between gap-3 border-b border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 pb-3 shrink-0">

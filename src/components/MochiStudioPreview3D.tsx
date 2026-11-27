@@ -157,19 +157,20 @@ export const MochiStudioPreview3D: React.FC<MochiStudioPreview3DProps> = ({
       probeCanvas.getContext('webgl');
     const isSoftware = probeGl ? detectSoftwareGl(probeGl) : false;
 
+    const isCompactViewport = typeof window !== 'undefined' && (window.innerWidth < 640 || window.innerHeight <= 520);
     const renderer = new THREE.WebGLRenderer({
-      antialias: !isSoftware,
+      antialias: !isSoftware && !isCompactViewport,
       alpha: false,
-      powerPreference: 'high-performance',
+      powerPreference: isCompactViewport ? 'default' : 'high-performance',
     });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.06;
     if (!isSoftware) {
       renderer.shadowMap.enabled = true;
-      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.shadowMap.type = isCompactViewport ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
     }
-    renderer.setPixelRatio(isSoftware ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setPixelRatio(isSoftware ? 1 : Math.min(window.devicePixelRatio || 1, isCompactViewport ? 1.15 : 1.75));
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
     renderer.domElement.style.display = 'block';

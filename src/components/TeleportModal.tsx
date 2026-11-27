@@ -82,7 +82,7 @@ export const TeleportModal: React.FC<TeleportModalProps> = ({
   const lockedList = filteredTowns.filter((t) => t.vis !== 1);
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#160f22]/75 backdrop-blur-sm flex items-center justify-center p-modal-safe select-none animate-in fade-in duration-150">
+    <div className="fixed inset-0 z-50 bg-[#160f22]/92 flex items-center justify-center p-modal-safe select-none animate-in fade-in duration-150">
       <div className="w-full max-w-2xl max-h-[94dvh] storybook-modal rounded-2xl sm:rounded-3xl flex flex-col overflow-hidden">
         {/* Header */}
         <div className="p-3.5 sm:p-4 border-b border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 bg-linear-to-r from-[#ffedf5] via-[#fff8ea] to-[#efe8ff] dark:from-[#322140] dark:via-[#271d31] dark:to-[#241b38] flex items-center justify-between gap-2 shrink-0">

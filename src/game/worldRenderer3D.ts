@@ -137,6 +137,10 @@ export interface World3DSyncState {
   magicRings: MagicRing[];
   particles: Particle[];
   iceMap: Map<number, number>;
+  lilyMap?: Map<number, number>;
+  hotSprings?: { x: number; y: number; expires: number }[];
+  dkRevision?: number;
+  echoTargets3D?: { x: number; y: number; kind: 'echo' | 'diary' }[];
   glowdeepPortal?: { x: number; y: number; open: boolean };
   moonGatePortal?: { x: number; y: number; open: boolean };
   playerHomePortal?: { x: number; y: number; doorX: number; doorY: number };
@@ -183,6 +187,10 @@ export interface World3DSyncState {
     dreamwalkTimer: number;
     tideTimer: number;
     moonPullTimer: number;
+    echoTimer?: number;
+    frostGlowTimer?: number;
+    thermalGlideTimer?: number;
+    echoMagnetTimer?: number;
   };
   lowQuality: boolean;
   isTitleMode: boolean;
@@ -190,11 +198,14 @@ export interface World3DSyncState {
   cameraPitch?: number;
   cameraZoom: number;
   cameraPreset: CameraPreset3D;
+  cameraShake?: { x: number; y: number };
 }
 
 // Module-level reusable math scratch objects (zero-GC inside animation loop)
 const _v3 = new THREE.Vector3();
 const _v3b = new THREE.Vector3();
+const _v3Up = new THREE.Vector3(0, 1, 0);
+const _v3Dir = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _euler = new THREE.Euler();
 const _scale = new THREE.Vector3();
@@ -579,11 +590,17 @@ function ensureSurfaceHeightGrid(B: Uint8Array): Float32Array {
   return grid;
 }
 
-function getRawSurfaceTerrainH(tx: number, tz: number, B: Uint8Array, iceMap: Map<number, number>): number {
+function getRawSurfaceTerrainH(
+  tx: number,
+  tz: number,
+  B: Uint8Array,
+  iceMap: Map<number, number>,
+  lilyMap?: Map<number, number>
+): number {
   const cx = Math.max(0, Math.min(N - 1, Math.floor(tx)));
   const cz = Math.max(0, Math.min(N - 1, Math.floor(tz)));
   const cIdx = cz * N + cx;
-  if (B[cIdx] < 2 && iceMap.has(cIdx)) return 0.08;
+  if (B[cIdx] < 2 && (iceMap.has(cIdx) || (lilyMap && lilyMap.has(cIdx)))) return 0.08;
 
   const grid = ensureSurfaceHeightGrid(B);
   const clampedX = Math.max(0, Math.min(N, tx));
@@ -632,12 +649,13 @@ export function getTerrainHeight3D(
   layer: WorldLayer3D,
   B: Uint8Array,
   SB: Uint8Array,
-  iceMap: Map<number, number>
+  iceMap: Map<number, number>,
+  lilyMap?: Map<number, number>
 ): number {
   if (layer === 'house') return 0;
 
   if (layer === 'surface') {
-    let h = getRawSurfaceTerrainH(tx, tz, B, iceMap);
+    let h = getRawSurfaceTerrainH(tx, tz, B, iceMap, lilyMap);
     if (bIsDryForTerrace(tx, tz, B) && activeSurfaceTerraces.length) {
       h = applyTerraceFlatten(h, tx, tz, activeSurfaceTerraces);
     }
@@ -721,12 +739,13 @@ function getActorGroundY3D(
   layer: WorldLayer3D,
   B: Uint8Array,
   SB: Uint8Array,
-  iceMap: Map<number, number>
+  iceMap: Map<number, number>,
+  lilyMap?: Map<number, number>
 ): number {
   if (layer === 'house') return 0;
   const tx = x2d / T;
   const tz = y2d / T;
-  const h = getTerrainHeight3D(tx, tz, layer, B, SB, iceMap);
+  const h = getTerrainHeight3D(tx, tz, layer, B, SB, iceMap, lilyMap);
   if (layer === 'surface' && h < 0) return -0.2; // buoyant swimming depth in translucent water surface
   if (layer === 'sky' && h < 0) return 0.36; // flying on cloud wings
   if (layer === 'moonroad' && h < 0) return 0.32;
@@ -741,10 +760,12 @@ interface InstancedBatch {
 
 export class WorldRenderer3D {
   public readonly isSoftwareGl: boolean;
+  public readonly isMobileMode: boolean;
   public readonly container: HTMLElement;
   public readonly renderer: THREE.WebGLRenderer;
   public readonly scene: THREE.Scene;
   public readonly camera: THREE.PerspectiveCamera;
+  private shadowMapRes = 2048;
 
   private pmrem: THREE.PMREMGenerator;
   private envRT: THREE.WebGLRenderTarget;
@@ -854,9 +875,26 @@ export class WorldRenderer3D {
   private moveMarkerGroup: THREE.Group;
   private moveMarkerRing: THREE.Mesh;
   private spellAuraRing: THREE.Mesh;
-  private frostOrbiters: THREE.Mesh[] = [];
+  private spellAuraRing2: THREE.Mesh;
+  private frostOrbiters: THREE.Group[] = [];
   private starOrbiters: THREE.Mesh[] = [];
   private hugOrbiters: THREE.Mesh[] = [];
+  private flameOrbiters: THREE.Mesh[] = [];
+  private treasureBeaconsPool: {
+    group: THREE.Group;
+    beamMat: THREE.MeshBasicMaterial;
+    haloMat: THREE.MeshBasicMaterial;
+  }[] = [];
+  private magnetBeamsPool: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial }[] = [];
+  private constellationRunesMesh: THREE.InstancedMesh;
+  private echoCompassGroup: THREE.Group;
+  private echoCompassMat: THREE.MeshBasicMaterial;
+  private dawnSunGroup: THREE.Group;
+  private dawnPillarMat: THREE.MeshBasicMaterial;
+  private dawnCoronaMat: THREE.MeshBasicMaterial;
+  private hotSpringPoolGroup: THREE.Group;
+  private hotSpringMat: THREE.MeshBasicMaterial;
+  private hotSpringSteam: THREE.Mesh[] = [];
   private weatherInstMesh: THREE.InstancedMesh;
   private weatherMax = 180;
   private ambientMotesMesh: THREE.InstancedMesh;
@@ -914,17 +952,25 @@ export class WorldRenderer3D {
 
   constructor(
     container: HTMLElement,
-    hooks?: { onContextLost?: () => void; onContextRestored?: () => void }
+    hooks?: { onContextLost?: () => void; onContextRestored?: () => void; isMobile?: boolean }
   ) {
     this.container = container;
     this.onContextLostCb = hooks?.onContextLost;
     this.onContextRestoredCb = hooks?.onContextRestored;
+    const coarseTouch =
+      typeof window !== 'undefined' &&
+      (('ontouchstart' in window) || (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches));
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+    const inferredMobile = Boolean(coarseTouch && (vw < 640 || (vw >= vh && vh <= 520)));
+    const isMobile = hooks?.isMobile ?? inferredMobile;
+    this.isMobileMode = isMobile;
 
     const renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !isMobile,
       alpha: false,
-      preserveDrawingBuffer: true,
-      powerPreference: 'high-performance',
+      preserveDrawingBuffer: false,
+      powerPreference: isMobile ? 'default' : 'high-performance',
     });
     const gl = renderer.getContext();
     this.isSoftwareGl = detectSoftwareWebGL(gl);
@@ -935,7 +981,7 @@ export class WorldRenderer3D {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.05;
     renderer.shadowMap.enabled = !this.isSoftwareGl;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = isMobile || this.isSoftwareGl ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
@@ -1003,7 +1049,8 @@ export class WorldRenderer3D {
 
     this.sunLight = new THREE.DirectionalLight(0xfff3d8, 1.65);
     this.sunLight.castShadow = !this.isSoftwareGl;
-    const sMapRes = this.isSoftwareGl ? 512 : 2048;
+    const sMapRes = this.isSoftwareGl ? 512 : isMobile ? 1024 : 2048;
+    this.shadowMapRes = sMapRes;
     this.sunLight.shadow.mapSize.set(sMapRes, sMapRes);
     this.sunLight.shadow.camera.near = 2;
     this.sunLight.shadow.camera.far = 84;
@@ -1012,9 +1059,9 @@ export class WorldRenderer3D {
     this.sunLight.shadow.camera.right = sExtent;
     this.sunLight.shadow.camera.top = sExtent;
     this.sunLight.shadow.camera.bottom = -sExtent;
-    this.sunLight.shadow.bias = -0.00055;
-    this.sunLight.shadow.normalBias = 0.025;
-    this.sunLight.shadow.radius = 1.5;
+    this.sunLight.shadow.bias = isMobile ? -0.0008 : -0.00055;
+    this.sunLight.shadow.normalBias = isMobile ? 0.035 : 0.025;
+    this.sunLight.shadow.radius = isMobile ? 1.0 : 1.5;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
@@ -1053,7 +1100,7 @@ export class WorldRenderer3D {
     }
 
     // Atmospheric Procedural Sky Dome (expanded radius for seamless 1st-person & Vista horizons)
-    const skyGeo = new THREE.SphereGeometry(150, 44, 26);
+    const skyGeo = isMobile ? new THREE.SphereGeometry(150, 28, 18) : new THREE.SphereGeometry(150, 44, 26);
     this.skyDomeMat = createSkyDomeMaterial(this.shaderUniforms);
     this.ownedGeos.push(skyGeo);
     this.ownedMats.push(this.skyDomeMat);
@@ -1082,7 +1129,8 @@ export class WorldRenderer3D {
     this.ownedTextures.push(this.causticTex);
 
     // Wide Animated Translucent Ocean / Glowdeep Canal Water Plane (extends cleanly to sky dome horizon)
-    const waterGeo = new THREE.PlaneGeometry(210, 210, 56, 56);
+    const waterSegs = isMobile ? 32 : 56;
+    const waterGeo = new THREE.PlaneGeometry(210, 210, waterSegs, waterSegs);
     waterGeo.rotateX(-Math.PI / 2);
     const waterMat = new THREE.MeshStandardMaterial({
       color: 0x35a8e8,
@@ -1099,7 +1147,7 @@ export class WorldRenderer3D {
     this.ownedMats.push(waterMat);
     this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
     this.waterMesh.position.y = 0.0;
-    this.waterMesh.receiveShadow = true;
+    this.waterMesh.receiveShadow = !isMobile && !this.isSoftwareGl;
     this.scene.add(this.waterMesh);
 
     // Underwater Projected Sun Caustics Plane (hovers delicately over reef sandbar without blocking camera!)
@@ -1212,6 +1260,9 @@ export class WorldRenderer3D {
         transparent: true,
         opacity: 0.32,
         depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
       })
     );
     const styleCounts: [TownArchStyle, number][] = [
@@ -1430,30 +1481,268 @@ export class WorldRenderer3D {
     this.spellAuraRing.visible = false;
     this.scene.add(this.spellAuraRing);
 
-    const crystalGeo = new THREE.OctahedronGeometry(0.14, 0);
-    const orbGeo = new THREE.SphereGeometry(0.11, 10, 8);
-    this.ownedGeos.push(crystalGeo, orbGeo);
+    const spellRing2Geo = new THREE.TorusGeometry(1.05, 0.032, 6, 28);
+    spellRing2Geo.rotateX(Math.PI / 2);
+    const spellRing2Mat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.ownedGeos.push(spellRing2Geo);
+    this.ownedMats.push(spellRing2Mat);
+    this.spellAuraRing2 = new THREE.Mesh(spellRing2Geo, spellRing2Mat);
+    this.spellAuraRing2.visible = false;
+    this.scene.add(this.spellAuraRing2);
+
+    // Sculpted 5-Point Star Crown Geometry (for Star Sense crown)
+    const starShape = new THREE.Shape();
+    for (let i = 0; i < 10; i++) {
+      const r = i % 2 === 0 ? 0.16 : 0.072;
+      const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+      if (i === 0) starShape.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+      else starShape.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    starShape.closePath();
+    const crownStarGeo = new THREE.ExtrudeGeometry(starShape, {
+      depth: 0.045,
+      bevelEnabled: true,
+      bevelThickness: 0.014,
+      bevelSize: 0.012,
+      bevelSegments: 2,
+    });
+    crownStarGeo.center();
+
+    // Sculpted 3D Heart Geometry (for Hush Hug orbiting hearts)
+    const heartShape = new THREE.Shape();
+    heartShape.moveTo(0, -0.11);
+    heartShape.bezierCurveTo(-0.15, -0.02, -0.16, 0.13, -0.06, 0.13);
+    heartShape.bezierCurveTo(-0.015, 0.13, 0, 0.075, 0, 0.055);
+    heartShape.bezierCurveTo(0, 0.075, 0.015, 0.13, 0.06, 0.13);
+    heartShape.bezierCurveTo(0.16, 0.13, 0.15, -0.02, 0, -0.11);
+    const heartGeo = new THREE.ExtrudeGeometry(heartShape, {
+      depth: 0.05,
+      bevelEnabled: true,
+      bevelThickness: 0.018,
+      bevelSize: 0.015,
+      bevelSegments: 2,
+    });
+    heartGeo.center();
+
+    // Sculpted Hexagonal Ice Shield Blade Geometry (for Frost Bridge frost shields)
+    const crystalBladeGeo = new THREE.OctahedronGeometry(0.15, 0);
+    crystalBladeGeo.scale(0.65, 1.45, 0.38);
+    const crystalInnerGeo = new THREE.OctahedronGeometry(0.08, 0);
+    const emberTearGeo = new THREE.ConeGeometry(0.085, 0.22, 7);
+
+    this.ownedGeos.push(crownStarGeo, heartGeo, crystalBladeGeo, crystalInnerGeo, emberTearGeo);
     for (let i = 0; i < 3; i++) {
       const fMat = new THREE.MeshStandardMaterial({
         color: 0xd4f6ff,
         emissive: 0x67d4ff,
-        emissiveIntensity: 0.6,
-        roughness: 0.2,
+        emissiveIntensity: 0.72,
+        roughness: 0.15,
+        metalness: 0.2,
+        transparent: true,
+        opacity: 0.92,
       });
-      const sMat = new THREE.MeshBasicMaterial({ color: 0xffd23f });
-      const hMat = new THREE.MeshBasicMaterial({ color: 0xff7aa8 });
-      this.ownedMats.push(fMat, sMat, hMat);
-      const fm = new THREE.Mesh(crystalGeo, fMat);
-      const sm = new THREE.Mesh(crystalGeo, sMat);
-      const hm = new THREE.Mesh(orbGeo, hMat);
-      fm.visible = false;
+      const fCoreMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const sMat = new THREE.MeshStandardMaterial({
+        color: 0xffd84d,
+        emissive: 0xffb703,
+        emissiveIntensity: 0.75,
+        roughness: 0.22,
+        metalness: 0.3,
+      });
+      const hMat = new THREE.MeshStandardMaterial({
+        color: 0xff7aa8,
+        emissive: 0xff4d8d,
+        emissiveIntensity: 0.65,
+        roughness: 0.28,
+      });
+      const eMat = new THREE.MeshBasicMaterial({
+        color: i % 2 === 0 ? 0xff7b47 : 0xffd23f,
+        transparent: true,
+        opacity: 0.9,
+      });
+      this.ownedMats.push(fMat, fCoreMat, sMat, hMat, eMat);
+
+      const frostGrp = new THREE.Group();
+      const fmMain = new THREE.Mesh(crystalBladeGeo, fMat);
+      const fmCross = new THREE.Mesh(crystalBladeGeo, fMat);
+      fmCross.rotation.z = Math.PI / 3;
+      const fmCore = new THREE.Mesh(crystalInnerGeo, fCoreMat);
+      frostGrp.add(fmMain, fmCross, fmCore);
+      frostGrp.visible = false;
+
+      const sm = new THREE.Mesh(crownStarGeo, sMat);
+      const hm = new THREE.Mesh(heartGeo, hMat);
+      const em = new THREE.Mesh(emberTearGeo, eMat);
       sm.visible = false;
       hm.visible = false;
-      this.scene.add(fm, sm, hm);
-      this.frostOrbiters.push(fm);
+      em.visible = false;
+      this.scene.add(frostGrp, sm, hm, em);
+      this.frostOrbiters.push(frostGrp);
       this.starOrbiters.push(sm);
       this.hugOrbiters.push(hm);
+      this.flameOrbiters.push(em);
     }
+
+    // 3D Rising Light Beacons (Star Sense treasure/echo illumination & Starway Chorus)
+    const beaconCylGeo = new THREE.CylinderGeometry(0.11, 0.24, 3.2, 10, 1, true);
+    beaconCylGeo.translate(0, 1.6, 0);
+    const beaconRingGeo = new THREE.RingGeometry(0.28, 0.42, 20);
+    beaconRingGeo.rotateX(-Math.PI / 2);
+    this.ownedGeos.push(beaconCylGeo, beaconRingGeo);
+    for (let i = 0; i < 10; i++) {
+      const beamMat = new THREE.MeshBasicMaterial({
+        color: 0xffd23f,
+        transparent: true,
+        opacity: 0.34,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const haloMat = new THREE.MeshBasicMaterial({
+        color: 0xfff5b8,
+        transparent: true,
+        opacity: 0.72,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      this.ownedMats.push(beamMat, haloMat);
+      const grp = new THREE.Group();
+      const beam = new THREE.Mesh(beaconCylGeo, beamMat);
+      const halo = new THREE.Mesh(beaconRingGeo, haloMat);
+      halo.position.y = 0.08;
+      grp.add(beam, halo);
+      grp.visible = false;
+      this.scene.add(grp);
+      this.treasureBeaconsPool.push({ group: grp, beamMat, haloMat });
+    }
+
+    // 3D Magnetic Tether Beams (Moon Pull / Dawn Break / Echo Magnet)
+    const magBeamGeo = new THREE.CylinderGeometry(0.032, 0.032, 1, 6, 1, true);
+    this.ownedGeos.push(magBeamGeo);
+    for (let i = 0; i < 12; i++) {
+      const mMat = new THREE.MeshBasicMaterial({
+        color: 0xb48cff,
+        transparent: true,
+        opacity: 0.75,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      this.ownedMats.push(mMat);
+      const beam = new THREE.Mesh(magBeamGeo, mMat);
+      beam.visible = false;
+      this.scene.add(beam);
+      this.magnetBeamsPool.push({ mesh: beam, mat: mMat });
+    }
+
+    // 3D Frost Glow Constellations across ice bridges
+    const runeGeo = new THREE.OctahedronGeometry(0.11, 0);
+    runeGeo.scale(1.1, 0.25, 1.1);
+    const runeMat = new THREE.MeshBasicMaterial({
+      color: 0xffe885,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.ownedGeos.push(runeGeo);
+    this.ownedMats.push(runeMat);
+    this.constellationRunesMesh = new THREE.InstancedMesh(runeGeo, runeMat, 140);
+    this.constellationRunesMesh.frustumCulled = false;
+    this.constellationRunesMesh.visible = false;
+    this.scene.add(this.constellationRunesMesh);
+
+    // 3D Echo Call Directional Sonar Compass Prism
+    const arrowGeo = new THREE.ConeGeometry(0.16, 0.42, 4);
+    arrowGeo.rotateX(Math.PI / 2);
+    const compassRingGeo = new THREE.TorusGeometry(0.24, 0.025, 6, 18);
+    this.echoCompassMat = new THREE.MeshBasicMaterial({
+      color: 0x8fd5ff,
+      transparent: true,
+      opacity: 0.92,
+    });
+    this.ownedGeos.push(arrowGeo, compassRingGeo);
+    this.ownedMats.push(this.echoCompassMat);
+    this.echoCompassGroup = new THREE.Group();
+    this.echoCompassGroup.add(new THREE.Mesh(arrowGeo, this.echoCompassMat));
+    const cRing = new THREE.Mesh(compassRingGeo, this.echoCompassMat);
+    cRing.position.z = -0.1;
+    this.echoCompassGroup.add(cRing);
+    this.echoCompassGroup.visible = false;
+    this.scene.add(this.echoCompassGroup);
+
+    // 3D Dawn Break Golden Sunrise Pillar & Solar Corona
+    const sunPillarGeo = new THREE.CylinderGeometry(0.55, 1.35, 5.2, 16, 1, true);
+    sunPillarGeo.translate(0, 2.6, 0);
+    const sunCoronaGeo = new THREE.RingGeometry(1.1, 1.55, 28);
+    sunCoronaGeo.rotateX(-Math.PI / 2);
+    this.dawnPillarMat = new THREE.MeshBasicMaterial({
+      color: 0xffdf6b,
+      transparent: true,
+      opacity: 0.22,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.dawnCoronaMat = new THREE.MeshBasicMaterial({
+      color: 0xffb703,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.ownedGeos.push(sunPillarGeo, sunCoronaGeo);
+    this.ownedMats.push(this.dawnPillarMat, this.dawnCoronaMat);
+    this.dawnSunGroup = new THREE.Group();
+    this.dawnSunGroup.add(new THREE.Mesh(sunPillarGeo, this.dawnPillarMat));
+    const coronaMesh = new THREE.Mesh(sunCoronaGeo, this.dawnCoronaMat);
+    coronaMesh.position.y = 0.08;
+    this.dawnSunGroup.add(coronaMesh);
+    this.dawnSunGroup.visible = false;
+    this.scene.add(this.dawnSunGroup);
+
+    // 3D Hot Spring Harmony Steaming Thermal Pool
+    const springDiskGeo = new THREE.CircleGeometry(2.15, 28);
+    springDiskGeo.rotateX(-Math.PI / 2);
+    const springRimGeo = new THREE.TorusGeometry(2.15, 0.16, 8, 28);
+    springRimGeo.rotateX(Math.PI / 2);
+    const steamGeo = new THREE.SphereGeometry(0.18, 8, 6);
+    this.hotSpringMat = new THREE.MeshBasicMaterial({
+      color: 0x4df5e2,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+    });
+    const springRimMat = new THREE.MeshStandardMaterial({
+      color: 0x9b8c80,
+      roughness: 0.75,
+    });
+    const steamMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.52,
+      depthWrite: false,
+    });
+    this.ownedGeos.push(springDiskGeo, springRimGeo, steamGeo);
+    this.ownedMats.push(this.hotSpringMat, springRimMat, steamMat);
+    this.hotSpringPoolGroup = new THREE.Group();
+    const hsDisk = new THREE.Mesh(springDiskGeo, this.hotSpringMat);
+    hsDisk.position.y = 0.06;
+    const hsRim = new THREE.Mesh(springRimGeo, springRimMat);
+    hsRim.position.y = 0.08;
+    this.hotSpringPoolGroup.add(hsDisk, hsRim);
+    for (let i = 0; i < 6; i++) {
+      const puff = new THREE.Mesh(steamGeo, steamMat);
+      this.hotSpringPoolGroup.add(puff);
+      this.hotSpringSteam.push(puff);
+    }
+    this.hotSpringPoolGroup.visible = false;
+    this.scene.add(this.hotSpringPoolGroup);
 
     // 3D Weather Particle System + Ambient Realm Motes + Aurora Sky Ribbons
     const wGeo = createWeatherCrystalGeometry();
@@ -1524,7 +1813,7 @@ export class WorldRenderer3D {
     const rvGeo = new THREE.TorusGeometry(1.0, 0.045, 8, 32);
     rvGeo.rotateX(Math.PI / 2);
     this.ownedGeos.push(rvGeo);
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 24; i++) {
       const rm = new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.8 });
       this.ownedMats.push(rm);
       const mesh = new THREE.Mesh(rvGeo, rm);
@@ -1793,7 +2082,7 @@ export class WorldRenderer3D {
       side: THREE.DoubleSide,
     });
     applyGrassShader(grassMat, this.shaderUniforms);
-    this.makeBatch('grassBlades', grassGeo, grassMat, 5600, false, true);
+    this.makeBatch('grassBlades', grassGeo, grassMat, 5600, false, !this.isMobileMode && !this.isSoftwareGl);
 
     // 6c. Wing-Flapping Living Wildlife (Butterflies, Songbirds, Dragonflies, Sky Swallows, Jellyfish)
     const critterGeo = createCritterWingGeometry();
@@ -2325,6 +2614,12 @@ export class WorldRenderer3D {
           // Ice bridge tile on water
           if (b < 2 && W.iceMap.has(idx)) {
             this.pushInstance('ice', x + 0.5, 0.06, z + 0.5, 1, 1, 1, 0, 0, 0, 0xb9eeff);
+          }
+
+          // Lily Path Harmony bridge on water (giant floating lily pads + lotus blooms!)
+          if (b < 2 && W.lilyMap && W.lilyMap.has(idx)) {
+            this.pushInstance('lilyPads', x + 0.5, 0.048, z + 0.5, 1.75, 1.2, 1.75, 0, (x * 1.1 + z * 0.7) % (Math.PI * 2), 0, '#38b86a');
+            this.pushInstance('flowers', x + 0.5, 0.095, z + 0.5, 0.85, 0.85, 0.85, 0, (x + z) * 0.9, 0, (x + z) % 2 === 0 ? '#ff94bd' : '#fff5de');
           }
 
           const dk = W.DK[idx];
@@ -3326,14 +3621,15 @@ export class WorldRenderer3D {
     this.archPack.warmWindow.emissiveIntensity = winWarmth;
     this.archPack.waterPool.emissiveIntensity = 0.6 + Math.sin(t * 2.6) * 0.14;
 
+    const allowExtraPlazaLights = !this.isMobileMode && !W.lowQuality && !this.isSoftwareGl;
     const plazaBaseIntensity =
-      layer === 'surface'
+      layer === 'surface' && allowExtraPlazaLights
         ? 0.42 + sunsetFactor * 0.85 + nightFactor * 1.45 + (W.weatherId === 'drizzle' || W.weatherId === 'stardust' ? 0.35 : 0)
         : 0;
     for (let li = 0; li < this.townPlazaLights.length; li++) {
       const ptLight = this.townPlazaLights[li];
       const anchor = this.plazaLightAnchors[li];
-      if (layer === 'surface' && anchor) {
+      if (layer === 'surface' && anchor && allowExtraPlazaLights) {
         ptLight.position.set(anchor.x, anchor.y, anchor.z);
         ptLight.intensity = plazaBaseIntensity + Math.sin(t * 2.4 + li * 1.7) * 0.08;
       } else {
@@ -3348,14 +3644,14 @@ export class WorldRenderer3D {
     // Sync terrain horizon fade color
     this.shaderUniforms.uHorizonFogColor.value.copy(this.fog.color);
 
-    // Center shadow frustum & opposing rim light around focus point (gentle solar arc + texel snap)
+    // Center shadow frustum & opposing rim light around focus point (gentle solar arc + exact texel snap for sExtent=24 => width=48)
     const dayArc = W.nightCycleEnabled && layer === 'surface' ? Math.sin(((t % 420) / 420) * Math.PI * 2) * 0.35 : 0;
     const sunAngle = sunsetFactor * 0.6 + dayArc;
     const sunRelX = 12 + sunAngle * 8;
     const sunRelY = Math.max(11, 22 - Math.abs(sunAngle) * 6);
     const sunRelZ = 10 + Math.cos(((t % 420) / 420) * Math.PI * 2) * 1.5;
     this.shaderUniforms.uSunDir.value.set(sunRelX, sunRelY, sunRelZ).normalize();
-    const shadowTexel = 40 / (this.isSoftwareGl ? 512 : 2048);
+    const shadowTexel = 48 / this.shadowMapRes;
     const snapX = Math.round(focusX / shadowTexel) * shadowTexel;
     const snapZ = Math.round(focusZ / shadowTexel) * shadowTexel;
     const snapY = Math.round(focusY / shadowTexel) * shadowTexel;
@@ -3733,8 +4029,13 @@ export class WorldRenderer3D {
     if (this.disposed) return;
     const w = Math.max(1, Math.round(width));
     const h = Math.max(1, Math.round(height));
-    const safeDpr = this.isSoftwareGl ? 1 : Math.max(0.7, Math.min(Number.isFinite(dpr) ? dpr : 1, 2));
-    if (w === this.lastResizeW && h === this.lastResizeH && Math.abs(safeDpr - this.lastResizeDpr) < 0.01) {
+    const safeDpr = this.isSoftwareGl ? 1 : Math.max(0.75, Math.min(Number.isFinite(dpr) ? dpr : 1, 2));
+    const dimTolerance = this.isMobileMode && this.lastResizeW > 0 ? 4 : 1;
+    if (
+      Math.abs(w - this.lastResizeW) < dimTolerance &&
+      Math.abs(h - this.lastResizeH) < dimTolerance &&
+      Math.abs(safeDpr - this.lastResizeDpr) < 0.04
+    ) {
       return;
     }
     this.lastResizeW = w;
@@ -3768,7 +4069,7 @@ export class WorldRenderer3D {
       }
     }
 
-    const lowMode = Boolean(W.lowQuality || this.isSoftwareGl);
+    const lowMode = Boolean(W.lowQuality || this.isMobileMode || this.isSoftwareGl);
     // Track quality tier smoothly for prop scatter/particle budget without toggling shadowMap.enabled or camera.far (which stalls the GPU via full shader recompilation!)
     this.activeLowQuality = lowMode;
 
@@ -3785,6 +4086,7 @@ export class WorldRenderer3D {
     this.shaderUniforms.uVibrant.value = 1;
     this.shaderUniforms.uSeason.value =
       W.season === 'summer' ? 1 : W.season === 'autumn' ? 2 : W.season === 'winter' ? 3 : 0;
+    this.shaderUniforms.uLowQuality.value = lowMode ? 1 : 0;
 
     // Cache Great Lantern Tree lookup across frames
     if (this.cachedNpcsRef !== W.npcs) {
@@ -3920,10 +4222,12 @@ export class WorldRenderer3D {
       }
     }
 
-    // 1. Sync World Map DataTexture & Rebuild Terrain Chunk ONLY when moving >= 4 tiles from chunk center or changing layer/season/iceMap
+    // 1. Sync World Map DataTexture & Rebuild Terrain Chunk ONLY when moving >= 4 tiles from chunk center or changing layer/season/iceMap/lilyMap/dkRevision
     const iceSig = W.iceMap.size;
-    const tKey = `${layer}|${W.season}|${iceSig}`;
-    const mapKey = `${layer}|${iceSig}|${activeSurfaceTerraces.length}`;
+    const lilySig = W.lilyMap ? W.lilyMap.size : 0;
+    const dkSig = W.dkRevision ?? 0;
+    const tKey = `${layer}|${W.season}|${iceSig}|${lilySig}|${dkSig}`;
+    const mapKey = `${layer}|${iceSig}|${lilySig}|${activeSurfaceTerraces.length}`;
     if (!isHouse && mapKey !== this.worldMapLayerKey) {
       this.worldMapLayerKey = mapKey;
       this.rebuildWorldMapTexture(layer, W);
@@ -4135,24 +4439,29 @@ export class WorldRenderer3D {
     this.updateAmbientWildlife(layer, W, focusX, focusZ);
     this.updateStepRipples(layer, W, dt, pGroundY);
 
-    // 3D Spell Blooms
+    // 3D Spell Blooms (including Rain Roots rainbow hybrid flowers when bl.c >= 4)
     this.bloomBatch.count = 0;
-    const blCols = [0xff7aa8, 0xffd23f, 0x9be8a8, 0xb48cff];
+    const blCols = [0xff7aa8, 0xffd23f, 0x9be8a8, 0xb48cff, 0x7de0ff, 0xff9f43];
     for (let i = 0; i < W.blooms.length && this.bloomBatch.count < this.bloomBatch.max; i++) {
       const bl = W.blooms[i];
       if (Boolean(bl.u) !== W.player.dive) continue;
       const bx = bl.x / T;
       const bz = bl.y / T;
       if (Math.abs(bx - focusX) > propRadius || Math.abs(bz - focusZ) > propRadius) continue;
-      const age = Math.min(1, Math.max(0.15, (t - bl.b) * 3.5));
-      const bgy = getActorGroundY3D(bl.x, bl.y, layer, W.B, W.SB, W.iceMap);
+      const isRainbow = bl.c >= 4;
+      const age = Math.min(1, Math.max(0.15, (t - bl.b) * 3.5)) * (isRainbow ? 1.38 : 1.0);
+      const bgy = getActorGroundY3D(bl.x, bl.y, layer, W.B, W.SB, W.iceMap, W.lilyMap);
       _v3.set(bx, bgy + 0.08 * age, bz);
-      _euler.set(Math.PI, t + bl.x, 0);
+      _euler.set(Math.PI, t * (isRainbow ? 1.8 : 0.7) + bl.x, 0);
       _q.setFromEuler(_euler);
       _scale.setScalar(age);
       _m4.compose(_v3, _q, _scale);
       this.bloomBatch.mesh.setMatrixAt(this.bloomBatch.count, _m4);
-      _col.setHex(blCols[bl.c % blCols.length]);
+      if (isRainbow) {
+        _col.setHSL(((t * 0.45 + bl.x * 0.05) % 1 + 1) % 1, 0.92, 0.64);
+      } else {
+        _col.setHex(blCols[bl.c % blCols.length]);
+      }
       this.bloomBatch.mesh.setColorAt(this.bloomBatch.count, _col);
       this.bloomBatch.count++;
     }
@@ -4160,11 +4469,11 @@ export class WorldRenderer3D {
     this.bloomBatch.mesh.instanceMatrix.needsUpdate = true;
     if (this.bloomBatch.mesh.instanceColor) this.bloomBatch.mesh.instanceColor.needsUpdate = true;
 
-    // Expanding Magic Rings
+    // Expanding Magic Rings (supports negative t for staggered concentric waves)
     for (let i = 0; i < this.ringVfxPool.length; i++) {
       const mesh = this.ringVfxPool[i];
       const mr = W.magicRings[i];
-      if (mr) {
+      if (mr && mr.t >= 0) {
         mesh.visible = true;
         const prog = Math.max(0.02, Math.min(1, mr.t / mr.m));
         const easeOut = 1 - (1 - prog) * (1 - prog);
@@ -4232,7 +4541,7 @@ export class WorldRenderer3D {
     if (this.particleVfxBatch.mesh.instanceColor) this.particleVfxBatch.mesh.instanceColor.needsUpdate = true;
 
     // 5. Update Player, Companion, NPCs, Hollows & Dash Ghosts
-    const pY = getActorGroundY3D(W.player.x, W.player.y, layer, W.B, W.SB, W.iceMap);
+    const pY = getActorGroundY3D(W.player.x, W.player.y, layer, W.B, W.SB, W.iceMap, W.lilyMap);
     const dLen = Math.hypot(W.player.dx, W.player.dy);
     const targetYaw = dLen > 0.01 ? Math.atan2(W.player.dx, W.player.dy) : this.playerSmoothYaw;
     if (!this.camInitialized) {
@@ -4300,12 +4609,14 @@ export class WorldRenderer3D {
           jumpVy: (W.player.vz || 0) / T,
           dt,
           moveSpeed: playerMoveSpeed,
+          cloudWings: Boolean(W.player.sky) || (W.activeSpellTimers.thermalGlideTimer ?? 0) > 0,
+          thermalWings: (W.activeSpellTimers.thermalGlideTimer ?? 0) > 0,
         });
       }
 
       const compTx = W.companionPos.x / T;
       const compTz = W.companionPos.y / T;
-      const compY = getActorGroundY3D(W.companionPos.x, W.companionPos.y, layer, W.B, W.SB, W.iceMap);
+      const compY = getActorGroundY3D(W.companionPos.x, W.companionPos.y, layer, W.B, W.SB, W.iceMap, W.lilyMap);
       this.companionRig.root.position.set(compTx, compY, compTz);
       const cdx = this.hasLastComp ? compTx - this.lastCompX : 0;
       const cdz = this.hasLastComp ? compTz - this.lastCompZ : 0;
@@ -4350,60 +4661,307 @@ export class WorldRenderer3D {
       this.moveMarkerGroup.visible = false;
     }
 
-    // Active Player Spell Ring & Orbiters
+    // Active Player Spell Ring, Orbiters, 3D Beacons, Magnet Tethers, Echo Compass, Dawn Pillar & Frost Glow Constellations
     const timers = W.activeSpellTimers;
+    const pElevationY = pY + (W.player.z || 0) / T;
     const hasAuraSpell =
       !W.isTitleMode &&
       (timers.dawnTimer > 0 ||
         timers.warmthTimer > 0 ||
         timers.dreamwalkTimer > 0 ||
         timers.tideTimer > 0 ||
-        timers.moonPullTimer > 0);
+        timers.moonPullTimer > 0 ||
+        timers.hugTimer > 0);
     this.spellAuraRing.visible = hasAuraSpell;
+    this.spellAuraRing2.visible = hasAuraSpell;
     if (hasAuraSpell) {
-      this.spellAuraRing.position.set(W.player.x / T, Math.max(-0.02, pY) + 0.08, W.player.y / T);
+      const px = W.player.x / T;
+      const pz = W.player.y / T;
+      this.spellAuraRing.position.set(px, Math.max(-0.02, pElevationY) + 0.08, pz);
+      this.spellAuraRing2.position.set(px, Math.max(-0.02, pElevationY) + 0.14, pz);
+      this.spellAuraRing.rotation.y = t * 1.4;
+      this.spellAuraRing2.rotation.y = -t * 2.2;
       const rMat = this.spellAuraRing.material as THREE.MeshBasicMaterial;
+      const rMat2 = this.spellAuraRing2.material as THREE.MeshBasicMaterial;
       if (timers.dawnTimer > 0) {
         rMat.color.setHex(0xffd75a);
-        this.spellAuraRing.scale.setScalar(2.2 + Math.sin(t * 4) * 0.1);
+        rMat2.color.setHex(0xff9f43);
+        this.spellAuraRing.scale.setScalar(2.1 + Math.sin(t * 4) * 0.1);
+        this.spellAuraRing2.scale.setScalar(1.45 + Math.cos(t * 5) * 0.08);
       } else if (timers.dreamwalkTimer > 0) {
         rMat.color.setHex(0xbe91ff);
-        this.spellAuraRing.scale.setScalar(1.0);
+        rMat2.color.setHex(0xe2d4ff);
+        this.spellAuraRing.scale.setScalar(1.0 + Math.sin(t * 3.5) * 0.08);
+        this.spellAuraRing2.scale.setScalar(0.85);
       } else if (timers.tideTimer > 0) {
         rMat.color.setHex(0x52d6c6);
-        this.spellAuraRing.scale.setScalar(0.9 + Math.sin(t * 6) * 0.08);
+        rMat2.color.setHex(0xb8f2ff);
+        this.spellAuraRing.scale.setScalar(0.95 + Math.sin(t * 6) * 0.1);
+        this.spellAuraRing2.scale.setScalar(0.72 + Math.cos(t * 6) * 0.08);
+      } else if (timers.moonPullTimer > 0) {
+        rMat.color.setHex(0xb48cff);
+        rMat2.color.setHex(0xffd23f);
+        const shrink = 1.25 - ((t * 0.9) % 0.85);
+        this.spellAuraRing.scale.setScalar(shrink);
+        this.spellAuraRing2.scale.setScalar(1.3 - shrink * 0.4);
+      } else if (timers.hugTimer > 0) {
+        rMat.color.setHex(0xff7aa8);
+        rMat2.color.setHex(0xffd6e6);
+        this.spellAuraRing.scale.setScalar(0.95 + Math.sin(t * 4) * 0.06);
+        this.spellAuraRing2.scale.setScalar(0.75);
       } else {
-        rMat.color.setHex(0xffa04b);
-        this.spellAuraRing.scale.setScalar(1.3);
+        rMat.color.setHex(0xff8c42);
+        rMat2.color.setHex(0xffd23f);
+        this.spellAuraRing.scale.setScalar(1.22 + Math.sin(t * 7) * 0.09);
+        this.spellAuraRing2.scale.setScalar(0.9);
       }
+    }
+
+    // Dawn Break Rising Solar Pillar & Corona
+    this.dawnSunGroup.visible = !W.isTitleMode && timers.dawnTimer > 0;
+    if (this.dawnSunGroup.visible) {
+      this.dawnSunGroup.position.set(W.player.x / T, Math.max(-0.02, pElevationY), W.player.y / T);
+      this.dawnSunGroup.rotation.y = t * 0.8;
+      this.dawnPillarMat.opacity = 0.16 + Math.sin(t * 3.5) * 0.05;
+      this.dawnCoronaMat.opacity = 0.44 + Math.cos(t * 4) * 0.12;
     }
 
     const fbVar = getSeasonalSpellVariant('frost_bridge', W.season);
     const ssVar = getSeasonalSpellVariant('star_sense', W.season);
+    const pxW = W.player.x / T;
+    const pzW = W.player.y / T;
     for (let k = 0; k < 3; k++) {
+      // Sculpted Spinning Ice Shield Blades (Frost Bridge)
       const fm = this.frostOrbiters[k];
       fm.visible = !W.isTitleMode && timers.frostShieldTimer > 0;
       if (fm.visible) {
-        const ang = t * 2.8 + (k * Math.PI * 2) / 3;
-        fm.position.set(W.player.x / T + Math.cos(ang) * 0.85, pY + 0.45, W.player.y / T + Math.sin(ang) * 0.85);
-        fm.rotation.y = ang * 2;
-        if (fbVar?.orbiterColor) (fm.material as THREE.MeshStandardMaterial).color.set(fbVar.orbiterColor);
+        const ang = t * 2.9 + (k * Math.PI * 2) / 3;
+        fm.position.set(pxW + Math.cos(ang) * 0.88, pElevationY + 0.48 + Math.sin(t * 4 + k) * 0.06, pzW + Math.sin(ang) * 0.88);
+        fm.rotation.set(0.25, -ang, t * 2.2);
+        if (fbVar?.orbiterColor) {
+          const bladeMat = (fm.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+          bladeMat.color.set(fbVar.orbiterColor);
+          bladeMat.emissive.set(fbVar.orbiterAccent || fbVar.orbiterColor);
+        }
       }
 
+      // Sculpted 5-Point Crown Stars hovering as a royal crown (Star Sense)
       const sm = this.starOrbiters[k];
       sm.visible = !W.isTitleMode && timers.starSenseTimer > 0;
       if (sm.visible) {
-        const ang = t * 2.1 + (k * Math.PI * 2) / 3;
-        sm.position.set(W.player.x / T + Math.cos(ang) * 0.65, pY + 1.12, W.player.y / T + Math.sin(ang) * 0.65);
-        sm.rotation.y = ang * 2;
-        if (ssVar?.orbiterColor) (sm.material as THREE.MeshBasicMaterial).color.set(ssVar.orbiterColor);
+        const ang = t * 2.2 + (k * Math.PI * 2) / 3;
+        sm.position.set(pxW + Math.cos(ang) * 0.62, pElevationY + 1.18 + Math.sin(t * 5 + k) * 0.06, pzW + Math.sin(ang) * 0.62);
+        sm.rotation.set(0.32, ang * 2.4, Math.sin(t * 3 + k) * 0.25);
+        if (ssVar?.orbiterColor) {
+          const starMat = sm.material as THREE.MeshStandardMaterial;
+          starMat.color.set(ssVar.orbiterColor);
+          starMat.emissive.set(ssVar.orbiterAccent || ssVar.orbiterColor);
+        }
       }
 
+      // Sculpted 3D Hearts (Hush Hug)
       const hm = this.hugOrbiters[k];
       hm.visible = !W.isTitleMode && timers.hugTimer > 0;
       if (hm.visible) {
-        const ang = -t * 2.3 + (k * Math.PI * 2) / 3;
-        hm.position.set(W.player.x / T + Math.cos(ang) * 0.9, pY + 0.65 + Math.sin(t * 4 + k) * 0.08, W.player.y / T + Math.sin(ang) * 0.9);
+        const ang = -t * 2.4 + (k * Math.PI * 2) / 3;
+        const beat = 1 + Math.sin(t * 6 + k) * 0.14;
+        hm.position.set(pxW + Math.cos(ang) * 0.92, pElevationY + 0.68 + Math.sin(t * 4 + k) * 0.1, pzW + Math.sin(ang) * 0.92);
+        hm.rotation.y = ang + Math.PI / 2;
+        hm.scale.setScalar(beat);
+      }
+
+      // Orbiting Ember Flames (Ember Warmth)
+      const em = this.flameOrbiters[k];
+      em.visible = !W.isTitleMode && timers.warmthTimer > 0;
+      if (em.visible) {
+        const ang = t * 3.6 + (k * Math.PI * 2) / 3;
+        em.position.set(pxW + Math.cos(ang) * 0.78, pElevationY + 0.42 + Math.abs(Math.sin(t * 7 + k)) * 0.22, pzW + Math.sin(ang) * 0.78);
+        em.rotation.z = Math.sin(t * 10 + k) * 0.22;
+        em.scale.setScalar(0.9 + Math.sin(t * 12 + k) * 0.25);
+      }
+    }
+
+    // 3D Star Sense + Echo Call Light Beacons on nearest treasures & Echoes/Diary Pages
+    let beaconUsed = 0;
+    const showStarBeacons = !W.isTitleMode && timers.starSenseTimer > 0;
+    const showEchoBeacons = !W.isTitleMode && ((timers.echoTimer ?? 0) > 0 || timers.starSenseTimer > 0);
+    if (showStarBeacons) {
+      const collectPool =
+        layer === 'sky'
+          ? W.feathers
+          : layer === 'dive'
+          ? W.pearls
+          : layer === 'glowdeep'
+          ? W.glowSpores
+          : layer === 'moonroad'
+          ? W.moonNotes
+          : W.stars;
+      for (let pass = 0; pass < 6 && beaconUsed < 6; pass++) {
+        let bestIdx = -1;
+        let bestD2 = 1e9;
+        for (let i = 0; i < collectPool.length; i++) {
+          const item = collectPool[i];
+          if (item.got) continue;
+          const dx = item.x - W.player.x;
+          const dy = item.y - W.player.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bestD2 && d2 > 400) {
+            // Skip items already claimed in earlier pass
+            let dup = false;
+            for (let p = 0; p < beaconUsed; p++) {
+              const bg = this.treasureBeaconsPool[p].group;
+              if (Math.hypot(bg.position.x * T - item.x, bg.position.z * T - item.y) < 4) {
+                dup = true;
+                break;
+              }
+            }
+            if (!dup) {
+              bestD2 = d2;
+              bestIdx = i;
+            }
+          }
+        }
+        if (bestIdx >= 0 && bestD2 < 780 * 780) {
+          const item = collectPool[bestIdx];
+          const b = this.treasureBeaconsPool[beaconUsed++];
+          const by = getActorGroundY3D(item.x, item.y, layer, W.B, W.SB, W.iceMap, W.lilyMap);
+          b.group.visible = true;
+          b.group.position.set(item.x / T, by, item.y / T);
+          const s = 0.85 + Math.sin(t * 5 + beaconUsed) * 0.16;
+          b.group.scale.set(s, 1, s);
+          b.beamMat.color.setHex(0xffd23f);
+          b.beamMat.opacity = 0.34;
+          b.haloMat.color.setHex(0xfff5b8);
+        } else {
+          break;
+        }
+      }
+    }
+    if (showEchoBeacons && W.echoTargets3D && W.echoTargets3D.length > 0) {
+      for (let i = 0; i < W.echoTargets3D.length && beaconUsed < this.treasureBeaconsPool.length; i++) {
+        const et = W.echoTargets3D[i];
+        const b = this.treasureBeaconsPool[beaconUsed++];
+        const by = getActorGroundY3D(et.x, et.y, layer, W.B, W.SB, W.iceMap, W.lilyMap);
+        b.group.visible = true;
+        b.group.position.set(et.x / T, by, et.y / T);
+        const s = 1.0 + Math.sin(t * 6 + i) * 0.18;
+        b.group.scale.set(s, 1.35, s);
+        b.beamMat.color.setHex(et.kind === 'echo' ? 0x7de0ff : 0xff8fb8);
+        b.beamMat.opacity = 0.44;
+        b.haloMat.color.setHex(et.kind === 'echo' ? 0xc2f0ff : 0xffd2e6);
+      }
+    }
+    for (let i = beaconUsed; i < this.treasureBeaconsPool.length; i++) {
+      this.treasureBeaconsPool[i].group.visible = false;
+    }
+
+    // 3D Echo Call Directional Sonar Compass Prism pointing to nearest unfound Echo/Diary Page
+    const hasEchoSonar = !W.isTitleMode && (timers.echoTimer ?? 0) > 0 && Boolean(W.echoTargets3D && W.echoTargets3D.length > 0);
+    this.echoCompassGroup.visible = hasEchoSonar;
+    if (hasEchoSonar && W.echoTargets3D && W.echoTargets3D.length > 0) {
+      let nearestEcho = W.echoTargets3D[0];
+      let minEchoD2 = (nearestEcho.x - W.player.x) ** 2 + (nearestEcho.y - W.player.y) ** 2;
+      for (let i = 1; i < W.echoTargets3D.length; i++) {
+        const et = W.echoTargets3D[i];
+        const d2 = (et.x - W.player.x) ** 2 + (et.y - W.player.y) ** 2;
+        if (d2 < minEchoD2) {
+          minEchoD2 = d2;
+          nearestEcho = et;
+        }
+      }
+      const ang = Math.atan2(nearestEcho.x - W.player.x, nearestEcho.y - W.player.y);
+      this.echoCompassGroup.position.set(
+        pxW + Math.sin(ang) * 1.45,
+        pElevationY + 0.72 + Math.sin(t * 4.5) * 0.08,
+        pzW + Math.cos(ang) * 1.45
+      );
+      this.echoCompassGroup.rotation.set(0, ang, 0);
+      this.echoCompassMat.color.setHex(nearestEcho.kind === 'echo' ? 0x7de0ff : 0xff9ebb);
+    }
+
+    // 3D Magnetic Tether Beams (Moon Pull / Dawn Break / Echo Magnet)
+    let magUsed = 0;
+    const showTethers = !W.isTitleMode && (timers.moonPullTimer > 0 || timers.dawnTimer > 0 || (timers.echoMagnetTimer ?? 0) > 0);
+    if (showTethers) {
+      const magRange = (timers.echoMagnetTimer ?? 0) > 0 ? 780 : timers.moonPullTimer > 0 ? 540 : 190;
+      const magRange2 = magRange * magRange;
+      const pullPool =
+        layer === 'sky'
+          ? W.feathers
+          : layer === 'dive'
+          ? W.pearls
+          : layer === 'glowdeep'
+          ? W.glowSpores
+          : layer === 'moonroad'
+          ? W.moonNotes
+          : W.stars;
+      const beamColor = timers.moonPullTimer > 0 || (timers.echoMagnetTimer ?? 0) > 0 ? 0xc29eff : 0xffd23f;
+      for (let i = 0; i < pullPool.length && magUsed < this.magnetBeamsPool.length; i++) {
+        const it = pullPool[i];
+        if (it.got) continue;
+        const dx = it.x - W.player.x;
+        const dy = it.y - W.player.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < magRange2 && d2 > 64) {
+          const itY = getActorGroundY3D(it.x, it.y, layer, W.B, W.SB, W.iceMap, W.lilyMap) + 0.45;
+          _v3.set(pxW, pElevationY + 0.48, pzW);
+          _v3b.set(it.x / T, itY, it.y / T);
+          _v3Dir.subVectors(_v3b, _v3);
+          const dist = _v3Dir.length();
+          if (dist > 0.05) {
+            _v3Dir.multiplyScalar(1 / dist);
+            const mb = this.magnetBeamsPool[magUsed++];
+            mb.mesh.visible = true;
+            mb.mesh.position.copy(_v3).addScaledVector(_v3Dir, dist * 0.5);
+            mb.mesh.quaternion.setFromUnitVectors(_v3Up, _v3Dir);
+            mb.mesh.scale.set(1, dist, 1);
+            mb.mat.color.setHex(beamColor);
+            mb.mat.opacity = 0.55 + Math.sin(t * 10 + i) * 0.25;
+          }
+        }
+      }
+    }
+    for (let i = magUsed; i < this.magnetBeamsPool.length; i++) {
+      this.magnetBeamsPool[i].mesh.visible = false;
+    }
+
+    // 3D Frost Glow Constellations across frozen ice bridges
+    const showFrostGlow = !W.isTitleMode && isSurface && (timers.frostGlowTimer ?? 0) > 0 && W.iceMap.size > 0;
+    this.constellationRunesMesh.visible = showFrostGlow;
+    if (showFrostGlow) {
+      let runeCount = 0;
+      W.iceMap.forEach((_exp, idx) => {
+        if (runeCount >= 140) return;
+        const ix = idx % N;
+        const iz = (idx / N) | 0;
+        if (Math.abs(ix - focusX) > propRadius || Math.abs(iz - focusZ) > propRadius) return;
+        _v3.set(ix + 0.5, 0.18 + Math.sin(t * 4 + ix + iz) * 0.03, iz + 0.5);
+        _euler.set(0, t * 1.4 + ix * 0.5, 0);
+        _q.setFromEuler(_euler);
+        const s = 0.8 + Math.sin(t * 5 + ix * 1.3 + iz) * 0.3;
+        _scale.setScalar(s);
+        _m4.compose(_v3, _q, _scale);
+        this.constellationRunesMesh.setMatrixAt(runeCount++, _m4);
+      });
+      this.constellationRunesMesh.count = runeCount;
+      this.constellationRunesMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // 3D Hot Spring Harmony Steaming Thermal Pool
+    const activeSpring = !W.isTitleMode && isSurface && W.hotSprings && W.hotSprings.length > 0 ? W.hotSprings[W.hotSprings.length - 1] : null;
+    this.hotSpringPoolGroup.visible = Boolean(activeSpring);
+    if (activeSpring) {
+      const hx = activeSpring.x / T;
+      const hz = activeSpring.y / T;
+      const hgy = getActorGroundY3D(activeSpring.x, activeSpring.y, 'surface', W.B, W.SB, W.iceMap, W.lilyMap);
+      this.hotSpringPoolGroup.position.set(hx, Math.max(0.02, hgy), hz);
+      this.hotSpringMat.opacity = 0.62 + Math.sin(t * 3.2) * 0.14;
+      for (let i = 0; i < this.hotSpringSteam.length; i++) {
+        const ph = (t * 0.75 + i * 0.167) % 1;
+        const ang = (i / this.hotSpringSteam.length) * Math.PI * 2 + t * 0.6;
+        const rad = 0.45 + Math.sin(t * 2 + i) * 0.35;
+        this.hotSpringSteam[i].position.set(Math.cos(ang) * rad, 0.2 + ph * 1.35, Math.sin(ang) * rad);
+        this.hotSpringSteam[i].scale.setScalar(Math.max(0.15, Math.sin(ph * Math.PI) * 1.15));
       }
     }
 
@@ -4674,6 +5232,15 @@ export class WorldRenderer3D {
 
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(this.camTarget);
+    if (W.cameraShake && (W.cameraShake.x !== 0 || W.cameraShake.y !== 0)) {
+      const sx = (W.cameraShake.x / T) * 0.72;
+      const sy = (W.cameraShake.y / T) * 0.56;
+      _v3.set(1, 0, 0).applyQuaternion(this.camera.quaternion).multiplyScalar(sx);
+      _v3b.set(0, 1, 0).applyQuaternion(this.camera.quaternion).multiplyScalar(sy);
+      this.camera.position.add(_v3).add(_v3b);
+      _v3Dir.copy(this.camTarget).add(_v3).add(_v3b);
+      this.camera.lookAt(_v3Dir);
+    }
     this.renderer.render(this.scene, this.camera);
   }
 

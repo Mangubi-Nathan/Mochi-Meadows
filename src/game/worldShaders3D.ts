@@ -27,6 +27,7 @@ export interface SharedWorldShaderUniforms {
   uWeatherMode: { value: number }; // 0=clear, 1=drizzle, 2=snow, 3=stardust, 4=aurora
   uWorldMapTex: { value: THREE.DataTexture };
   uWorldMapSize: { value: number };
+  uLowQuality: { value: number }; // 0=full, 1=mobile/low-end fast path
 }
 
 function createFallbackWorldMapTex(): THREE.DataTexture {
@@ -57,6 +58,7 @@ export function createWorldShaderUniforms(): SharedWorldShaderUniforms {
     uWeatherMode: { value: 0 },
     uWorldMapTex: { value: createFallbackWorldMapTex() },
     uWorldMapSize: { value: WORLD_GRID_SIZE },
+    uLowQuality: { value: 0 },
   };
 }
 
@@ -273,7 +275,7 @@ export function applyTerrainShader(
   mat: THREE.MeshStandardMaterial,
   uniforms: SharedWorldShaderUniforms
 ): void {
-  mat.customProgramCacheKey = () => 'mochi_terrain_pbr_v5';
+  mat.customProgramCacheKey = () => 'mochi_terrain_pbr_v6';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
     shader.uniforms.uLayer = uniforms.uLayer;
@@ -285,6 +287,7 @@ export function applyTerrainShader(
     shader.uniforms.uSunColor = uniforms.uSunColor;
     shader.uniforms.uWorldMapTex = uniforms.uWorldMapTex;
     shader.uniforms.uWorldMapSize = uniforms.uWorldMapSize;
+    shader.uniforms.uLowQuality = uniforms.uLowQuality;
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -322,6 +325,7 @@ export function applyTerrainShader(
         uniform vec3 uSunColor;
         uniform sampler2D uWorldMapTex;
         uniform float uWorldMapSize;
+        uniform float uLowQuality;
         varying vec3 vMochiWorldPos;
         varying vec3 vMochiWorldNorm;
         varying vec4 vTerrainMeta;
@@ -471,7 +475,7 @@ export function applyTerrainShader(
             // 2. Wind-Sculpted Dunes & Quartz-Speckled Beach Sand
             if (sandMask > 0.04) {
               float rippleCoord = wp.x * 4.6 + wp.y * 2.1 + nMed * 3.6 + warp.x * 2.2;
-              float ripple = pow(sin(rippleCoord) * 0.5 + 0.5, 1.4);
+              float ripple = pow(max(sin(rippleCoord) * 0.5 + 0.5, 0.0001), 1.4);
               float quartz = smoothstep(0.88, 0.99, nMicro) * detailFade;
               diffuseColor.rgb *= mix(1.0, 0.91 + 0.15 * ripple, sandMask);
               diffuseColor.rgb += vec3(0.24, 0.22, 0.18) * quartz * sandMask;
@@ -619,10 +623,10 @@ export function applyTerrainShader(
         '#include <normal_fragment_maps>',
         /* glsl */ `
         #include <normal_fragment_maps>
-        // Rich world-space tactile multi-scale relief across near & mid terrain (rock strata, cobbles, dunes, turf)
+        // Rich world-space tactile multi-scale relief across near & mid terrain (skipped on low-quality mobile fast path)
         vec2 bWp = vMochiWorldPos.xz;
         float bumpDist = length(bWp - uFocusPos.xz);
-        float bumpFade = 1.0 - smoothstep(16.0, 32.0, bumpDist);
+        float bumpFade = uLowQuality > 0.5 ? 0.0 : (1.0 - smoothstep(16.0, 32.0, bumpDist));
         if (bumpFade > 0.01) {
           vec3 wn = normalize(vMochiWorldNorm + vec3(0.0, 1e-5, 0.0));
           float sl = 1.0 - clamp(wn.y, 0.0, 1.0);
@@ -707,7 +711,7 @@ export function applyTerrainShader(
         /* glsl */ `
         #include <fog_fragment>
         // Warm golden sunlit crest warmth + smooth expanded terrain chunk perimeter fade (CHUNK_HALF = 30)
-        float sunCrest = max(dot(normalize(vMochiWorldNorm + vec3(0.0, 1e-5, 0.0)), normalize(uSunDir + vec3(0.0, 1e-5, 0.0))), 0.0);
+        float sunCrest = max(dot(normalize(vMochiWorldNorm + vec3(0.0, 1e-5, 0.0)), normalize(uSunDir + vec3(0.0, 1e-5, 0.0))), 0.0001);
         if (uLayer < 0.5) {
           gl_FragColor.rgb += uSunColor * pow(sunCrest, 3.0) * 0.045;
         }
@@ -942,10 +946,11 @@ export function applyArchitectureShader(
       ? 4
       : 5;
 
-  mat.customProgramCacheKey = () => `mochi_arch_${style}_v1`;
+  mat.customProgramCacheKey = () => `mochi_arch_${style}_v2`;
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
     shader.uniforms.uVibrant = uniforms.uVibrant;
+    shader.uniforms.uLowQuality = uniforms.uLowQuality;
     shader.uniforms.uArchStyle = { value: styleCode };
 
     shader.vertexShader = shader.vertexShader
@@ -980,6 +985,7 @@ export function applyArchitectureShader(
         #include <common>
         uniform float uTime;
         uniform float uVibrant;
+        uniform float uLowQuality;
         uniform float uArchStyle;
         varying vec3 vArchWorldPos;
         varying vec3 vArchLocalPos;
@@ -1076,7 +1082,7 @@ export function applyArchitectureShader(
         '#include <normal_fragment_maps>',
         /* glsl */ `
         #include <normal_fragment_maps>
-        if (uArchStyle > 0.5 && uArchStyle < 3.5) {
+        if (uLowQuality < 0.5 && uArchStyle > 0.5 && uArchStyle < 3.5) {
           float bumpFade = 1.0 - smoothstep(10.0, 22.0, length(cameraPosition - vArchWorldPos));
           if (bumpFade > 0.01) {
             vec2 bUV = archPlanarUV(vArchWorldPos, vArchWorldNorm);

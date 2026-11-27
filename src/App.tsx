@@ -57,7 +57,7 @@ import { PauseMenuModal } from './components/PauseMenuModal';
 import { BottleModal } from './components/BottleModal';
 import { GazetteModal } from './components/GazetteModal';
 import { CutsceneOverlay } from './components/CutsceneOverlay';
-import { TitleScreen } from './components/TitleScreen';
+import { TitleScreen, SaveSlotSummary } from './components/TitleScreen';
 import { FishingMinigame } from './components/FishingMinigame';
 import { SongWeaverModal } from './components/SongWeaverModal';
 import { CottageModal } from './components/CottageModal';
@@ -78,11 +78,25 @@ import {
 import { MarketModal } from './components/MarketModal';
 import { SEASON_THEMES, SEASON_DURATION_SEC, getSeasonalBiomeColor, getScheduledSeasonState } from './game/seasons';
 import { getSeasonalSpellVariant } from './game/seasonalSpells';
-import { triggerMagicSurge, tickWorldParticles, draw2DParticle } from './game/magicSurge';
+import {
+  triggerMagicSurge,
+  tickWorldParticles,
+  tickMagicRings,
+  draw2DParticle,
+  spawnPooledParticle,
+  spawnPooledBurst,
+  spawnMagicRing,
+  clearMagicPools,
+  createScreenShakeState,
+  triggerScreenShake,
+  tickScreenShake,
+  ScreenShakeState,
+} from './game/magicSurge';
 import { updateNPCWeatherBehavior, getNPCWeatherChatter } from './game/npcWeatherBehavior';
 import { useDeviceProfile } from './game/useDeviceProfile';
 import { TouchControls } from './components/TouchControls';
 import { WorldMapModal } from './components/WorldMapModal';
+import { multiTouchTap } from './utils/touchTap';
 import { TeleportModal } from './components/TeleportModal';
 import { CottageState, HamletResident, HollowCreature, HouseRoomId } from './game/engine';
 import { WORLD_ANCHORS } from './game/worldAnchors';
@@ -145,10 +159,127 @@ import { WorldRenderer3D, World3DSyncState, CameraPreset3D, getTerrainHeight3D }
 import { disposeSharedMochiTextures } from './game/mochiModel3D';
 
 const LOCAL_STORAGE_SAVE_PREFIX = 'mochi-meadows-v2-slot-';
-const LOCAL_STORAGE_SAVE_KEY = 'mochi-meadows-v2-slot-1';
+const LOCAL_STORAGE_SLOT1_CLEARED_KEY = 'mochi-meadows-v2-slot-1-cleared';
 const LOCAL_STORAGE_ACTIVE_SLOT_KEY = 'mochi-meadows-active-slot';
 const LOCAL_STORAGE_LEGACY_SAVE = 'mochi-meadows-v1-save';
 const LOCAL_STORAGE_SETTINGS_KEY = 'mochi-meadows-v2-settings';
+
+function getSlotStorageKey(slot: number): string {
+  return `${LOCAL_STORAGE_SAVE_PREFIX}${slot}`;
+}
+
+function readSlotSaveRaw(slot: number): string | null {
+  try {
+    const direct = localStorage.getItem(getSlotStorageKey(slot));
+    if (direct) return direct;
+    // One-way legacy fallback ONLY for Slot 1 if it has not been explicitly cleared/reset,
+    // and only if the legacy entry is an actual MM2 v2 save (has worldN), never an MM1 save.
+    if (slot === 1 && !localStorage.getItem(LOCAL_STORAGE_SLOT1_CLEARED_KEY)) {
+      const legacy = localStorage.getItem(LOCAL_STORAGE_LEGACY_SAVE);
+      if (legacy) {
+        const parsed = JSON.parse(legacy);
+        if (parsed && typeof parsed.worldN === 'number') {
+          return legacy;
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function writeSlotSaveRaw(slot: number, payload: string): void {
+  localStorage.setItem(LOCAL_STORAGE_ACTIVE_SLOT_KEY, String(slot));
+  localStorage.setItem(getSlotStorageKey(slot), payload);
+  if (slot === 1) {
+    localStorage.removeItem(LOCAL_STORAGE_SLOT1_CLEARED_KEY);
+  }
+}
+
+function eraseSlotSave(slot: number): void {
+  localStorage.removeItem(getSlotStorageKey(slot));
+  if (slot === 1) {
+    localStorage.setItem(LOCAL_STORAGE_SLOT1_CLEARED_KEY, '1');
+  }
+}
+
+function readSlotSummaries(): SaveSlotSummary[] {
+  return [1, 2, 3].map((slot) => {
+    const raw = readSlotSaveRaw(slot);
+    if (!raw) return { slot, hasSave: false };
+    try {
+      const parsed = JSON.parse(raw);
+      return {
+        slot,
+        hasSave: true,
+        name: typeof parsed?.L?.name === 'string' && parsed.L.name.trim() ? parsed.L.name : 'Mochi',
+        chapter: typeof parsed?.ch === 'number' ? parsed.ch : 1,
+        coins: typeof parsed?.coins === 'number' ? parsed.coins : 0,
+      };
+    } catch {
+      return { slot, hasSave: false };
+    }
+  });
+}
+
+function createDefaultCottageState(): CottageState {
+  return {
+    decorationsPlaced: [
+      { id: 'f-1', x: 24, y: 74, name: 'Cloud Cushion', icon: '☁️', room: 'living' },
+      { id: 'f-2', x: 76, y: 72, name: 'Amber Lantern', icon: '🏮', room: 'living' },
+      { id: 'f-3', x: 52, y: 80, name: 'Braided Rug', icon: '🧶', room: 'living' },
+      { id: 'f-4', x: 26, y: 66, name: 'Porcelain Tea Set', icon: '🫖', room: 'kitchen' },
+      { id: 'f-5', x: 30, y: 74, name: 'Cherry Bonsai', icon: '🌸', room: 'conservatory' },
+    ],
+    gardenPlots: [
+      { seedType: 'Sunny Daisy', stage: 3, plantedAt: Date.now() - 100000 },
+      { seedType: 'Glowcap Lantern', stage: 2, plantedAt: Date.now() - 50000 },
+    ],
+    aquariumFish: ['Star Tetra', 'Moon Guppy', 'Prism Ray'],
+    musicBoxSong: [60, 64, 67, 69, 72, 67, 64, 60],
+    weatherWindow: 'sunny',
+    fireplaceLit: true,
+    lampOn: true,
+    tubFilled: true,
+    ovenWarm: false,
+  };
+}
+
+function createDefaultHamletResidents(): HamletResident[] {
+  return [
+    {
+      npcName: 'Pip',
+      houseX: WORLD_ANCHORS.towns.mochiHamlet.tx - 6,
+      houseY: WORLD_ANCHORS.towns.mochiHamlet.ty - 2,
+      dialogue: 'I love waking up next to the muffin oven!',
+    },
+    {
+      npcName: 'Captain Barnacle',
+      houseX: WORLD_ANCHORS.towns.mochiHamlet.tx + 2,
+      houseY: WORLD_ANCHORS.towns.mochiHamlet.ty + 6,
+      dialogue: 'Ahoy! Me hamlet cottage is shipwreck-free!',
+    },
+  ];
+}
+
+function createDefaultPlayerLook(): PlayerLook {
+  return {
+    sp: 'cat',
+    col: '#ffb3c7',
+    c2: '',
+    ac: '#ff7aa8',
+    hat: 'bow',
+    eyes: 0,
+    mouth: 0,
+    pat: 0,
+    out: 0,
+    face: 0,
+    aura: 0,
+    companion: 'gloom',
+    name: 'Mochi',
+  };
+}
 
 const CAMERA_PRESETS_3D: CameraPreset3D[] = [
   'cozy',
@@ -177,11 +308,11 @@ function computeViewportDpr(
   isSoftwareGl: boolean
 ): number {
   if (isSoftwareGl) return 1;
-  const maxDeviceDpr = lowQ ? 1 : isPhone ? 1.25 : isTablet ? 1.5 : 1.75;
+  const maxDeviceDpr = lowQ ? 0.9 : isPhone ? 1.08 : isTablet ? 1.35 : 1.65;
   const rawDpr = Math.min(Math.max(1, pixelRatio || 1), maxDeviceDpr);
-  const maxPixelBudget = lowQ ? 720_000 : isPhone ? 850_000 : 1_250_000;
+  const maxPixelBudget = lowQ ? 580_000 : isPhone ? 680_000 : 1_200_000;
   const pixelCapDpr = Math.sqrt(maxPixelBudget / Math.max(1, w * h));
-  const minDpr = lowQ ? 0.75 : 1;
+  const minDpr = lowQ ? 0.75 : isPhone ? 0.85 : 1;
   return Math.max(minDpr, Math.min(rawDpr, pixelCapDpr));
 }
 
@@ -201,6 +332,8 @@ export default function App() {
     lastY: 0,
     didDrag: false,
     touchId: null as number | null,
+    pinchStartDist: 0,
+    pinchStartZoom: 1,
   });
   const [webglReady, setWebglReady] = useState(false);
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
@@ -218,6 +351,13 @@ export default function App() {
   });
   const currentSlotRef = useRef(currentSlot);
   currentSlotRef.current = currentSlot;
+  const [, setSaveSlotRevision] = useState(0);
+  const initialDkRef = useRef<Uint8Array | null>(null);
+  const baseHomeSpawnRef = useRef<{ x: number; y: number }>({
+    x: WORLD_ANCHORS.towns.mochiHamlet.tx * T + T / 2,
+    y: (WORLD_ANCHORS.towns.mochiHamlet.ty + 2) * T + T / 2,
+  });
+  const applySaveSnapshotRef = useRef<(data: any) => void>(() => {});
 
   // Game UI States
   const [gameState, setGameState] = useState<'title' | 'playing'>('title');
@@ -242,6 +382,8 @@ export default function App() {
   nearbyTownActionRef.current = nearbyTownAction;
   const nearbyTownWorldTargetRef = useRef<{ x: number; y: number } | null>(null);
   const [activeCutscene, setActiveCutscene] = useState<CutsceneSlide[] | null>(null);
+  const [activeCutsceneKey, setActiveCutsceneKey] = useState<string | null>(null);
+  const [questRevision, setQuestRevision] = useState(0);
   const [pauseInitialTab, setPauseInitialTab] = useState<'menu' | 'progress' | 'settings' | 'cloud' | 'help'>('menu');
   const [journalInitialTab, setJournalInitialTab] = useState<
     'quests' | 'chapters' | 'reveille' | 'achievements' | 'diary' | 'harmonies' | 'theater'
@@ -252,70 +394,33 @@ export default function App() {
   const lastCastSpellRef = useRef<{ id: string; time: number } | null>(null);
   const castSpellFnRef = useRef<(idx: number) => void>(() => {});
   const portalInteractFnRef = useRef<() => void>(() => {});
+  const finishCutsceneFnRef = useRef<() => void>(() => {});
+  const cutsceneQueueRef = useRef<string[]>([]);
+  const moveTargetStallRef = useRef<{ timer: number; lastX: number; lastY: number }>({
+    timer: 0,
+    lastX: 0,
+    lastY: 0,
+  });
 
   // Cottage & Hamlet State
-  const [cottageState, setCottageState] = useState<CottageState>({
-    decorationsPlaced: [
-      { id: 'f-1', x: 24, y: 74, name: 'Cloud Cushion', icon: '☁️', room: 'living' },
-      { id: 'f-2', x: 76, y: 72, name: 'Amber Lantern', icon: '🏮', room: 'living' },
-      { id: 'f-3', x: 52, y: 80, name: 'Braided Rug', icon: '🧶', room: 'living' },
-      { id: 'f-4', x: 26, y: 66, name: 'Porcelain Tea Set', icon: '🫖', room: 'kitchen' },
-      { id: 'f-5', x: 30, y: 74, name: 'Cherry Bonsai', icon: '🌸', room: 'conservatory' },
-    ],
-    gardenPlots: [
-      { seedType: 'Sunny Daisy', stage: 3, plantedAt: Date.now() - 100000 },
-      { seedType: 'Glowcap Lantern', stage: 2, plantedAt: Date.now() - 50000 },
-    ],
-    aquariumFish: ['Star Tetra', 'Moon Guppy', 'Prism Ray'],
-    musicBoxSong: [60, 64, 67, 69, 72, 67, 64, 60],
-    weatherWindow: 'sunny',
-    fireplaceLit: true,
-    lampOn: true,
-    tubFilled: true,
-    ovenWarm: false,
-  });
+  const [cottageState, setCottageState] = useState<CottageState>(createDefaultCottageState);
   const cottageStateRef = useRef(cottageState);
   cottageStateRef.current = cottageState;
 
-  const [hamletResidents, setHamletResidents] = useState<HamletResident[]>([
-    {
-      npcName: 'Pip',
-      houseX: WORLD_ANCHORS.towns.mochiHamlet.tx - 6,
-      houseY: WORLD_ANCHORS.towns.mochiHamlet.ty - 2,
-      dialogue: 'I love waking up next to the muffin oven!',
-    },
-    {
-      npcName: 'Captain Barnacle',
-      houseX: WORLD_ANCHORS.towns.mochiHamlet.tx + 2,
-      houseY: WORLD_ANCHORS.towns.mochiHamlet.ty + 6,
-      dialogue: 'Ahoy! Me hamlet cottage is shipwreck-free!',
-    },
-  ]);
+  const [hamletResidents, setHamletResidents] = useState<HamletResident[]>(createDefaultHamletResidents);
   const hamletResidentsRef = useRef(hamletResidents);
   hamletResidentsRef.current = hamletResidents;
 
   // Player State
-  const [playerLook, setPlayerLook] = useState<PlayerLook>({
-    sp: 'cat',
-    col: '#ffb3c7',
-    c2: '',
-    ac: '#ff7aa8',
-    hat: 'bow',
-    eyes: 0,
-    mouth: 0,
-    pat: 0,
-    out: 0,
-    face: 0,
-    aura: 0,
-    companion: 'gloom',
-    name: 'Mochi',
-  });
+  const [playerLook, setPlayerLook] = useState<PlayerLook>(createDefaultPlayerLook);
   const playerLookRef = useRef<PlayerLook>(playerLook);
   playerLookRef.current = playerLook;
   const activeModalRef = useRef(activeModal);
   activeModalRef.current = activeModal;
   const activeCutsceneRef = useRef(activeCutscene);
   activeCutsceneRef.current = activeCutscene;
+  const activeCutsceneKeyRef = useRef(activeCutsceneKey);
+  activeCutsceneKeyRef.current = activeCutsceneKey;
   const gameStateRef = useRef(gameState);
   gameStateRef.current = gameState;
 
@@ -503,6 +608,10 @@ export default function App() {
     questItems: QuestItem[];
     particles: Particle[];
     iceMap: Map<number, number>;
+    lilyMap: Map<number, number>;
+    hotSprings: { x: number; y: number; expires: number }[];
+    dkRevision: number;
+    echoTargets3D: { x: number; y: number; kind: 'echo' | 'diary' }[];
     blooms: BloomEffect[];
     magicRings: MagicRing[];
     exploredMask: Uint8Array;
@@ -516,6 +625,10 @@ export default function App() {
     frostShieldTimer: number;
     bloomStepTimer: number;
     hugTimer: number;
+    frostGlowTimer: number;
+    thermalGlideTimer: number;
+    echoMagnetTimer: number;
+    echoMagnetTick: number;
     bloomStepCooldown: number;
     marketSpeedTimer: number;
     marketDiveTimer: number;
@@ -529,6 +642,7 @@ export default function App() {
     dashGhosts: { x: number; y: number; face: number; alpha: number }[];
     footstepTimer: number;
     camera: { x: number; y: number; initialized: boolean };
+    screenShake: ScreenShakeState;
     realmFlash: { alpha: number; color: string };
     magicCooldown: number;
     time: number;
@@ -586,6 +700,10 @@ export default function App() {
     questItems: [],
     particles: [],
     iceMap: new Map(),
+    lilyMap: new Map(),
+    hotSprings: [],
+    dkRevision: 0,
+    echoTargets3D: [],
     blooms: [],
     magicRings: [],
     exploredMask: new Uint8Array(N * N),
@@ -599,6 +717,10 @@ export default function App() {
     frostShieldTimer: 0,
     bloomStepTimer: 0,
     hugTimer: 0,
+    frostGlowTimer: 0,
+    thermalGlideTimer: 0,
+    echoMagnetTimer: 0,
+    echoMagnetTick: 0,
     bloomStepCooldown: 0,
     marketSpeedTimer: 0,
     marketDiveTimer: 0,
@@ -612,6 +734,7 @@ export default function App() {
     dashGhosts: [],
     footstepTimer: 0,
     camera: { x: 0, y: 0, initialized: false },
+    screenShake: createScreenShakeState(),
     realmFlash: { alpha: 0, color: '#ffffff' },
     magicCooldown: 0,
     time: 0,
@@ -678,6 +801,10 @@ export default function App() {
 
   const triggerRealmFlash = useCallback((color: string = '#ffffff', alpha: number = 0.36) => {
     worldRef.current.realmFlash = { color, alpha };
+  }, []);
+
+  const triggerCameraShake = useCallback((intensity: number = 4, duration: number = 0.28, freq: number = 24) => {
+    triggerScreenShake(worldRef.current.screenShake, intensity, duration, freq);
   }, []);
 
   const snapCamera = useCallback(() => {
@@ -2055,174 +2182,28 @@ export default function App() {
       { id: 'h-10', w: 0, name: 'Chime', species: 'deer', x: (isl.chimeCanopy.tx + 5) * T, y: (isl.chimeCanopy.ty + 5) * T, soothed: false, bloomT: 0, color: '#bef264', quote: 'The high branches stopped ringing…' },
     ];
 
-    const resolveSavedPosition = (
-      rawPos: { x: number; y: number; sky?: boolean; dive?: boolean; glowdeep?: boolean; moonroad?: boolean; house?: boolean },
-      coordScale: number
-    ) => {
-      const sky = Boolean(rawPos.sky);
-      const dive = Boolean(rawPos.dive);
-      const glowdeep = Boolean(rawPos.glowdeep);
-      const moonroad = Boolean(rawPos.moonroad);
-      const house = Boolean(rawPos.house);
-      let px = Math.max(T * 2, Math.min((N - 2) * T, rawPos.x * coordScale));
-      let py = Math.max(T * 2, Math.min((N - 2) * T, rawPos.y * coordScale));
-
-      if (coordScale !== 1 && !house) {
-        const tx = Math.max(2, Math.min(N - 3, (px / T) | 0));
-        const ty = Math.max(2, Math.min(N - 3, (py / T) | 0));
-        if (!sky && !dive && !glowdeep && !moonroad) {
-          if (W.B[ty * N + tx] < 2) {
-            let bestDist = 1e9;
-            let bestX = px;
-            let bestY = py;
-            for (let oy = -14; oy <= 14; oy++) {
-              for (let ox = -14; ox <= 14; ox++) {
-                const cx = tx + ox;
-                const cy = ty + oy;
-                if (cx < 2 || cy < 2 || cx >= N - 2 || cy >= N - 2) continue;
-                const idx = cy * N + cx;
-                if (W.B[idx] >= 2 && W.DK[idx] < 10) {
-                  const d = ox * ox + oy * oy;
-                  if (d < bestDist) {
-                    bestDist = d;
-                    bestX = cx * T + T / 2;
-                    bestY = cy * T + T / 2;
-                  }
-                }
-              }
-            }
-            if (bestDist < 1e9) {
-              px = bestX;
-              py = bestY;
-            } else {
-              px = AT.mochiHamlet.tx * T + T / 2;
-              py = (AT.mochiHamlet.ty + 2) * T + T / 2;
-            }
-          }
-        } else if (dive && W.B[ty * N + tx] >= 2) {
-          let bestDist = 1e9;
-          let bestX = WORLD_ANCHORS.reef.driftwoodDiveLagoon.tx * T + T / 2;
-          let bestY = WORLD_ANCHORS.reef.driftwoodDiveLagoon.ty * T + T / 2;
-          for (let oy = -14; oy <= 14; oy++) {
-            for (let ox = -14; ox <= 14; ox++) {
-              const cx = tx + ox;
-              const cy = ty + oy;
-              if (cx < 2 || cy < 2 || cx >= N - 2 || cy >= N - 2) continue;
-              if (W.B[cy * N + cx] < 2) {
-                const d = ox * ox + oy * oy;
-                if (d < bestDist) {
-                  bestDist = d;
-                  bestX = cx * T + T / 2;
-                  bestY = cy * T + T / 2;
-                }
-              }
-            }
-          }
-          px = bestX;
-          py = bestY;
-        } else if (glowdeep && !isGlowdeepWalkable(tx, ty)) {
-          px = GLOWDEEP_RETURN_TILE.x * T + T / 2;
-          py = (GLOWDEEP_RETURN_TILE.y + 3) * T + T / 2;
-        } else if (moonroad && !isMoonRoadWalkable(tx, ty)) {
-          px = WORLD_ANCHORS.moonroad.teaHouse.tx * T + T / 2;
-          py = (WORLD_ANCHORS.moonroad.teaHouse.ty + 2) * T + T / 2;
-        }
-      }
-      return { x: px, y: py, sky, dive, glowdeep, moonroad, house };
-    };
+    // Snapshot pristine generated surface decor & base spawn coordinates before loading any slot save
+    initialDkRef.current = new Uint8Array(W.DK);
+    baseHomeSpawnRef.current = { x: W.player.x, y: W.player.y };
 
     // Try loading saved game from browser storage for the active slot
     try {
       const slot = currentSlotRef.current;
-      const saved =
-        localStorage.getItem(LOCAL_STORAGE_SAVE_PREFIX + slot) ||
-        (slot === 1 ? localStorage.getItem(LOCAL_STORAGE_SAVE_KEY) || localStorage.getItem(LOCAL_STORAGE_LEGACY_SAVE) : null);
+      const saved = readSlotSaveRaw(slot);
       if (saved) {
         const data = JSON.parse(saved);
-        const savedN = typeof data.worldN === 'number' && data.worldN > 0 ? data.worldN : 260;
-        const coordScale = N / savedN;
-        if (data.L) setPlayerLook((prev) => ({ ...prev, ...data.L }));
-        if (typeof data.coins === 'number') setCoins(data.coins);
-        if (typeof data.tot === 'number') setTotalCoins(data.tot);
-        if (typeof data.ch === 'number') {
-          setCurrentChapter(data.ch);
-          currentChapterRef.current = data.ch;
-          if (W.moonGatePortal) W.moonGatePortal.open = data.ch >= 7;
-          if (W.glowdeepPortal) W.glowdeepPortal.open = data.ch >= 9;
-        }
-        if (typeof data.chimes === 'number') W.dawnChimesCount = data.chimes;
-        if (data.done) setLullabyDone(Boolean(data.done));
-        if (data.skd) setSkyStoryDone(Boolean(data.skd));
-        if (data.vg) setVisitedGlowdeep(true);
-        if (data.vm) setVisitedMoonRoad(true);
-        if (Array.isArray(data.lore)) setLoreEntries(data.lore);
-        if (Array.isArray(data.ach)) setUnlockedAchievements(data.ach);
-        if (Array.isArray(data.mv)) setUnlockedCutscenes(data.mv);
-        if (data.ug) setUpgrades(data.ug);
-        if (data.fs) setFishLog(data.fs);
-        if (data.cottage) setCottageState(data.cottage);
-        if (Array.isArray(data.hamlet)) {
-          setHamletResidents(
-            coordScale !== 1
-              ? data.hamlet.map((r: HamletResident) => ({
-                  ...r,
-                  houseX: Math.round(r.houseX * coordScale),
-                  houseY: Math.round(r.houseY * coordScale),
-                }))
-              : data.hamlet
-          );
-        }
-        if (data.townProsperity && typeof data.townProsperity === 'object') {
-          setTownProsperity(data.townProsperity);
-          W.towns.forEach((tw) => {
-            if (typeof data.townProsperity[tw.n] === 'number') tw.prosperity = data.townProsperity[tw.n];
-          });
-        }
-        if (Array.isArray(data.completedTownRequests)) setCompletedTownRequests(data.completedTownRequests);
-        if (Array.isArray(data.visTowns)) {
-          W.towns.forEach((t) => {
-            if (data.visTowns.includes(t.n)) t.vis = 1;
-          });
-        }
-        if (Array.isArray(data.qu)) {
-          data.qu.forEach((sq: { t: string; st: number; c: number }) => {
-            const q = W.quests.find((item) => item.t === sq.t);
-            if (q) {
-              q.st = sq.st;
-              q.c = sq.c;
-            }
-          });
-        }
-        if (Array.isArray(data.fr)) {
-          W.npcs.forEach((n) => {
-            if (data.fr.includes(n.n)) {
-              n.fr = true;
-              n.h = n.h.map(() => 1);
-            }
-          });
-        }
-        if (data.pos && typeof data.pos.x === 'number' && typeof data.pos.y === 'number') {
-          const resolved = resolveSavedPosition(data.pos, coordScale);
-          W.player.x = resolved.x;
-          W.player.y = resolved.y;
-          W.player.sky = resolved.sky;
-          W.player.dive = resolved.dive;
-          W.player.glowdeep = resolved.glowdeep;
-          W.player.moonroad = resolved.moonroad;
-          W.player.house = resolved.house;
-          W.companionPos.x = W.player.x - 26;
-          W.companionPos.y = W.player.y + 4;
-          setPlayerPos({
-            x: W.player.x,
-            y: W.player.y,
-            sky: W.player.sky,
-            dive: W.player.dive,
-            swim: false,
-            glowdeep: W.player.glowdeep,
-            moonroad: W.player.moonroad,
-            house: W.player.house,
-          });
-        }
+        applySaveSnapshotRef.current(data);
+      } else {
+        setPlayerPos({
+          x: W.player.x,
+          y: W.player.y,
+          sky: false,
+          dive: false,
+          swim: false,
+          glowdeep: false,
+          moonroad: false,
+          house: false,
+        });
       }
     } catch (e) {}
 
@@ -2268,6 +2249,7 @@ export default function App() {
     let contextLostTimer: number | null = null;
     try {
       const r3d = new WorldRenderer3D(mount, {
+        isMobile: deviceRef.current.isPhone,
         onContextLost: () => {
           if (cancelled) return;
           if (contextLostTimer !== null) {
@@ -2434,7 +2416,7 @@ export default function App() {
       } else if (k === 'n') {
         cycleMusicFnRef.current();
       } else if (k === 'escape') {
-        if (cutscene) setActiveCutscene(null);
+        if (cutscene) finishCutsceneFnRef.current();
         else if (modal !== 'none') setActiveModal('none');
         else {
           setPauseInitialTab('menu');
@@ -2950,11 +2932,93 @@ export default function App() {
   };
   houseActionFnRef.current = handleHouseAction;
 
+  const isSurfaceSolidDk = (dk: number) =>
+    dk === 2 ||
+    dk === 4 ||
+    dk === 5 ||
+    dk === 6 ||
+    dk === 7 ||
+    dk === 10 ||
+    dk === 11 ||
+    dk === 13 ||
+    dk === 14 ||
+    dk === 16 ||
+    dk === 17 ||
+    dk === 18 ||
+    dk === 20 ||
+    dk === 21 ||
+    dk === 23;
+
+  // Locate nearest safe walkable center point on a realm layer so landing/teleport/portal transitions never trap the player
+  const findNearestSafeWorldPoint = useCallback(
+    (layer: 0 | 1 | 2 | 3 | 4, worldX: number, worldY: number, preferDryLand = true): { x: number; y: number } => {
+      const W = worldRef.current;
+      const baseTx = Math.max(1, Math.min(N - 2, Math.floor(worldX / T)));
+      const baseTy = Math.max(1, Math.min(N - 2, Math.floor(worldY / T)));
+
+      const isTileClearOnLayer = (tx: number, ty: number, requireDry: boolean): boolean => {
+        if (tx < 1 || ty < 1 || tx >= N - 1 || ty >= N - 1) return false;
+        const idx = ty * N + tx;
+        if (layer === 3) return isGlowdeepWalkable(tx, ty);
+        if (layer === 4) return isMoonRoadWalkable(tx, ty);
+        if (layer === 2) {
+          const sd = W.SD[idx];
+          return sd !== 1 && sd !== 9;
+        }
+        if (layer === 1) {
+          return W.B[idx] <= 1 && W.UD[idx] !== 5 && W.UD[idx] !== 6;
+        }
+        if (requireDry && W.B[idx] < 2) return false;
+        return !isSurfaceSolidDk(W.DK[idx]);
+      };
+
+      // First try exact spot if no obstacle blocks the hitbox footprint
+      const isPointClear = (px: number, py: number, requireDry: boolean): boolean => {
+        const fy = py + 5;
+        const rx = 8;
+        const ry = 5;
+        return (
+          isTileClearOnLayer(((px - rx) / T) | 0, ((fy - ry) / T) | 0, requireDry) &&
+          isTileClearOnLayer(((px + rx) / T) | 0, ((fy - ry) / T) | 0, requireDry) &&
+          isTileClearOnLayer(((px - rx) / T) | 0, ((fy + ry) / T) | 0, requireDry) &&
+          isTileClearOnLayer(((px + rx) / T) | 0, ((fy + ry) / T) | 0, requireDry)
+        );
+      };
+
+      const clampedX = Math.max(T + 10, Math.min((N - 1) * T - 10, worldX));
+      const clampedY = Math.max(T + 10, Math.min((N - 1) * T - 10, worldY));
+      if (isPointClear(clampedX, clampedY, preferDryLand)) {
+        return { x: clampedX, y: clampedY };
+      }
+
+      for (let pass = 0; pass < (layer === 0 && preferDryLand ? 2 : 1); pass++) {
+        const requireDry = pass === 0 && preferDryLand;
+        for (let r = 1; r <= 8; r++) {
+          for (let dy = -r; dy <= r; dy++) {
+            for (let dx = -r; dx <= r; dx++) {
+              if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+              const tx = baseTx + dx;
+              const ty = baseTy + dy;
+              const cx = tx * T + T / 2;
+              const cy = ty * T + T / 2;
+              if (isPointClear(cx, cy, requireDry)) {
+                return { x: cx, y: cy };
+              }
+            }
+          }
+        }
+      }
+      return { x: clampedX, y: clampedY };
+    },
+    []
+  );
+
   // Enter / Exit Glowdeep Caverns & Moon Road via Physical Portals
   const enterRealmLayer = (layer: 0 | 3 | 4, destTileX: number, destTileY: number) => {
     const W = worldRef.current;
-    const destX = destTileX * T + T / 2;
-    const destY = destTileY * T + T / 2;
+    const safePt = findNearestSafeWorldPoint(layer, destTileX * T + T / 2, destTileY * T + T / 2, false);
+    const destX = safePt.x;
+    const destY = safePt.y;
     W.player.x = destX;
     W.player.y = destY;
     W.player.vx = 0;
@@ -3018,7 +3082,7 @@ export default function App() {
       setVisitedGlowdeep(true);
       const rootedTown = W.towns.find((t) => t.n === 'Rooted Rest');
       if (rootedTown) rootedTown.vis = 1;
-      if (!unlockedCutscenes.includes('deep')) triggerCutscene('deep');
+      if (!unlockedCutscenesRef.current.includes('deep')) triggerCutscene('deep');
       showToast('🍄 Descended beneath the Lantern Tree into Glowdeep Caverns!');
     } else if (portal.id === 'to_moonroad') {
       if (portal.locked) {
@@ -3158,10 +3222,9 @@ export default function App() {
         const cinderVisited = townVisited('Cinder Spas');
         if (
           ember?.fr ||
-          (ember?.met && (cinderVisited || starsGot >= 24)) ||
-          soothedCount >= 2 ||
-          friendsCount >= 4 ||
-          (cinderVisited && townsVisitedCount >= 6)
+          (ember?.met && cinderVisited) ||
+          (cinderVisited && (soothedCount >= 2 || friendsCount >= 4 || starsGot >= 24)) ||
+          soothedCount >= 3
         ) {
           ch = 6;
           coinReward += 15;
@@ -3175,9 +3238,9 @@ export default function App() {
         if (
           mizzle?.fr ||
           (mizzle?.met && (lilyVisited || echoAndDiaryCount >= 1)) ||
-          soothedCount >= 3 ||
-          friendsCount >= 5 ||
-          (lilyVisited && starsGot >= 28)
+          (lilyVisited && (soothedCount >= 2 || friendsCount >= 5 || starsGot >= 28)) ||
+          soothedCount >= 4 ||
+          friendsCount >= 6
         ) {
           ch = 7;
           coinReward += 15;
@@ -3195,9 +3258,8 @@ export default function App() {
           (twins?.met && auroraVisited) ||
           visitedMoonRoadRef.current ||
           W.player.moonroad ||
-          feathersGot >= 4 ||
-          moonNotesGot >= 2 ||
-          (auroraVisited && ringsGot >= 2)
+          (auroraVisited && (feathersGot >= 3 || ringsGot >= 2)) ||
+          (feathersGot >= 6 && moonNotesGot >= 1)
         ) {
           ch = 8;
           coinReward += 15;
@@ -3211,10 +3273,10 @@ export default function App() {
         const cirrus = W.towns.find((t) => t.n === 'Cirrus Castle');
         if (
           bellamy?.fr ||
-          (bellamy?.met && (bellVisited || starsGot >= 10)) ||
-          cirrus?.vis === 1 ||
-          starsGot >= 10 ||
-          (bellVisited && ringsGot >= 3)
+          (bellamy?.met && (bellVisited || ringsGot >= 2)) ||
+          (cirrus?.vis === 1 && (ringsGot >= 2 || feathersGot >= 5)) ||
+          (bellVisited && ringsGot >= 3) ||
+          (starsGot >= 45 && ringsGot >= 3)
         ) {
           ch = 9;
           coinReward += 15;
@@ -3444,35 +3506,9 @@ export default function App() {
       return;
     }
 
-    // Toggle Landing if Cloud Wings cast in sky
+    // Toggle Landing if Cloud Wings cast in sky (handled below without blocking on MP)
     const castLowQuality = Boolean(settingsRef.current.low) || Boolean(deviceRef.current?.isPhone);
-    if ((spell.id === 'cloud_wings' || spell.id === 'wings') && W.player.sky) {
-      const landSeason = currentSeasonRef.current;
-      const landVar = getSeasonalSpellVariant('cloud_wings', landSeason);
-      W.player.sky = false;
-      W.player.dash = Math.max(W.player.dash, landSeason === 'summer' ? 0.28 : 0.18);
-      triggerMagicSurge({
-        particles: W.particles,
-        magicRings: W.magicRings,
-        spellId: 'cloud_wings',
-        season: landSeason,
-        x: W.player.x,
-        y: W.player.y,
-        subtype: 'landing',
-        lowQuality: castLowQuality,
-        triggerFlash: triggerRealmFlash,
-      });
-      if (landVar && landSeason === 'winter') {
-        W.frostShieldTimer = Math.max(W.frostShieldTimer, 6);
-      }
-      showToast(
-        landVar
-          ? `${landVar.seasonBadge} ${landVar.variantName}: soft seasonal touchdown!`
-          : 'Landing gently on the meadows… 🌿'
-      );
-      audio.pop();
-      return;
-    }
+    const isCloudLanding = (spell.id === 'cloud_wings' || spell.id === 'wings') && W.player.sky;
 
     // Validate layer restrictions before deducting mana
     if (
@@ -3491,7 +3527,7 @@ export default function App() {
       return;
     }
 
-    const freeCloud = (spell.id === 'cloud_wings' || spell.id === 'wings') && upgrades.cloud;
+    const freeCloud = isCloudLanding || ((spell.id === 'cloud_wings' || spell.id === 'wings') && upgrades.cloud);
     if (W.player.mp < (freeCloud ? 0 : spell.cost)) {
       showToast('Not enough magic mana yet');
       return;
@@ -3505,20 +3541,11 @@ export default function App() {
     // Play spell sound
     audio.castSpell?.(spell.id);
 
-    // Helper for radial sparkle burst at any world point
+    // Helper for radial sparkle burst at any world point (pooled)
     const spawnBurst = (colors: string[], count = 16, speed = 85, originX = W.player.x, originY = W.player.y) => {
-      for (let i = 0; i < count; i++) {
-        const a = (i / count) * Math.PI * 2 + Math.random() * 0.25;
-        const spd = speed * (0.55 + Math.random() * 0.7);
-        W.particles.push({
-          x: originX,
-          y: originY,
-          vx: Math.cos(a) * spd,
-          vy: Math.sin(a) * spd,
-          l: 0.9 + Math.random() * 0.45,
-          c: colors[i % colors.length],
-        });
-      }
+      spawnPooledBurst(W.particles, colors, count, speed, originX, originY, {
+        lowQuality: castLowQuality,
+      });
     };
 
     const isSurfaceLayer = !W.player.sky && !W.player.dive && !W.player.glowdeep && !W.player.moonroad;
@@ -3544,7 +3571,9 @@ export default function App() {
           if (!W.shakenTiles.has(idx)) {
             W.shakenTiles.add(idx);
             shaken++;
-            coinsFound += Math.round(coinReward * coinMult);
+            const tileCoins = Math.round(coinReward * coinMult);
+            coinsFound += tileCoins;
+            spawnWorldPopup(cx, cy - 16, `+${tileCoins} 🪙`, '#ffe875', 0.95);
           }
         }
       }
@@ -3570,6 +3599,9 @@ export default function App() {
             planted++;
           }
         }
+      }
+      if (planted > 0) {
+        W.dkRevision += 1;
       }
       return planted;
     };
@@ -3666,10 +3698,12 @@ export default function App() {
       return foundTitles;
     };
 
-    // Combination Harmony Check (supports matching by spell name or id & applies bonus effects)
+    // Combination Harmony Check (supports matching by spell name or id & applies rich synergy effects)
     const now = performance.now() / 1000;
     let harmonyTriggered: string | null = null;
-    if (lastCastSpellRef.current && now - lastCastSpellRef.current.time < 3.5) {
+    let skipBaseCloudLanding = false;
+    let cometHopHandledMovement = false;
+    if (lastCastSpellRef.current && now - lastCastSpellRef.current.time < 4.0) {
       const prevKey = lastCastSpellRef.current.id;
       const harmony = SPELL_HARMONIES.find(
         (h) =>
@@ -3684,79 +3718,209 @@ export default function App() {
         W.player.mp = Math.min(100, W.player.mp + 20);
         setMana(Math.round(W.player.mp));
         spawnBurst(['#ffd23f', '#ff7aa8', '#8ed0ff', '#b48cff', '#7bd88f'], 24, 115);
-        spawnWorldPopup(W.player.x, W.player.y - 34, `🎶 ${harmony.name}!`, '#ffe875', 1.25);
+        spawnWorldPopup(W.player.x, W.player.y - 34, `🎶 ${harmony.name}!`, '#ffe875', 1.3);
 
         if (harmony.name === 'Echo Magnet') {
-          W.moonPullTimer = Math.max(W.moonPullTimer, 11);
-          W.echoTimer = Math.max(W.echoTimer, 16);
+          W.moonPullTimer = Math.max(W.moonPullTimer, 14);
+          W.echoTimer = Math.max(W.echoTimer, 18);
+          W.echoMagnetTimer = Math.max(W.echoMagnetTimer, 14);
+          spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y, m: 1.1, r: 340, c: '#c29eff' });
+          triggerCameraShake(4.2, 0.32, 22);
+          const pulledLore = discoverNearbyMemoryAndDiary(520);
+          if (pulledLore.length > 0) {
+            spawnWorldPopup(W.player.x, W.player.y - 52, `🧲 Echoes Pulled! (${pulledLore.length})`, '#8fd5ff', 1.15);
+          }
         } else if (harmony.name === 'Hot Spring') {
           W.player.st = 100;
           W.player.o2 = 100;
           W.player.mp = Math.min(100, W.player.mp + 25);
           W.warmthTimer = Math.max(W.warmthTimer, 18);
+          W.hotSprings.push({ x: W.player.x, y: W.player.y, expires: W.time + 26 });
+          if (W.hotSprings.length > 5) W.hotSprings.shift();
+          spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y, m: 1.0, r: 150, c: '#74f7e2' });
+          spawnBurst(['#74f7e2', '#fff7cc', '#ffb37b'], 22, 95, W.player.x, W.player.y);
+          triggerCameraShake(4.5, 0.3, 18);
           setStamina(100);
           setAir(100);
           setMana(Math.round(W.player.mp));
         } else if (harmony.name === 'Lullaby Veil') {
-          sootheNearbyHollows(520);
+          sootheNearbyHollows(720);
           W.dreamwalkTimer = Math.max(W.dreamwalkTimer, 18);
           W.hugTimer = Math.max(W.hugTimer, 14);
+          spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y, m: 1.25, r: 380, c: '#e5d4ff' });
         } else if (harmony.name === 'Sunrise Lift') {
+          // Zero mana cost: refund the triggering spell's mana cost!
+          if (!freeCloud) {
+            W.player.mp = Math.min(100, W.player.mp + spell.cost);
+            setMana(Math.round(W.player.mp));
+          }
           W.player.dive = false;
           W.player.sky = true;
-          W.player.dash = 0.45;
-          W.dawnTimer = Math.max(W.dawnTimer, 18);
-          triggerRealmFlash('#ffd23f', 0.36);
+          W.player.z = 72;
+          W.player.vz = 115;
+          W.player.dash = 0.55;
+          W.dawnTimer = Math.max(W.dawnTimer, 20);
+          skipBaseCloudLanding = true;
+          // Guide gently onto nearest high cloud platform if directly above open void
+          const ptxS = (W.player.x / T) | 0;
+          const ptyS = (W.player.y / T) | 0;
+          if (ptxS > 1 && ptyS > 1 && ptxS < N - 2 && ptyS < N - 2 && W.SB[ptyS * N + ptxS] === 0) {
+            let bestSkyX = W.player.x;
+            let bestSkyY = W.player.y;
+            let bestSkyD2 = 1e9;
+            for (let sy = Math.max(2, ptyS - 18); sy <= Math.min(N - 3, ptyS + 18); sy++) {
+              for (let sx = Math.max(2, ptxS - 18); sx <= Math.min(N - 3, ptxS + 18); sx++) {
+                if (W.SB[sy * N + sx] > 0 && W.SD[sy * N + sx] === 0) {
+                  const d2 = (sx - ptxS) * (sx - ptxS) + (sy - ptyS) * (sy - ptyS);
+                  if (d2 < bestSkyD2) {
+                    bestSkyD2 = d2;
+                    bestSkyX = sx * T + T / 2;
+                    bestSkyY = sy * T + T / 2;
+                  }
+                }
+              }
+            }
+            if (bestSkyD2 < 1e9) {
+              W.player.x = bestSkyX;
+              W.player.y = bestSkyY;
+              snapCamera();
+            }
+          }
+          spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y, m: 1.0, r: 240, c: '#ffd23f' });
+          triggerRealmFlash('#ffd23f', 0.42);
+          triggerCameraShake(6.5, 0.36, 26);
         } else if (harmony.name === 'Comet Hop') {
-          const pool = W.player.sky ? [...W.feathers, ...W.rings] : W.player.dive ? W.pearls : W.stars;
-          const nearestUncollected = pool
-            .filter((item) => !item.got)
-            .sort(
-              (a, b) =>
-                Math.hypot(a.x - W.player.x, a.y - W.player.y) - Math.hypot(b.x - W.player.x, b.y - W.player.y)
-            )[0];
+          const curLayerNum = getPlayerLayer(W.player);
+          const itemPool = W.player.sky
+            ? [...W.feathers, ...W.rings]
+            : W.player.dive
+            ? W.pearls
+            : W.player.glowdeep
+            ? W.glowSpores
+            : W.player.moonroad
+            ? W.moonNotes
+            : [...W.stars, ...W.questItems.filter((q) => q.w === 0)];
+          const echoCandidates = MEMORY_ECHOES.filter((e) => e.w === curLayerNum && !W.discoveredEchoIds.has(e.id)).map(
+            (e) => ({ x: e.x * T + T / 2, y: e.y * T + T / 2, got: 0, ref: null as null | { got: number } })
+          );
+          const combined = [
+            ...itemPool.filter((it) => !it.got).map((it) => ({ x: it.x, y: it.y, ref: it })),
+            ...echoCandidates,
+          ];
+          const nearestUncollected = combined.sort(
+            (a, b) => Math.hypot(a.x - W.player.x, a.y - W.player.y) - Math.hypot(b.x - W.player.x, b.y - W.player.y)
+          )[0];
+          W.starSenseTimer = Math.max(W.starSenseTimer, 22);
           if (nearestUncollected) {
-            W.player.x = nearestUncollected.x;
-            W.player.y = nearestUncollected.y;
+            const hopOriginX = W.player.x;
+            const hopOriginY = W.player.y;
+            for (let gi = 0; gi < 4; gi++) {
+              const gf = gi / 4;
+              W.dashGhosts.push({
+                x: hopOriginX + (nearestUncollected.x - hopOriginX) * gf,
+                y: hopOriginY + (nearestUncollected.y - hopOriginY) * gf,
+                face: W.player.face,
+                alpha: 0.72 - gi * 0.14,
+              });
+            }
+            const landOffX = Math.max(T * 1.5, Math.min((N - 1.5) * T, nearestUncollected.x + 14));
+            const landOffY = Math.max(T * 1.5, Math.min((N - 1.5) * T, nearestUncollected.y + 6));
+            W.player.x = landOffX;
+            W.player.y = landOffY;
+            W.player.z = 26;
+            W.player.vz = 55;
+            cometHopHandledMovement = true;
             snapCamera();
-            triggerRealmFlash('#fff5b8', 0.34);
-            spawnBurst(['#ffd23f', '#8fd5ff', '#ffffff'], 18, 95, W.player.x, W.player.y);
+            triggerRealmFlash('#fff5b8', 0.36);
+            triggerCameraShake(5.8, 0.28, 30);
+            spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y, m: 0.9, r: 150, c: '#ffd23f' });
+            spawnBurst(['#ffd23f', '#8fd5ff', '#ffffff'], 24, 110, W.player.x, W.player.y);
           }
         } else if (harmony.name === 'Lily Path') {
           W.tideTimer = Math.max(W.tideTimer, 16);
+          W.bloomStepTimer = Math.max(W.bloomStepTimer, 12);
           const ptx = (W.player.x / T) | 0;
           const pty = (W.player.y / T) | 0;
+          const rawDx = W.player.dx || W.player.face || 1;
+          const rawDy = W.player.dy || 0;
+          const dLen = Math.hypot(rawDx, rawDy) || 1;
+          const fx = rawDx / dLen;
+          const fy = rawDy / dLen;
+          const lilyDur = W.time + 55;
+          let lilyCount = 0;
           for (let y = pty - 4; y <= pty + 4; y++) {
             for (let x = ptx - 4; x <= ptx + 4; x++) {
-              if (x > 0 && y > 0 && x < N - 1 && y < N - 1 && W.B[y * N + x] < 2) {
-                W.iceMap.set(y * N + x, W.time + 45);
+              if (Math.hypot(x - ptx, y - pty) <= 4.3 && x > 0 && y > 0 && x < N - 1 && y < N - 1 && W.B[y * N + x] < 2) {
+                W.lilyMap.set(y * N + x, lilyDur);
+                lilyCount++;
               }
             }
           }
+          for (let step = 1; step <= 13; step++) {
+            const bx = Math.round(ptx + fx * step);
+            const by = Math.round(pty + fy * step);
+            for (let oy = -1; oy <= 1; oy++) {
+              for (let ox = -1; ox <= 1; ox++) {
+                const px = bx + ox;
+                const py = by + oy;
+                if (px > 0 && py > 0 && px < N - 1 && py < N - 1 && W.B[py * N + px] < 2) {
+                  W.lilyMap.set(py * N + px, lilyDur);
+                  lilyCount++;
+                }
+              }
+            }
+            if (step % 2 === 0) {
+              spawnBurst(['#6fd97d', '#ff9ebb', '#7ce6ff'], 6, 55, bx * T + T / 2, by * T + T / 2);
+            }
+          }
+          if (lilyCount > 0) {
+            spawnMagicRing(W.magicRings, { x: W.player.x + fx * 65, y: W.player.y + fy * 65, m: 1.0, r: 165, c: '#7de68f' });
+          }
         } else if (harmony.name === 'Frost Glow') {
           W.starSenseTimer = Math.max(W.starSenseTimer, 24);
-          W.frostShieldTimer = Math.max(W.frostShieldTimer, 18);
+          W.frostShieldTimer = Math.max(W.frostShieldTimer, 20);
+          W.frostGlowTimer = 26;
+          spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y, m: 1.1, r: 220, c: '#a8f2ff' });
         } else if (harmony.name === 'Thermal Breeze') {
           W.player.dive = false;
           W.player.sky = true;
-          W.warmthTimer = Math.max(W.warmthTimer, 16);
-          W.player.dash = 0.35;
-          triggerRealmFlash('#ffbe78', 0.32);
+          W.warmthTimer = Math.max(W.warmthTimer, 20);
+          W.thermalGlideTimer = 24;
+          W.player.dash = 0.42;
+          skipBaseCloudLanding = true;
+          triggerRealmFlash('#ffbe78', 0.34);
+          triggerCameraShake(4.8, 0.3, 24);
         } else if (harmony.name === 'Rain Roots') {
           W.bloomStepTimer = Math.max(W.bloomStepTimer, 18);
-          plantPermanentWildflowers(4, 0.7);
-          for (let k = 0; k < 24; k++) {
-            const a = (k / 24) * Math.PI * 2;
-            const r = 35 + Math.random() * 130;
+          plantPermanentWildflowers(4, 0.72);
+          let plotsGrown = 0;
+          setCottageState((prev) => {
+            const nextPlots = prev.gardenPlots.map((g) => {
+              if (g.stage < 3) plotsGrown++;
+              return { ...g, stage: Math.min(3, g.stage + 1) };
+            });
+            return { ...prev, gardenPlots: nextPlots };
+          });
+          for (let k = 0; k < 28; k++) {
+            const a = (k / 28) * Math.PI * 2;
+            const r = 30 + Math.random() * 145;
             W.blooms.push({
               x: W.player.x + Math.cos(a) * r,
               y: W.player.y + Math.sin(a) * r * 0.85,
               u: W.player.dive,
               b: W.time,
-              c: k % 4,
-              e: W.time + 75,
+              c: 4 + (k % 3),
+              e: W.time + 80,
             });
           }
+          if (plotsGrown > 0) {
+            spawnWorldPopup(W.player.x, W.player.y - 54, `🌱 ${plotsGrown} Cottage Plant${plotsGrown > 1 ? 's' : ''} Grew!`, '#8ef5a8', 1.1);
+          }
+        } else if (harmony.name === 'Starway Chorus') {
+          W.starSenseTimer = Math.max(W.starSenseTimer, 28);
+          spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y, m: 1.3, r: 300, c: '#ffe875' });
+          spawnBurst(['#ffd23f', '#ff9ebb', '#8fd5ff', '#b48cff'], 28, 125, W.player.x, W.player.y);
+          triggerCameraShake(4.6, 0.32, 24);
         }
         checkAchFnRef.current();
         showToast(`🎶 DUET HARMONY: ${harmony.name}! ${harmony.desc}`);
@@ -3788,10 +3952,9 @@ export default function App() {
         ? [...seasonVar.burstColors.filter((c): c is string => Boolean(c))]
         : [...colors];
 
-    W.magicRings.push({
+    spawnMagicRing(W.magicRings, {
       x: W.player.x,
       y: W.player.y,
-      t: 0,
       m: 1.0,
       r: spell.id === 'echo_call' || spell.id === 'dawn_break' ? 280 : 165,
       c: spellRingColor,
@@ -3810,8 +3973,7 @@ export default function App() {
     if (spell.id === 'star_sense' || spell.id === 'weave') {
       const baseSense = upgrades.lens ? 36 : 20;
       const senseMult = activeSeason === 'winter' ? 1.25 : activeSeason === 'spring' ? 1.15 : 1.0;
-      W.starSenseTimer = Math.round(baseSense * senseMult);
-      W.echoTimer = Math.max(W.echoTimer, upgrades.lens ? 24 : 12);
+      W.starSenseTimer = Math.max(W.starSenseTimer, Math.round(baseSense * senseMult));
       if (activeSeason === 'spring') {
         sootheNearbyHollows(160);
       } else if (activeSeason === 'summer') {
@@ -3831,12 +3993,13 @@ export default function App() {
         y: W.player.y,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       if (!harmonyTriggered) {
         showToast(
           seasonVar
             ? `${seasonVar.seasonBadge} ${seasonVar.variantName}: ${seasonVar.bonusSummary}`
-            : '✨ Star Sense: orbiting stars illuminate nearby treasures & Memory Echoes!'
+            : '✨ Star Sense: orbiting star crown illuminates treasures & nearby Echoes!'
         );
       }
     } else if (spell.id === 'glimmer_step' || spell.id === 'blink') {
@@ -3848,18 +4011,32 @@ export default function App() {
       const stepX = dLen > 0.1 ? rawDx / dLen : W.player.face || 1;
       const stepY = dLen > 0.1 ? rawDy / dLen : 0;
       const maxJumpDist = activeSeason === 'summer' ? 195 : 165;
-      const scoopRadius = activeSeason === 'summer' ? 42 : 34;
+      const scoopRadius = activeSeason === 'summer' ? 46 : 38;
 
-      // Smart obstacle blink: check along the jump ray (furthest down to short hops) so you clear walls/rivers safely!
+      // Smart obstacle blink: skip normal hop movement if Comet Hop already vaulted right beside treasure
       let targetX = oldX;
       let targetY = oldY;
-      for (const frac of [1.0, 0.85, 0.7, 0.55, 0.4, 0.25]) {
-        const candX = Math.max(T * 1.5, Math.min((N - 1.5) * T, oldX + stepX * maxJumpDist * frac));
-        const candY = Math.max(T * 1.5, Math.min((N - 1.5) * T, oldY + stepY * maxJumpDist * frac));
-        if (!isPointSolidForBlink(candX, candY)) {
-          targetX = candX;
-          targetY = candY;
-          break;
+      if (!cometHopHandledMovement) {
+        for (const frac of [1.0, 0.85, 0.7, 0.55, 0.4, 0.25]) {
+          const candX = Math.max(T * 1.5, Math.min((N - 1.5) * T, oldX + stepX * maxJumpDist * frac));
+          const candY = Math.max(T * 1.5, Math.min((N - 1.5) * T, oldY + stepY * maxJumpDist * frac));
+          if (!isPointSolidForBlink(candX, candY)) {
+            targetX = candX;
+            targetY = candY;
+            break;
+          }
+        }
+      }
+
+      // Starlight afterimage ghosts along departure & mid-blink path
+      if (!cometHopHandledMovement && (targetX !== oldX || targetY !== oldY)) {
+        for (const gf of [0, 0.4, 0.75]) {
+          W.dashGhosts.push({
+            x: oldX + (targetX - oldX) * gf,
+            y: oldY + (targetY - oldY) * gf,
+            face: W.player.face,
+            alpha: 0.65 - gf * 0.25,
+          });
         }
       }
 
@@ -3876,15 +4053,22 @@ export default function App() {
         : W.stars;
 
       const trailPalette = burstPalette(['#ffd23f', '#8fd5ff']);
+      let touchedWater = false;
       for (let i = 0; i <= 12; i++) {
         const tFrac = i / 12;
         const px = oldX + (targetX - oldX) * tFrac;
         const py = oldY + (targetY - oldY) * tFrac;
-        W.particles.push({
+        const ttx = (px / T) | 0;
+        const tty = (py / T) | 0;
+        if (isSurfaceLayer && ttx > 0 && tty > 0 && ttx < N - 1 && tty < N - 1 && W.B[tty * N + ttx] < 2) {
+          touchedWater = true;
+        }
+        spawnPooledParticle(W.particles, {
           x: px,
           y: py,
           vx: (Math.random() - 0.5) * 40,
           vy: (Math.random() - 0.5) * 40,
+          shape: 'spark',
           l: 0.9,
           c: trailPalette[i % trailPalette.length],
         });
@@ -3895,6 +4079,7 @@ export default function App() {
             const val = Math.round(3 * coinMult);
             setCoins((c) => c + val);
             setTotalCoins((c) => c + val);
+            spawnWorldPopup(item.x, item.y - 12, `+${val} 🪙 ✨`, '#ffe875', 0.9);
           }
         }
       }
@@ -3915,16 +4100,19 @@ export default function App() {
       } else if (activeSeason === 'winter' && isSurfaceLayer) {
         const ltx = (targetX / T) | 0;
         const lty = (targetY / T) | 0;
-        for (let iy = lty - 1; iy <= lty + 1; iy++) {
-          for (let ix = ltx - 1; ix <= ltx + 1; ix++) {
-            if (ix > 0 && iy > 0 && ix < N - 1 && iy < N - 1 && W.B[iy * N + ix] < 2) {
-              W.iceMap.set(iy * N + ix, W.time + 30);
+        const landTileWater = ltx > 0 && lty > 0 && ltx < N - 1 && lty < N - 1 && W.B[lty * N + ltx] < 2;
+        if (touchedWater || landTileWater) {
+          for (let iy = lty - 1; iy <= lty + 1; iy++) {
+            for (let ix = ltx - 1; ix <= ltx + 1; ix++) {
+              if (ix > 0 && iy > 0 && ix < N - 1 && iy < N - 1 && W.B[iy * N + ix] < 2) {
+                W.iceMap.set(iy * N + ix, W.time + 30);
+              }
             }
           }
         }
       }
 
-      W.magicRings.push({ x: targetX, y: targetY, t: 0, m: 0.75, r: 105, c: spellRingColor });
+      spawnMagicRing(W.magicRings, { x: targetX, y: targetY, m: 0.75, r: 105, c: spellRingColor });
       triggerMagicSurge({
         particles: W.particles,
         magicRings: W.magicRings,
@@ -3938,6 +4126,7 @@ export default function App() {
         dirY: stepY,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       if (!harmonyTriggered) {
         showToast(
@@ -3947,12 +4136,13 @@ export default function App() {
         );
       }
     } else if (spell.id === 'ember_warmth' || spell.id === 'warmth') {
-      W.warmthTimer = activeSeason === 'summer' ? 21 : 16;
+      W.warmthTimer = Math.max(W.warmthTimer, activeSeason === 'summer' ? 21 : 16);
       W.player.st = 100;
+      setStamina(100);
       const ptx = (W.player.x / T) | 0;
       const pty = (W.player.y / T) | 0;
       const meltRad = activeSeason === 'winter' ? 7 : 5;
-      const shatterRad = activeSeason === 'summer' ? 3.2 : 2.6;
+      const shatterRad = activeSeason === 'summer' ? 3.4 : 2.8;
       let melted = 0;
       let shattered = 0;
 
@@ -3969,13 +4159,16 @@ export default function App() {
             shattered++;
             const bx = x * T + T / 2;
             const by = y * T + T / 2;
-            W.magicRings.push({ x: bx, y: by, t: 0, m: 0.65, r: 65, c: spellRingColor });
-            spawnBurst(burstPalette(['#ff6b6b', '#ffd23f', '#b89f8d']), 12, 90, bx, by);
+            const rockGain = Math.round(6 * coinMult);
+            spawnMagicRing(W.magicRings, { x: bx, y: by, m: 0.72, r: 78, c: spellRingColor });
+            spawnBurst(burstPalette(['#ff6b6b', '#ffd23f', '#b89f8d', '#ff9e44']), 16, 110, bx, by);
+            spawnWorldPopup(bx, by - 14, `+${rockGain} 🪙 🪨`, '#ffb86b', 1.1);
           }
         }
       }
 
       if (shattered > 0) {
+        W.dkRevision += 1;
         const rockCoins = Math.round(shattered * 6 * coinMult);
         setCoins((c) => c + rockCoins);
         setTotalCoins((c) => c + rockCoins);
@@ -4009,6 +4202,7 @@ export default function App() {
         y: W.player.y,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       if (!harmonyTriggered) {
         if (shattered > 0) {
@@ -4020,30 +4214,37 @@ export default function App() {
         }
       }
     } else if (spell.id === 'tide_song' || spell.id === 'glide') {
-      W.tideTimer = activeSeason === 'summer' ? 20 : 15;
+      W.tideTimer = Math.max(W.tideTimer, activeSeason === 'summer' ? 20 : 15);
       W.player.dash = 0.36;
       W.player.o2 = 100;
+      setAir(100);
       if (weatherRef.current.currentWeather.id === 'drizzle') {
         weatherRef.current.setWeather('sunny');
       }
 
-      // Surface shoreline pearls / open shells near water!
+      // Open shoreline seashells & wake shallow waves for bonus pearls!
       let pearlCoins = activeSeason === 'spring' ? 2 : 0;
-      const patchLimit = activeSeason === 'summer' ? 3 : 2;
+      let shellsOpened = 0;
+      const patchLimit = activeSeason === 'summer' ? 4 : 3;
       if (!W.player.sky && !W.player.glowdeep && !W.player.moonroad) {
         const ptx = (W.player.x / T) | 0;
         const pty = (W.player.y / T) | 0;
-        let patches = 0;
-        for (let y = Math.max(1, pty - 4); y <= Math.min(N - 2, pty + 4) && patches < patchLimit; y++) {
-          for (let x = Math.max(1, ptx - 4); x <= Math.min(N - 2, ptx + 4) && patches < patchLimit; x++) {
+        for (let y = Math.max(1, pty - 5); y <= Math.min(N - 2, pty + 5) && shellsOpened < patchLimit; y++) {
+          for (let x = Math.max(1, ptx - 5); x <= Math.min(N - 2, ptx + 5) && shellsOpened < patchLimit; x++) {
             const k = y * N + x;
-            if ((W.B[k] < 2 || W.DK[k] === 8) && !W.shakenTiles.has(k) && Math.hypot(x - ptx, y - pty) <= 4) {
+            if ((W.B[k] < 2 || W.DK[k] === 8) && !W.shakenTiles.has(k) && Math.hypot(x - ptx, y - pty) <= 5) {
               W.shakenTiles.add(k);
-              patches++;
+              shellsOpened++;
               const wx = x * T + T / 2;
               const wy = y * T + T / 2;
-              spawnBurst(burstPalette(['#ffffff', '#8fd5ff', '#ffd23f']), 10, 75, wx, wy);
-              pearlCoins += Math.round(4 * coinMult);
+              const pGain = Math.round(4 * coinMult);
+              pearlCoins += pGain;
+              spawnMagicRing(W.magicRings, { x: wx, y: wy, m: 0.85, r: 80, c: '#52d6c6' });
+              spawnBurst(burstPalette(['#ffffff', '#8fd5ff', '#ffd23f']), 14, 90, wx, wy);
+              spawnWorldPopup(wx, wy - 14, `+${pGain} 🪙 🐚 Pearl!`, '#8ff6ff', 1.15);
+              if (W.B[k] < 2) {
+                W.pearls.push({ x: wx, y: wy, got: 0 });
+              }
             }
           }
         }
@@ -4085,18 +4286,21 @@ export default function App() {
         y: W.player.y,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       if (!harmonyTriggered) {
         showToast(
-          pearlCoins > 2
-            ? `${seasonVar?.seasonBadge || '🌊'} ${seasonVar?.variantName || 'Tide Song'}: surfaced pearls (+${pearlCoins} 🪙), +35% speed & infinite O₂!`
+          shellsOpened > 0
+            ? `${seasonVar?.seasonBadge || '🌊'} ${seasonVar?.variantName || 'Tide Song'}: opened ${shellsOpened} pearl shell${shellsOpened > 1 ? 's' : ''} (+${pearlCoins} 🪙), +35% speed & infinite O₂!`
             : `${seasonVar?.seasonBadge || '🌊'} ${seasonVar?.variantName || 'Tide Song'}: ${seasonVar?.bonusSummary || 'infinite air & +35% speed!'}`
         );
       }
     } else if (spell.id === 'bloom') {
-      W.bloomStepTimer = activeSeason === 'spring' ? 18 : 14;
+      W.bloomStepTimer = Math.max(W.bloomStepTimer, activeSeason === 'spring' ? 18 : 14);
       W.player.st = 100;
       W.player.o2 = 100;
+      setStamina(100);
+      setAir(100);
       const plantedCount = plantPermanentWildflowers(activeSeason === 'spring' ? 3 : 2, activeSeason === 'spring' ? 0.65 : 0.55);
       const treeCoins = shakeNearbyFlora(activeSeason === 'summer' ? 175 : 135, activeSeason === 'summer' ? 4 : 3, burstPalette(['#ff9ebb', '#ffd23f', '#7bd88f']));
       const ringCount = activeSeason === 'spring' ? 28 : 20;
@@ -4125,6 +4329,7 @@ export default function App() {
         y: W.player.y,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       sootheNearbyHollows(activeSeason === 'winter' ? 260 : 180);
       if (!harmonyTriggered) {
@@ -4135,11 +4340,18 @@ export default function App() {
         }
       }
     } else if (spell.id === 'cloud_wings' || spell.id === 'wings') {
-      if (W.player.sky) {
-        // Soft Petal Dive Landing when cast while flying!
+      if (W.player.sky && !skipBaseCloudLanding) {
+        // Soft Petal Dive Landing when cast while flying (snap to nearest unblocked surface spot)
+        const safeLand = findNearestSafeWorldPoint(0, W.player.x, W.player.y, false);
+        W.player.x = safeLand.x;
+        W.player.y = safeLand.y;
+        W.player.vx = 0;
+        W.player.vy = 0;
+        W.player.moveTarget = null;
         W.player.sky = false;
+        W.thermalGlideTimer = 0;
         W.player.dash = 0.2;
-        W.magicRings.push({ x: W.player.x, y: W.player.y, t: 0, m: 0.9, r: 175, c: spellRingColor });
+        spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y, m: 0.9, r: 175, c: spellRingColor });
         for (let k = 0; k < 10; k++) {
           const a = (k / 10) * Math.PI * 2;
           W.blooms.push({
@@ -4165,6 +4377,7 @@ export default function App() {
           subtype: 'landing',
           lowQuality: castLowQuality,
           triggerFlash: triggerRealmFlash,
+          triggerShake: triggerCameraShake,
         });
         audio.pop();
         if (!harmonyTriggered) {
@@ -4176,55 +4389,64 @@ export default function App() {
         }
         return;
       }
-      if (activeSeason === 'spring') plantPermanentWildflowers(2, 0.5);
-      if (activeSeason === 'autumn') shakeNearbyFlora(145, 3, burstPalette(['#ff884d', '#ffd23f']));
-      if (activeSeason === 'summer') {
-        W.player.mp = Math.min(100, W.player.mp + 5);
-        setMana(Math.round(W.player.mp));
-      }
-      if (activeSeason === 'winter') {
-        W.frostShieldTimer = Math.max(W.frostShieldTimer, 6);
-      }
-      W.player.sky = true;
-      W.player.dive = false;
-      W.player.dash = activeSeason === 'summer' ? 0.38 : 0.26;
-      spawnWorldPopup(W.player.x, W.player.y - 24, `${seasonVar?.seasonBadge || '☁️'} ${seasonVar?.variantName || 'Cirrus Sky'}`, seasonVar?.orbiterColor || '#e6f6ff');
-      triggerMagicSurge({
-        particles: W.particles,
-        magicRings: W.magicRings,
-        spellId: 'cloud_wings',
-        season: activeSeason,
-        x: W.player.x,
-        y: W.player.y,
-        subtype: 'cast',
-        lowQuality: castLowQuality,
-        triggerFlash: triggerRealmFlash,
-      });
-      if (!harmonyTriggered) {
-        showToast(`${seasonVar?.seasonBadge || '☁️'} ${seasonVar?.variantName || 'Cloud Wings'}: ${seasonVar?.bonusSummary || 'launched skyward into Cirrus Kingdom!'}`);
-      }
-      if (!skyArrivedRef.current) {
-        setSkyArrived(true);
-        triggerCutscene('skyarr');
+      if (!skipBaseCloudLanding) {
+        if (activeSeason === 'spring') plantPermanentWildflowers(2, 0.5);
+        if (activeSeason === 'autumn') shakeNearbyFlora(145, 3, burstPalette(['#ff884d', '#ffd23f']));
+        if (activeSeason === 'summer') {
+          W.player.mp = Math.min(100, W.player.mp + 5);
+          setMana(Math.round(W.player.mp));
+        }
+        if (activeSeason === 'winter') {
+          W.frostShieldTimer = Math.max(W.frostShieldTimer, 6);
+        }
+        W.player.sky = true;
+        W.player.dive = false;
+        W.player.dash = activeSeason === 'summer' ? 0.38 : 0.26;
+        spawnWorldPopup(W.player.x, W.player.y - 24, `${seasonVar?.seasonBadge || '☁️'} ${seasonVar?.variantName || 'Cirrus Sky'}`, seasonVar?.orbiterColor || '#e6f6ff');
+        triggerMagicSurge({
+          particles: W.particles,
+          magicRings: W.magicRings,
+          spellId: 'cloud_wings',
+          season: activeSeason,
+          x: W.player.x,
+          y: W.player.y,
+          subtype: 'cast',
+          lowQuality: castLowQuality,
+          triggerFlash: triggerRealmFlash,
+          triggerShake: triggerCameraShake,
+        });
+        if (!harmonyTriggered) {
+          showToast(`${seasonVar?.seasonBadge || '☁️'} ${seasonVar?.variantName || 'Cloud Wings'}: ${seasonVar?.bonusSummary || 'launched skyward into Cirrus Kingdom!'}`);
+        }
+        if (!skyArrivedRef.current) {
+          setSkyArrived(true);
+          triggerCutscene('skyarr');
+        }
       }
     } else if (spell.id === 'hush_hug' || spell.id === 'hug') {
-      W.hugTimer = activeSeason === 'summer' ? 16 : 12;
+      W.hugTimer = Math.max(W.hugTimer, activeSeason === 'summer' ? 16 : 12);
       const soothedCount = sootheNearbyHollows(activeSeason === 'winter' ? 360 : 280);
       const drawRadius = activeSeason === 'spring' ? 350 : 300;
       let huggedFriends = 0;
       let cheerBonus = 0;
+      let firstFriendX = W.player.x;
+      let firstFriendY = W.player.y;
       W.npcs.forEach((n) => {
         if (!n.tree && isNpcOnPlayerLayer(n, W.player) && Math.hypot(n.x - W.player.x, n.y - W.player.y) < drawRadius) {
           // Gently draw nearby NPC half-way closer to share a cozy wave & cheer
           n.tx = n.x + (W.player.x - n.x) * 0.45;
           n.ty = n.y + (W.player.y - n.y) * 0.45;
           n.wt = 4.5;
-          if (!n.say && Math.random() < 0.75) {
+          if (!n.say && Math.random() < 0.8) {
             cheerBonus += 1;
           }
           n.say = activeSeason === 'autumn' ? '🍵 Warm tea & hugs!' : activeSeason === 'winter' ? '🔥 Cozy hearth hug!' : '💖 Warm hug!';
           n.sayT = 3.8;
           n.wave = 1;
+          if (huggedFriends === 0) {
+            firstFriendX = n.x;
+            firstFriendY = n.y;
+          }
           huggedFriends++;
           spawnBurst(burstPalette(['#ff7aa8', '#ffb3c7', '#ffd23f']), 6, 55, n.x, n.y - 6);
         }
@@ -4240,6 +4462,7 @@ export default function App() {
         const giftCoins = Math.round((Math.min(6, cheerBonus * 2) + autumnTreat) * coinMult);
         setCoins((c) => c + giftCoins);
         setTotalCoins((c) => c + giftCoins);
+        spawnWorldPopup(firstFriendX, firstFriendY - 22, `+${giftCoins} 🪙 💖`, '#ff9ebb', 1.15);
       }
       triggerMagicSurge({
         particles: W.particles,
@@ -4250,6 +4473,7 @@ export default function App() {
         y: W.player.y,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       if (!harmonyTriggered) {
         if (soothedCount > 0) {
@@ -4329,6 +4553,7 @@ export default function App() {
         dirY: fy,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       if (!harmonyTriggered) {
         if (waterFrozen > 0) {
@@ -4354,6 +4579,7 @@ export default function App() {
         y: W.player.y,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       if (!harmonyTriggered) {
         showToast(
@@ -4365,7 +4591,7 @@ export default function App() {
     } else if (spell.id === 'echo_call' || spell.id === 'echo') {
       W.dawnChimesCount += 1;
       W.echoTimer = activeSeason === 'summer' ? 20 : 15;
-      W.magicRings.push({ x: W.player.x, y: W.player.y, t: 0, m: 1.35, r: 340, c: spellRingColor });
+      spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y, m: 1.35, r: 340, c: spellRingColor });
       sootheNearbyHollows(activeSeason === 'winter' ? 340 : 250);
       const foundLore = discoverNearbyMemoryAndDiary(activeSeason === 'autumn' ? 230 : 185);
       const waveReach = activeSeason === 'spring' ? 360 : 300;
@@ -4385,6 +4611,7 @@ export default function App() {
         y: W.player.y,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       if (!harmonyTriggered) {
         if (foundLore.length > 0) {
@@ -4413,6 +4640,7 @@ export default function App() {
         y: W.player.y,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       const moonTeaTown = W.towns.find((t) => t.n === 'Moon’s Tea House');
       if (moonTeaTown && !moonTeaTown.vis) moonTeaTown.vis = 1;
@@ -4476,6 +4704,7 @@ export default function App() {
         y: W.player.y,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       if (currentChapterRef.current >= 12 && !lullabyDoneRef.current) {
         const finalePartner = W.npcs.find(
@@ -4504,6 +4733,7 @@ export default function App() {
         companionY: W.companionPos.y,
         lowQuality: castLowQuality,
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       showToast('🎶 Duet Harmony: harmonizing with your companion!');
       audio.harmonyChime?.();
@@ -4531,8 +4761,12 @@ export default function App() {
       W.player.mp -= cost;
       setMana(Math.round(W.player.mp));
 
-      const destX = town.x * T + T / 2;
-      const destY = (town.n === 'Mochi Hamlet' ? town.y + 2 : town.y) * T + T / 2;
+      const rawDestX = town.x * T + T / 2;
+      const rawDestY = (town.n === 'Mochi Hamlet' ? town.y + 2 : town.y) * T + T / 2;
+      const townLayer = (town.w === 1 || town.w === 2 || town.w === 3 || town.w === 4 ? town.w : 0) as 0 | 1 | 2 | 3 | 4;
+      const safeTownPt = findNearestSafeWorldPoint(townLayer, rawDestX, rawDestY, townLayer === 0);
+      const destX = safeTownPt.x;
+      const destY = safeTownPt.y;
 
       W.player.x = destX;
       W.player.y = destY;
@@ -4557,7 +4791,7 @@ export default function App() {
       W.player.st = Math.min(100, W.player.st + 15);
       setStamina(Math.round(W.player.st));
       snapCamera();
-      W.magicRings.push({ x: destX, y: destY, t: 0, m: 1.0, r: 170, c: warpVar?.ringColor || '#b48cff' });
+      spawnMagicRing(W.magicRings, { x: destX, y: destY, m: 1.0, r: 170, c: warpVar?.ringColor || '#b48cff' });
       triggerMagicSurge({
         particles: W.particles,
         magicRings: W.magicRings,
@@ -4568,6 +4802,7 @@ export default function App() {
         subtype: 'arrival',
         lowQuality: Boolean(settingsRef.current.low) || Boolean(deviceRef.current?.isPhone),
         triggerFlash: triggerRealmFlash,
+        triggerShake: triggerCameraShake,
       });
       spawnWorldPopup(destX, destY - 26, `${warpVar?.seasonBadge || '🌀'} ${town.n}`, warpVar?.orbiterColor || '#e8dcff', 1.25);
       if (town.w === 3) setVisitedGlowdeep(true);
@@ -4589,11 +4824,19 @@ export default function App() {
       // Arrival Starway Chorus harmony check if Star Sense was just cast
       const now = performance.now() / 1000;
       if (lastCastSpellRef.current && now - lastCastSpellRef.current.time < 4.5 && lastCastSpellRef.current.id === 'Star Sense') {
-        W.starSenseTimer = Math.max(W.starSenseTimer, 22);
+        W.starSenseTimer = Math.max(W.starSenseTimer, 28);
         triggeredHarmoniesRef.current.add('Starway Chorus');
         checkAchFnRef.current();
         audio.harmonyChime('Starway Chorus');
-        showToast(`🎶 DUET HARMONY: Starway Chorus at ${town.n}! ✨`);
+        spawnMagicRing(W.magicRings, { x: destX, y: destY, m: 1.35, r: 320, c: '#ffe875' });
+        spawnPooledBurst(W.particles, ['#ffd23f', '#8fd5ff', '#ff9ebb'], 24, 115, destX, destY, {
+          life: 1.15,
+          shape: 'spark',
+          lowQuality: Boolean(settingsRef.current.low) || Boolean(deviceRef.current?.isPhone),
+        });
+        triggerCameraShake(5.5, 0.34, 26);
+        spawnWorldPopup(destX, destY - 46, '🎶 Starway Chorus! ✨', '#ffe875', 1.3);
+        showToast(`🎶 DUET HARMONY: Starway Chorus at ${town.n}! Radiant beacons reveal nearby treasures! ✨`);
       } else {
         showToast(`${warpVar?.seasonBadge || '🌀'} ${warpVar?.variantName || 'Song of Teleportation'} to ${town.n}!`);
       }
@@ -4601,7 +4844,7 @@ export default function App() {
 
       setActiveModal('none');
     },
-    [showToast, snapCamera, spawnWorldPopup, triggerRealmFlash]
+    [findNearestSafeWorldPoint, showToast, snapCamera, spawnWorldPopup, triggerCameraShake, triggerRealmFlash]
   );
 
   // Soothe Hollows helper (strictly matched to player's current layer)
@@ -4622,11 +4865,12 @@ export default function App() {
           setTotalCoins((c) => c + 15);
           spawnWorldPopup(h.x, h.y - 24, `💖 ${h.name} Soothed! +15 🪙`, '#ff9ebb', 1.3);
           for (let p = 0; p < 12; p++) {
-            W.particles.push({
+            spawnPooledParticle(W.particles, {
               x: h.x,
               y: h.y,
               vx: (Math.random() - 0.5) * 60,
               vy: -20 - Math.random() * 50,
+              shape: 'heart',
               l: 1.0,
               c: '#ff7aa8',
             });
@@ -4652,167 +4896,718 @@ export default function App() {
   };
   cycleMusicFnRef.current = cycleMusic;
 
-  // Cutscene Trigger
-  const triggerCutscene = (sceneKey: string) => {
+  // Cutscene Trigger & FIFO Queue so back-to-back milestones never drop cutscenes
+  const triggerCutscene = useCallback((sceneKey: string) => {
     const slides = CUTSCENE_MOVIES[sceneKey];
-    if (slides) {
-      setActiveCutscene(slides);
-      setUnlockedCutscenes((prev) => (prev.includes(sceneKey) ? prev : [...prev, sceneKey]));
-    }
-  };
+    if (!slides) return;
 
-  // Select Save Slot
-  const handleSelectSlot = (slotNum: number) => {
-    setCurrentSlot(slotNum);
-    currentSlotRef.current = slotNum;
-    try {
-      localStorage.setItem(LOCAL_STORAGE_ACTIVE_SLOT_KEY, String(slotNum));
-    } catch {}
-    const key = LOCAL_STORAGE_SAVE_PREFIX + slotNum;
-    const saved = localStorage.getItem(key) || (slotNum === 1 ? localStorage.getItem(LOCAL_STORAGE_LEGACY_SAVE) : null);
-    if (saved) {
-      try {
-        const data = JSON.parse(saved);
-        const savedN = typeof data.worldN === 'number' && data.worldN > 0 ? data.worldN : 260;
-        const coordScale = N / savedN;
-        if (data.L) setPlayerLook((prev) => ({ ...prev, ...data.L }));
-        if (typeof data.coins === 'number') setCoins(data.coins);
-        if (typeof data.tot === 'number') setTotalCoins(data.tot);
-        if (typeof data.ch === 'number') {
-          setCurrentChapter(data.ch);
-          currentChapterRef.current = data.ch;
-          if (worldRef.current.moonGatePortal) worldRef.current.moonGatePortal.open = data.ch >= 7;
-          if (worldRef.current.glowdeepPortal) worldRef.current.glowdeepPortal.open = data.ch >= 9;
+    if (!unlockedCutscenesRef.current.includes(sceneKey)) {
+      const nextUnlocked = [...unlockedCutscenesRef.current, sceneKey];
+      unlockedCutscenesRef.current = nextUnlocked;
+      setUnlockedCutscenes(nextUnlocked);
+    }
+
+    if (activeCutsceneRef.current !== null) {
+      if (
+        activeCutsceneKeyRef.current !== sceneKey &&
+        !cutsceneQueueRef.current.includes(sceneKey)
+      ) {
+        cutsceneQueueRef.current.push(sceneKey);
+      }
+      return;
+    }
+
+    activeCutsceneKeyRef.current = sceneKey;
+    setActiveCutsceneKey(sceneKey);
+    activeCutsceneRef.current = slides;
+    setActiveCutscene(slides);
+  }, []);
+
+  const finishActiveCutscene = useCallback(() => {
+    const finishedKey = activeCutsceneKeyRef.current;
+    if (
+      finishedKey === 'intro' &&
+      currentChapterRef.current === 1 &&
+      !unlockedCutscenesRef.current.includes('wake')
+    ) {
+      const nextUnlocked = [...unlockedCutscenesRef.current, 'wake'];
+      unlockedCutscenesRef.current = nextUnlocked;
+      setUnlockedCutscenes(nextUnlocked);
+      showToast('🌟 Chapter 1: Morning After — Talk to Pip near the Lantern Tree!');
+    }
+
+    while (cutsceneQueueRef.current.length > 0) {
+      const nextKey = cutsceneQueueRef.current.shift()!;
+      const nextSlides = CUTSCENE_MOVIES[nextKey];
+      if (nextSlides) {
+        activeCutsceneKeyRef.current = nextKey;
+        setActiveCutsceneKey(nextKey);
+        activeCutsceneRef.current = nextSlides;
+        setActiveCutscene(nextSlides);
+        return;
+      }
+    }
+
+    activeCutsceneKeyRef.current = null;
+    setActiveCutsceneKey(null);
+    activeCutsceneRef.current = null;
+    setActiveCutscene(null);
+    evalStoryFnRef.current();
+    checkAchFnRef.current();
+  }, [showToast]);
+  finishCutsceneFnRef.current = finishActiveCutscene;
+
+  // Reset all React states, world entities, timers, and module-level discovery flags to a clean slate
+  const resetGameStateToFresh = useCallback(
+    (options?: { resetAppearance?: boolean }) => {
+      const W = worldRef.current;
+      const shouldResetLook = options?.resetAppearance !== false;
+
+      if (shouldResetLook) {
+        const freshLook = createDefaultPlayerLook();
+        playerLookRef.current = freshLook;
+        setPlayerLook(freshLook);
+      }
+
+      coinsRef.current = 0;
+      totalCoinsRef.current = 0;
+      currentChapterRef.current = 1;
+      lullabyDoneRef.current = false;
+      skyStoryDoneRef.current = false;
+      skyArrivedRef.current = false;
+      visitedGlowdeepRef.current = false;
+      visitedMoonRoadRef.current = false;
+      upgradesRef.current = {};
+      unlockedAchievementsRef.current = [];
+      unlockedCutscenesRef.current = [];
+      loreEntriesRef.current = [];
+      fishLogRef.current = {};
+      townProsperityRef.current = {};
+      completedTownRequestsRef.current = [];
+      const freshCottage = createDefaultCottageState();
+      cottageStateRef.current = freshCottage;
+      const freshHamlet = createDefaultHamletResidents();
+      hamletResidentsRef.current = freshHamlet;
+
+      setCoins(0);
+      setTotalCoins(0);
+      setCurrentChapter(1);
+      setLullabyDone(false);
+      setSkyStoryDone(false);
+      setSkyArrived(false);
+      setVisitedGlowdeep(false);
+      setVisitedMoonRoad(false);
+      setUpgrades({});
+      setUnlockedAchievements([]);
+      setUnlockedCutscenes([]);
+      cutsceneQueueRef.current = [];
+      activeCutsceneKeyRef.current = null;
+      setActiveCutsceneKey(null);
+      activeCutsceneRef.current = null;
+      setActiveCutscene(null);
+      setQuestRevision((r) => r + 1);
+      moveTargetStallRef.current = { timer: 0, lastX: 0, lastY: 0 };
+      setLoreEntries([]);
+      setFishLog({});
+      setTownProsperity({});
+      setCompletedTownRequests([]);
+      setCottageState(freshCottage);
+      setHamletResidents(freshHamlet);
+      setActiveNpc(null);
+      activeNpcRef.current = null;
+      setNearbyTownAction(null);
+      nearbyTownActionRef.current = null;
+      nearbyTownWorldTargetRef.current = null;
+      setActiveHouseInteractable(null);
+      setSelectedSpellIdx(0);
+      setMilestoneQueue([]);
+      setCurrentBiomeName('Sunny Meadow');
+      setStamina(100);
+      setAir(100);
+      setMana(100);
+
+      triggeredHarmoniesRef.current.clear();
+      lastCastSpellRef.current = null;
+
+      // Reset world decor if wildflowers were blossomed
+      if (initialDkRef.current && initialDkRef.current.length === W.DK.length) {
+        W.DK.set(initialDkRef.current);
+        W.dkRevision += 1;
+      }
+
+      // Reset collectibles
+      W.stars.forEach((s) => { s.got = 0; });
+      W.pearls.forEach((p) => { p.got = 0; });
+      W.feathers.forEach((f) => { f.got = 0; });
+      W.rings.forEach((r) => { r.got = 0; });
+      W.glowSpores.forEach((s) => { s.got = 0; });
+      W.moonNotes.forEach((n) => { n.got = 0; });
+
+      // Reset quests cleanly & preserve live QuestItem.q links
+      W.quests = INITIAL_QUESTS.map((q) => ({ ...q }));
+      W.questItems.forEach((qi) => {
+        qi.got = 0;
+        const matched = W.quests.find((q) => q.t === qi.q.t);
+        if (matched) qi.q = matched;
+      });
+
+      // Reset towns, NPCs, hollows, portals
+      W.towns.forEach((t) => {
+        t.vis = t.n === 'Mochi Hamlet' || t.n === 'Willowbrook' ? 1 : 0;
+        t.prosperity = 1;
+      });
+      W.npcs.forEach((n) => {
+        n.fr = false;
+        n.met = Boolean(n.tree);
+        n.h = n.t.map(() => 0);
+        n.hist = [];
+        n.sayT = 0;
+        n.say = undefined;
+        n.wave = 0;
+        n.mv = 0;
+        n.go = 0;
+        n.x = n.hx;
+        n.y = n.hy;
+        n.tx = n.hx;
+        n.ty = n.hy;
+      });
+      W.hollows.forEach((h) => {
+        h.soothed = false;
+        h.bloomT = 0;
+      });
+      if (W.moonGatePortal) W.moonGatePortal.open = false;
+      if (W.glowdeepPortal) W.glowdeepPortal.open = false;
+
+      // Clear transient effects, fog of war, spells & lore discovery state
+      W.iceMap.clear();
+      W.lilyMap.clear();
+      W.hotSprings = [];
+      W.blooms = [];
+      clearMagicPools(W.particles, W.magicRings);
+      W.screenShake.intensity = 0;
+      W.screenShake.duration = 0;
+      W.screenShake.elapsed = 0;
+      W.screenShake.offsetX = 0;
+      W.screenShake.offsetY = 0;
+      W.worldPopups = [];
+      W.dashGhosts = [];
+      W.exploredMask.fill(0);
+      W.starSenseTimer = 0;
+      W.moonPullTimer = 0;
+      W.warmthTimer = 0;
+      W.tideTimer = 0;
+      W.echoTimer = 0;
+      W.dreamwalkTimer = 0;
+      W.dawnTimer = 0;
+      W.frostShieldTimer = 0;
+      W.bloomStepTimer = 0;
+      W.hugTimer = 0;
+      W.frostGlowTimer = 0;
+      W.thermalGlideTimer = 0;
+      W.echoMagnetTimer = 0;
+      W.echoMagnetTick = 0;
+      W.bloomStepCooldown = 0;
+      W.marketSpeedTimer = 0;
+      W.marketDiveTimer = 0;
+      W.marketWarmthTimer = 0;
+      W.marketLuckTimer = 0;
+      W.magicCooldown = 0;
+      W.dawnChimesCount = 0;
+      W.shakenTiles.clear();
+      W.discoveredEchoIds.clear();
+      W.discoveredDiaryPages.clear();
+      W.realmFlash = { alpha: 0, color: '#ffffff' };
+      W.lastSaveTime = W.time;
+
+      // Reset module-level story flags
+      VERSES_OF_REVEILLE.forEach((v) => { v.unlocked = false; });
+      MEMORY_ECHOES.forEach((e) => { e.got = false; });
+      MOON_DIARY_PAGES.forEach((p) => { p.found = false; });
+
+      // Reset player position, vitals & camera to home stoop
+      const spawn = baseHomeSpawnRef.current;
+      W.player.x = spawn.x;
+      W.player.y = spawn.y;
+      W.player.vx = 0;
+      W.player.vy = 0;
+      W.player.dx = 0;
+      W.player.dy = 1;
+      W.player.face = 1;
+      W.player.st = 100;
+      W.player.o2 = 100;
+      W.player.mp = 100;
+      W.player.dash = 0;
+      W.player.cd = 0;
+      W.player.sky = false;
+      W.player.dive = false;
+      W.player.swim = false;
+      W.player.isSprinting = false;
+      W.player.z = 0;
+      W.player.vz = 0;
+      W.player.jumpCount = 0;
+      W.player.coyoteTimer = 0;
+      W.player.wasSwimming = false;
+      W.player.glowdeep = false;
+      W.player.moonroad = false;
+      W.player.house = false;
+      W.player.isMoving = false;
+      W.player.moveTarget = null;
+      W.companionPos.x = spawn.x - 26;
+      W.companionPos.y = spawn.y + 4;
+      W.keys.clear();
+      W.touchJoystick.active = false;
+
+      hudSyncRef.current = {
+        ...hudSyncRef.current,
+        st: 100,
+        o2: 100,
+        mp: 100,
+        biome: 'Sunny Meadow',
+        npc: null,
+        houseItemId: null,
+        townActionKey: '',
+        pxQuant: -999,
+        pyQuant: -999,
+        layerKey: '',
+      };
+
+      setPlayerPos({
+        x: spawn.x,
+        y: spawn.y,
+        sky: false,
+        dive: false,
+        swim: false,
+        glowdeep: false,
+        moonroad: false,
+        house: false,
+      });
+      snapCamera();
+    },
+    [snapCamera]
+  );
+
+  // Serialize live progress & world state into a portable per-slot snapshot
+  const serializeSaveSnapshot = useCallback(() => {
+    const W = worldRef.current;
+    return {
+      worldN: N,
+      L: playerLookRef.current,
+      coins: coinsRef.current,
+      tot: totalCoinsRef.current,
+      ch: currentChapterRef.current,
+      done: lullabyDoneRef.current,
+      skd: skyStoryDoneRef.current,
+      skArr: skyArrivedRef.current,
+      vg: visitedGlowdeepRef.current,
+      vm: visitedMoonRoadRef.current,
+      lore: loreEntriesRef.current,
+      ach: unlockedAchievementsRef.current,
+      mv: unlockedCutscenesRef.current,
+      ug: upgradesRef.current,
+      fs: fishLogRef.current,
+      cottage: cottageStateRef.current,
+      hamlet: hamletResidentsRef.current,
+      townProsperity: townProsperityRef.current,
+      completedTownRequests: completedTownRequestsRef.current,
+      visTowns: W.towns.filter((t) => t.vis === 1).map((t) => t.n),
+      qu: W.quests.map((q) => ({ t: q.t, st: q.st, c: q.c })),
+      fr: W.npcs.filter((n) => n.fr).map((n) => n.n),
+      npcState: W.npcs
+        .filter((n) => n.fr || n.met || n.h.some(Boolean) || (n.hist && n.hist.length > 0))
+        .map((n) => ({
+          n: n.n,
+          fr: Boolean(n.fr),
+          met: Boolean(n.met),
+          h: n.h,
+          hist: n.hist || [],
+        })),
+      starsGotIdx: W.stars.reduce<number[]>((acc, s, idx) => (s.got ? [...acc, idx] : acc), []),
+      pearlsGotIdx: W.pearls.reduce<number[]>((acc, p, idx) => (p.got ? [...acc, idx] : acc), []),
+      feathersGotIdx: W.feathers.reduce<number[]>((acc, f, idx) => (f.got ? [...acc, idx] : acc), []),
+      ringsGotIdx: W.rings.reduce<number[]>((acc, r, idx) => (r.got ? [...acc, idx] : acc), []),
+      sporesGotIdx: W.glowSpores.reduce<number[]>((acc, s, idx) => (s.got ? [...acc, idx] : acc), []),
+      notesGotIdx: W.moonNotes.reduce<number[]>((acc, n, idx) => (n.got ? [...acc, idx] : acc), []),
+      questItemsGotIdx: W.questItems.reduce<number[]>((acc, qi, idx) => (qi.got ? [...acc, idx] : acc), []),
+      hollowsSoothedIds: W.hollows.filter((h) => h.soothed).map((h) => h.id),
+      echoIds: Array.from(W.discoveredEchoIds),
+      diaryPages: Array.from(W.discoveredDiaryPages),
+      harmonies: Array.from(triggeredHarmoniesRef.current),
+      shakenTiles: Array.from(W.shakenTiles),
+      chimes: W.dawnChimesCount,
+      pl: {
+        st: W.player.st,
+        o2: W.player.o2,
+        mp: W.player.mp,
+      },
+      pos: {
+        x: W.player.x,
+        y: W.player.y,
+        sky: W.player.sky,
+        dive: W.player.dive,
+        glowdeep: W.player.glowdeep,
+        moonroad: W.player.moonroad,
+        house: W.player.house,
+      },
+    };
+  }, []);
+
+  // Reset to clean slate and overlay a parsed save payload strictly for one slot
+  const applySaveSnapshotToState = useCallback(
+    (data: any) => {
+      resetGameStateToFresh({ resetAppearance: true });
+      if (!data || typeof data !== 'object') return;
+
+      const W = worldRef.current;
+      const savedN = typeof data.worldN === 'number' && data.worldN > 0 ? data.worldN : 260;
+      const coordScale = N / savedN;
+
+      if (data.L && typeof data.L === 'object') {
+        const mergedLook = { ...createDefaultPlayerLook(), ...data.L };
+        playerLookRef.current = mergedLook;
+        setPlayerLook(mergedLook);
+      }
+      if (typeof data.coins === 'number') {
+        coinsRef.current = data.coins;
+        setCoins(data.coins);
+      }
+      if (typeof data.tot === 'number') {
+        totalCoinsRef.current = data.tot;
+        setTotalCoins(data.tot);
+      }
+      if (typeof data.ch === 'number') {
+        currentChapterRef.current = data.ch;
+        setCurrentChapter(data.ch);
+        if (W.moonGatePortal) W.moonGatePortal.open = data.ch >= 7;
+        if (W.glowdeepPortal) W.glowdeepPortal.open = data.ch >= 9;
+      }
+      if (typeof data.chimes === 'number') W.dawnChimesCount = data.chimes;
+      if (data.done !== undefined) {
+        const doneVal = Boolean(data.done);
+        lullabyDoneRef.current = doneVal;
+        setLullabyDone(doneVal);
+      }
+      if (data.skd !== undefined) {
+        const skdVal = Boolean(data.skd);
+        skyStoryDoneRef.current = skdVal;
+        setSkyStoryDone(skdVal);
+      }
+      if (data.skArr !== undefined) {
+        const skArrVal = Boolean(data.skArr);
+        skyArrivedRef.current = skArrVal;
+        setSkyArrived(skArrVal);
+      }
+      if (data.vg) {
+        visitedGlowdeepRef.current = true;
+        setVisitedGlowdeep(true);
+      }
+      if (data.vm) {
+        visitedMoonRoadRef.current = true;
+        setVisitedMoonRoad(true);
+      }
+      if (Array.isArray(data.lore)) {
+        loreEntriesRef.current = data.lore;
+        setLoreEntries(data.lore);
+        VERSES_OF_REVEILLE.forEach((v) => {
+          v.unlocked = data.lore.some((l: LoreEntry) => l.id === `verse-${v.num}`);
+        });
+      }
+      if (Array.isArray(data.ach)) {
+        unlockedAchievementsRef.current = data.ach;
+        setUnlockedAchievements(data.ach);
+      }
+      if (Array.isArray(data.mv)) {
+        unlockedCutscenesRef.current = data.mv;
+        setUnlockedCutscenes(data.mv);
+      }
+      if (data.ug && typeof data.ug === 'object') {
+        upgradesRef.current = data.ug;
+        setUpgrades(data.ug);
+      }
+      if (data.fs && typeof data.fs === 'object') {
+        fishLogRef.current = data.fs;
+        setFishLog(data.fs);
+      }
+      if (data.cottage && typeof data.cottage === 'object') {
+        cottageStateRef.current = data.cottage;
+        setCottageState(data.cottage);
+      }
+      if (Array.isArray(data.hamlet)) {
+        const scaledHamlet =
+          coordScale !== 1
+            ? data.hamlet.map((r: HamletResident) => ({
+                ...r,
+                houseX: Math.round(r.houseX * coordScale),
+                houseY: Math.round(r.houseY * coordScale),
+              }))
+            : data.hamlet;
+        hamletResidentsRef.current = scaledHamlet;
+        setHamletResidents(scaledHamlet);
+      }
+      if (data.townProsperity && typeof data.townProsperity === 'object') {
+        townProsperityRef.current = data.townProsperity;
+        setTownProsperity(data.townProsperity);
+        W.towns.forEach((tw) => {
+          if (typeof data.townProsperity[tw.n] === 'number') tw.prosperity = data.townProsperity[tw.n];
+        });
+      }
+      if (Array.isArray(data.completedTownRequests)) {
+        completedTownRequestsRef.current = data.completedTownRequests;
+        setCompletedTownRequests(data.completedTownRequests);
+      }
+      if (Array.isArray(data.visTowns)) {
+        W.towns.forEach((t) => {
+          if (data.visTowns.includes(t.n)) t.vis = 1;
+        });
+      }
+      if (Array.isArray(data.qu)) {
+        data.qu.forEach((sq: { t: string; st: number; c: number }) => {
+          const q = W.quests.find((item) => item.t === sq.t);
+          if (q) {
+            q.st = sq.st;
+            q.c = sq.c;
+          }
+        });
+      }
+      setQuestRevision((r) => r + 1);
+      if (Array.isArray(data.npcState)) {
+        data.npcState.forEach((sn: { n: string; fr?: boolean; met?: boolean; h?: number[]; hist?: any[] }) => {
+          const npc = W.npcs.find((item) => item.n === sn.n);
+          if (!npc) return;
+          if (sn.fr !== undefined) npc.fr = Boolean(sn.fr);
+          if (sn.met !== undefined) npc.met = Boolean(sn.met);
+          if (Array.isArray(sn.h)) {
+            npc.h = npc.h.map((v, idx) => (sn.h && sn.h[idx] !== undefined ? sn.h[idx] : v));
+          }
+          if (Array.isArray(sn.hist)) npc.hist = sn.hist;
+        });
+      } else if (Array.isArray(data.fr)) {
+        W.npcs.forEach((n) => {
+          if (data.fr.includes(n.n)) {
+            n.fr = true;
+            n.met = true;
+            n.h = n.h.map(() => 1);
+          }
+        });
+      }
+
+      if (Array.isArray(data.starsGotIdx)) {
+        data.starsGotIdx.forEach((idx: number) => {
+          if (W.stars[idx]) W.stars[idx].got = 1;
+        });
+      }
+      if (Array.isArray(data.pearlsGotIdx)) {
+        data.pearlsGotIdx.forEach((idx: number) => {
+          if (W.pearls[idx]) W.pearls[idx].got = 1;
+        });
+      }
+      if (Array.isArray(data.feathersGotIdx)) {
+        data.feathersGotIdx.forEach((idx: number) => {
+          if (W.feathers[idx]) W.feathers[idx].got = 1;
+        });
+      }
+      if (Array.isArray(data.ringsGotIdx)) {
+        data.ringsGotIdx.forEach((idx: number) => {
+          if (W.rings[idx]) W.rings[idx].got = 1;
+        });
+      }
+      if (Array.isArray(data.sporesGotIdx)) {
+        data.sporesGotIdx.forEach((idx: number) => {
+          if (W.glowSpores[idx]) W.glowSpores[idx].got = 1;
+        });
+      }
+      if (Array.isArray(data.notesGotIdx)) {
+        data.notesGotIdx.forEach((idx: number) => {
+          if (W.moonNotes[idx]) W.moonNotes[idx].got = 1;
+        });
+      }
+      if (Array.isArray(data.questItemsGotIdx)) {
+        data.questItemsGotIdx.forEach((idx: number) => {
+          if (W.questItems[idx]) W.questItems[idx].got = 1;
+        });
+      }
+      if (Array.isArray(data.hollowsSoothedIds)) {
+        W.hollows.forEach((h) => {
+          if (data.hollowsSoothedIds.includes(h.id)) h.soothed = true;
+        });
+      }
+      if (Array.isArray(data.echoIds)) {
+        data.echoIds.forEach((id: string) => W.discoveredEchoIds.add(id));
+        MEMORY_ECHOES.forEach((e) => { e.got = W.discoveredEchoIds.has(e.id); });
+      }
+      if (Array.isArray(data.diaryPages)) {
+        data.diaryPages.forEach((pg: number) => W.discoveredDiaryPages.add(pg));
+        MOON_DIARY_PAGES.forEach((p) => { p.found = W.discoveredDiaryPages.has(p.page); });
+      }
+      if (Array.isArray(data.harmonies)) {
+        data.harmonies.forEach((hm: string) => triggeredHarmoniesRef.current.add(hm));
+      }
+      if (Array.isArray(data.shakenTiles)) {
+        data.shakenTiles.forEach((tileIdx: number) => W.shakenTiles.add(tileIdx));
+      }
+
+      if (data.pl && typeof data.pl === 'object') {
+        if (typeof data.pl.st === 'number') {
+          W.player.st = data.pl.st;
+          setStamina(Math.round(data.pl.st));
         }
-        if (typeof data.chimes === 'number') worldRef.current.dawnChimesCount = data.chimes;
-        if (data.done !== undefined) setLullabyDone(Boolean(data.done));
-        if (data.skd !== undefined) setSkyStoryDone(Boolean(data.skd));
-        if (data.vg) setVisitedGlowdeep(true);
-        if (data.vm) setVisitedMoonRoad(true);
-        if (Array.isArray(data.lore)) setLoreEntries(data.lore);
-        if (Array.isArray(data.ach)) setUnlockedAchievements(data.ach);
-        if (Array.isArray(data.mv)) setUnlockedCutscenes(data.mv);
-        if (data.ug) setUpgrades(data.ug);
-        if (data.fs) setFishLog(data.fs);
-        if (data.cottage) setCottageState(data.cottage);
-        if (Array.isArray(data.hamlet)) {
-          setHamletResidents(
-            coordScale !== 1
-              ? data.hamlet.map((r: HamletResident) => ({
-                  ...r,
-                  houseX: Math.round(r.houseX * coordScale),
-                  houseY: Math.round(r.houseY * coordScale),
-                }))
-              : data.hamlet
-          );
+        if (typeof data.pl.o2 === 'number') {
+          W.player.o2 = data.pl.o2;
+          setAir(Math.round(data.pl.o2));
         }
-        if (data.townProsperity && typeof data.townProsperity === 'object') {
-          setTownProsperity(data.townProsperity);
-          worldRef.current.towns.forEach((tw) => {
-            if (typeof data.townProsperity[tw.n] === 'number') tw.prosperity = data.townProsperity[tw.n];
-          });
-        } else {
-          setTownProsperity({});
-          worldRef.current.towns.forEach((tw) => {
-            tw.prosperity = 1;
-          });
+        if (typeof data.pl.mp === 'number') {
+          W.player.mp = data.pl.mp;
+          setMana(Math.round(data.pl.mp));
         }
-        if (Array.isArray(data.completedTownRequests)) setCompletedTownRequests(data.completedTownRequests);
-        else setCompletedTownRequests([]);
-        if (Array.isArray(data.visTowns)) {
-          worldRef.current.towns.forEach((t) => {
-            if (data.visTowns.includes(t.n)) t.vis = 1;
-          });
-        }
-        if (Array.isArray(data.qu)) {
-          data.qu.forEach((sq: { t: string; st: number; c: number }) => {
-            const q = worldRef.current.quests.find((item) => item.t === sq.t);
-            if (q) {
-              q.st = sq.st;
-              q.c = sq.c;
-            }
-          });
-        }
-        if (Array.isArray(data.fr)) {
-          worldRef.current.npcs.forEach((n) => {
-            if (data.fr.includes(n.n)) {
-              n.fr = true;
-              n.h = n.h.map(() => 1);
-            }
-          });
-        }
-        if (data.pos && typeof data.pos.x === 'number' && typeof data.pos.y === 'number') {
-          const W = worldRef.current;
-          const sky = Boolean(data.pos.sky);
-          const dive = Boolean(data.pos.dive);
-          const glowdeep = Boolean(data.pos.glowdeep);
-          const moonroad = Boolean(data.pos.moonroad);
-          const house = Boolean(data.pos.house);
-          let px = Math.max(T * 2, Math.min((N - 2) * T, data.pos.x * coordScale));
-          let py = Math.max(T * 2, Math.min((N - 2) * T, data.pos.y * coordScale));
-          if (coordScale !== 1 && !house) {
-            const tx = Math.max(2, Math.min(N - 3, (px / T) | 0));
-            const ty = Math.max(2, Math.min(N - 3, (py / T) | 0));
-            if (!sky && !dive && !glowdeep && !moonroad && W.B[ty * N + tx] < 2) {
-              let bestD = 1e9;
-              let bestX = WORLD_ANCHORS.towns.mochiHamlet.tx * T + T / 2;
-              let bestY = (WORLD_ANCHORS.towns.mochiHamlet.ty + 2) * T + T / 2;
-              for (let oy = -14; oy <= 14; oy++) {
-                for (let ox = -14; ox <= 14; ox++) {
-                  const cx = tx + ox;
-                  const cy = ty + oy;
-                  if (cx < 2 || cy < 2 || cx >= N - 2 || cy >= N - 2) continue;
-                  const idx = cy * N + cx;
-                  if (W.B[idx] >= 2 && W.DK[idx] < 10) {
-                    const d = ox * ox + oy * oy;
-                    if (d < bestD) {
-                      bestD = d;
-                      bestX = cx * T + T / 2;
-                      bestY = cy * T + T / 2;
-                    }
+      }
+
+      if (data.pos && typeof data.pos.x === 'number' && typeof data.pos.y === 'number') {
+        const sky = Boolean(data.pos.sky);
+        const dive = Boolean(data.pos.dive);
+        const glowdeep = Boolean(data.pos.glowdeep);
+        const moonroad = Boolean(data.pos.moonroad);
+        const house = Boolean(data.pos.house);
+        let px = Math.max(T * 2, Math.min((N - 2) * T, data.pos.x * coordScale));
+        let py = Math.max(T * 2, Math.min((N - 2) * T, data.pos.y * coordScale));
+
+        if (coordScale !== 1 && !house) {
+          const tx = Math.max(2, Math.min(N - 3, (px / T) | 0));
+          const ty = Math.max(2, Math.min(N - 3, (py / T) | 0));
+          if (!sky && !dive && !glowdeep && !moonroad && W.B[ty * N + tx] < 2) {
+            let bestD = 1e9;
+            let bestX = baseHomeSpawnRef.current.x;
+            let bestY = baseHomeSpawnRef.current.y;
+            for (let oy = -14; oy <= 14; oy++) {
+              for (let ox = -14; ox <= 14; ox++) {
+                const cx = tx + ox;
+                const cy = ty + oy;
+                if (cx < 2 || cy < 2 || cx >= N - 2 || cy >= N - 2) continue;
+                const idx = cy * N + cx;
+                if (W.B[idx] >= 2 && W.DK[idx] < 10) {
+                  const d = ox * ox + oy * oy;
+                  if (d < bestD) {
+                    bestD = d;
+                    bestX = cx * T + T / 2;
+                    bestY = cy * T + T / 2;
                   }
                 }
               }
-              px = bestX;
-              py = bestY;
-            } else if (dive && W.B[ty * N + tx] >= 2) {
-              px = WORLD_ANCHORS.reef.driftwoodDiveLagoon.tx * T + T / 2;
-              py = WORLD_ANCHORS.reef.driftwoodDiveLagoon.ty * T + T / 2;
-            } else if (glowdeep && !isGlowdeepWalkable(tx, ty)) {
-              px = GLOWDEEP_RETURN_TILE.x * T + T / 2;
-              py = (GLOWDEEP_RETURN_TILE.y + 3) * T + T / 2;
-            } else if (moonroad && !isMoonRoadWalkable(tx, ty)) {
-              px = WORLD_ANCHORS.moonroad.teaHouse.tx * T + T / 2;
-              py = (WORLD_ANCHORS.moonroad.teaHouse.ty + 2) * T + T / 2;
             }
+            px = bestX;
+            py = bestY;
+          } else if (dive && W.B[ty * N + tx] >= 2) {
+            px = WORLD_ANCHORS.reef.driftwoodDiveLagoon.tx * T + T / 2;
+            py = WORLD_ANCHORS.reef.driftwoodDiveLagoon.ty * T + T / 2;
+          } else if (glowdeep && !isGlowdeepWalkable(tx, ty)) {
+            px = GLOWDEEP_RETURN_TILE.x * T + T / 2;
+            py = (GLOWDEEP_RETURN_TILE.y + 3) * T + T / 2;
+          } else if (moonroad && !isMoonRoadWalkable(tx, ty)) {
+            px = WORLD_ANCHORS.moonroad.teaHouse.tx * T + T / 2;
+            py = (WORLD_ANCHORS.moonroad.teaHouse.ty + 2) * T + T / 2;
           }
-          W.player.x = px;
-          W.player.y = py;
-          W.player.sky = sky;
-          W.player.dive = dive;
-          W.player.glowdeep = glowdeep;
-          W.player.moonroad = moonroad;
-          W.player.house = house;
-          W.companionPos.x = px - 26;
-          W.companionPos.y = py + 4;
-          setPlayerPos({
-            x: px,
-            y: py,
-            sky,
-            dive,
-            swim: false,
-            glowdeep,
-            moonroad,
-            house,
-          });
-          snapCamera();
         }
-        showToast(`Loaded Slot ${slotNum}! ✨`);
-      } catch (e) {}
-    }
-  };
+        W.player.x = px;
+        W.player.y = py;
+        W.player.sky = sky;
+        W.player.dive = dive;
+        W.player.glowdeep = glowdeep;
+        W.player.moonroad = moonroad;
+        W.player.house = house;
+        W.companionPos.x = px - 26;
+        W.companionPos.y = py + 4;
+        setPlayerPos({
+          x: px,
+          y: py,
+          sky,
+          dive,
+          swim: false,
+          glowdeep,
+          moonroad,
+          house,
+        });
+        snapCamera();
+      }
+    },
+    [resetGameStateToFresh, snapCamera]
+  );
+  applySaveSnapshotRef.current = applySaveSnapshotToState;
 
-  // Carry Over from Mochi Meadows 1
+  // Save game state strictly to the currently selected slot
+  const handleSaveGame = useCallback(
+    (showNotification: boolean = true) => {
+      const slot = currentSlotRef.current;
+      const snapshot = serializeSaveSnapshot();
+      try {
+        writeSlotSaveRaw(slot, JSON.stringify(snapshot));
+        setSaveSlotRevision((r) => r + 1);
+        if (showNotification) showToast(`Game saved to Slot ${slot}! 💾`);
+      } catch (e) {
+        if (showNotification) showToast('Saving failed');
+      }
+    },
+    [serializeSaveSnapshot, showToast]
+  );
+  saveGameFnRef.current = handleSaveGame;
+
+  // Select Save Slot (isolates every slot cleanly and clears state for empty slots)
+  const handleSelectSlot = useCallback(
+    (slotNum: number) => {
+      setCurrentSlot(slotNum);
+      currentSlotRef.current = slotNum;
+      try {
+        localStorage.setItem(LOCAL_STORAGE_ACTIVE_SLOT_KEY, String(slotNum));
+      } catch {}
+      const saved = readSlotSaveRaw(slotNum);
+      if (saved) {
+        try {
+          const data = JSON.parse(saved);
+          applySaveSnapshotToState(data);
+          showToast(`Loaded Slot ${slotNum}! ✨`);
+          return;
+        } catch (e) {}
+      }
+      resetGameStateToFresh({ resetAppearance: true });
+      showToast(`Slot ${slotNum} is empty — ready for a fresh journey! 🌱`);
+    },
+    [applySaveSnapshotToState, resetGameStateToFresh, showToast]
+  );
+
+  // Erase a specific save slot cleanly
+  const handleDeleteSlot = useCallback(
+    (slotNum: number) => {
+      try {
+        eraseSlotSave(slotNum);
+      } catch {}
+      if (slotNum === currentSlotRef.current) {
+        resetGameStateToFresh({ resetAppearance: true });
+      }
+      setSaveSlotRevision((r) => r + 1);
+      showToast(`Cleared Slot ${slotNum} — ready for a fresh start! 🌱`);
+    },
+    [resetGameStateToFresh, showToast]
+  );
+
+  // Start a fresh adventure in the active slot
+  const handleStartNewGame = useCallback(
+    (preserveEmptySlotLook: boolean = false) => {
+      const slot = currentSlotRef.current;
+      try {
+        eraseSlotSave(slot);
+      } catch {}
+      resetGameStateToFresh({ resetAppearance: !preserveEmptySlotLook });
+      try {
+        writeSlotSaveRaw(slot, JSON.stringify(serializeSaveSnapshot()));
+      } catch {}
+      setSaveSlotRevision((r) => r + 1);
+      audio.init();
+      snapCamera();
+      setActiveModal('none');
+      setGameState('playing');
+      triggerCutscene('intro');
+    },
+    [resetGameStateToFresh, serializeSaveSnapshot, snapCamera, triggerCutscene]
+  );
+
+  // Carry Over from Mochi Meadows 1 into a fresh active slot
   const handleCarryOverMM1 = (code?: string) => {
     let legacyData: any = null;
     if (code) {
@@ -4830,71 +5625,34 @@ export default function App() {
       }
     }
 
-    // Grant exclusive First-Dream Scarf, Golden Note, and 100 Island Coins
-    setCoins((c) => c + 100);
-    setTotalCoins((c) => c + 100);
-    setUpgrades((prev) => ({ ...prev, firstDreamScarf: 1, goldenNote: 1 }));
+    const slot = currentSlotRef.current;
+    try {
+      eraseSlotSave(slot);
+    } catch {}
+    resetGameStateToFresh({ resetAppearance: true });
+
+    // Grant exclusive First-Dream Scarf, Golden Note, and 100 Island Coins cleanly on top of fresh state
+    coinsRef.current = 100;
+    totalCoinsRef.current = 100;
+    setCoins(100);
+    setTotalCoins(100);
+    const carryUpgrades = { firstDreamScarf: 1, goldenNote: 1 };
+    upgradesRef.current = carryUpgrades;
+    setUpgrades(carryUpgrades);
     if (legacyData?.L) {
-      setPlayerLook((prev) => ({ ...prev, ...legacyData.L, hat: 'crown' }));
+      const carryLook = { ...createDefaultPlayerLook(), ...legacyData.L, hat: 'crown' };
+      playerLookRef.current = carryLook;
+      setPlayerLook(carryLook);
     }
+    try {
+      writeSlotSaveRaw(slot, JSON.stringify(serializeSaveSnapshot()));
+    } catch {}
+    setSaveSlotRevision((r) => r + 1);
     audio.chime();
-    showToast('🌸 MM1 Carry-Over Blessing received! First-Dream Scarf & 100 coins!');
+    showToast(`🌸 MM1 Carry-Over Blessing saved to Slot ${slot}! First-Dream Scarf & 100 coins!`);
+    snapCamera();
     setGameState('playing');
   };
-
-  // Save game state (reads live refs so loop autosaves & beforeunload never serialize stale values)
-  const handleSaveGame = useCallback(
-    (showNotification: boolean = true) => {
-      const W = worldRef.current;
-      const slot = currentSlotRef.current;
-      const snapshot = {
-        worldN: N,
-        L: playerLookRef.current,
-        coins: coinsRef.current,
-        tot: totalCoinsRef.current,
-        ch: currentChapterRef.current,
-        done: lullabyDoneRef.current,
-        skd: skyStoryDoneRef.current,
-        vg: visitedGlowdeepRef.current,
-        vm: visitedMoonRoadRef.current,
-        lore: loreEntriesRef.current,
-        ach: unlockedAchievementsRef.current,
-        mv: unlockedCutscenesRef.current,
-        ug: upgradesRef.current,
-        fs: fishLogRef.current,
-        cottage: cottageStateRef.current,
-        hamlet: hamletResidentsRef.current,
-        townProsperity: townProsperityRef.current,
-        completedTownRequests: completedTownRequestsRef.current,
-        visTowns: W.towns.filter((t) => t.vis === 1).map((t) => t.n),
-        qu: W.quests.map((q) => ({ t: q.t, st: q.st, c: q.c })),
-        fr: W.npcs.filter((n) => n.fr).map((n) => n.n),
-        chimes: W.dawnChimesCount,
-        pos: {
-          x: W.player.x,
-          y: W.player.y,
-          sky: W.player.sky,
-          dive: W.player.dive,
-          glowdeep: W.player.glowdeep,
-          moonroad: W.player.moonroad,
-          house: W.player.house,
-        },
-      };
-
-      try {
-        localStorage.setItem(LOCAL_STORAGE_ACTIVE_SLOT_KEY, String(slot));
-        localStorage.setItem(LOCAL_STORAGE_SAVE_PREFIX + slot, JSON.stringify(snapshot));
-        if (slot === 1) {
-          localStorage.setItem(LOCAL_STORAGE_LEGACY_SAVE, JSON.stringify(snapshot));
-        }
-        if (showNotification) showToast(`Game saved to Slot ${slot}! 💾`);
-      } catch (e) {
-        if (showNotification) showToast('Saving failed');
-      }
-    },
-    [showToast]
-  );
-  saveGameFnRef.current = handleSaveGame;
 
   // Save automatically when closing/reloading browser tab while playing
   useEffect(() => {
@@ -4907,16 +5665,40 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, []);
 
-  // Keep game canvas backing resolution crisp and aligned with CSS viewport (no stretch or JSX resize flicker)
+  // Keep game canvas backing resolution crisp and aligned with CSS viewport (debounced against mobile URL-bar jitter)
   useEffect(() => {
-    const handleResize = () => {
+    let resizeTimer: number | null = null;
+    let lastTouchW = -1;
+    let lastTouchH = -1;
+
+    const applyResize = (force = false) => {
       const dev = deviceRef.current;
       const lowQ = Boolean(settingsRef.current.low);
       const canvas = canvasRef.current;
       if (canvas) {
         const cw = Math.max(1, canvas.parentElement?.clientWidth || window.innerWidth);
         const ch = Math.max(1, canvas.parentElement?.clientHeight || window.innerHeight);
-        const dpr = computeViewportDpr(cw, ch, dev.pixelRatio || 1, dev.isPhone, dev.isTablet, lowQ, false);
+        if (
+          !force &&
+          dev.isTouch &&
+          lastTouchW > 0 &&
+          Math.abs(cw - lastTouchW) <= 2 &&
+          Math.abs(ch - lastTouchH) < 56
+        ) {
+          return;
+        }
+        lastTouchW = cw;
+        lastTouchH = ch;
+        const r3d = renderer3DRef.current;
+        const dpr = computeViewportDpr(
+          cw,
+          ch,
+          dev.pixelRatio || 1,
+          dev.isPhone,
+          dev.isTablet,
+          lowQ,
+          Boolean(r3d?.isSoftwareGl)
+        );
         const bw = Math.max(1, Math.round(cw * dpr));
         const bh = Math.max(1, Math.round(ch * dpr));
         if (canvas.width !== bw) canvas.width = bw;
@@ -4938,12 +5720,29 @@ export default function App() {
         r3d.resize(mw, mh, dpr);
       }
     };
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    window.addEventListener('orientationchange', handleResize);
+
+    const onWindowResize = () => {
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = null;
+        applyResize(false);
+      }, 140);
+    };
+    const onOrientation = () => {
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = null;
+        applyResize(true);
+      }, 60);
+    };
+
+    applyResize(true);
+    window.addEventListener('resize', onWindowResize, { passive: true });
+    window.addEventListener('orientationchange', onOrientation, { passive: true });
     return () => {
-      window.removeEventListener('resize', handleResize);
-      window.removeEventListener('orientationchange', handleResize);
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+      window.removeEventListener('resize', onWindowResize);
+      window.removeEventListener('orientationchange', onOrientation);
     };
   }, [device.width, device.height, device.orientation, device.pixelRatio, settings.low, webglReady]);
 
@@ -4951,7 +5750,6 @@ export default function App() {
   useEffect(() => {
     let animId: number;
     let lastTime = performance.now();
-    let skipUiHoldFrames = 0;
     let lastLoopWorkMs = 0;
     let emaWorkMs = 12;
     let slowFrameStreak = 0;
@@ -4965,7 +5763,6 @@ export default function App() {
     const loop = (now: number) => {
       if (document.hidden) {
         lastTime = now;
-        skipUiHoldFrames = 0;
         lastLoopWorkMs = 0;
         slowFrameStreak = 0;
         fastFrameStreak = 0;
@@ -4988,9 +5785,7 @@ export default function App() {
         lastTime = now;
         const cutsceneOpen = activeCutsceneRef.current !== null;
         const modalOpen = activeModalRef.current !== 'none';
-        const minTitleMs = modalOpen ? 100 : isPhone || r3d?.isSoftwareGl ? 32 : 16;
-        if (!cutsceneOpen && r3d && now - hudSyncRef.current.lastTitle3DMs >= minTitleMs) {
-          hudSyncRef.current.lastTitle3DMs = now;
+        if (!cutsceneOpen && !modalOpen && r3d && !r3d.isContextLost()) {
           W.time += dtTitle;
           const wSys = weatherRef.current;
           let sync = syncState3DRef.current;
@@ -5017,6 +5812,10 @@ export default function App() {
               magicRings: W.magicRings,
               particles: W.particles,
               iceMap: W.iceMap,
+              lilyMap: W.lilyMap,
+              hotSprings: W.hotSprings,
+              dkRevision: W.dkRevision,
+              echoTargets3D: W.echoTargets3D,
               glowdeepPortal: W.glowdeepPortal,
               moonGatePortal: W.moonGatePortal,
               playerHomePortal: W.playerHomePortal,
@@ -5042,6 +5841,10 @@ export default function App() {
                 dreamwalkTimer: 0,
                 tideTimer: 0,
                 moonPullTimer: 0,
+                echoTimer: 0,
+                frostGlowTimer: 0,
+                thermalGlideTimer: 0,
+                echoMagnetTimer: 0,
               },
               lowQuality: Boolean(liveSettings.low) || isPhone,
               isTitleMode: true,
@@ -5073,6 +5876,10 @@ export default function App() {
             sync.magicRings = W.magicRings;
             sync.particles = W.particles;
             sync.iceMap = W.iceMap;
+            sync.lilyMap = W.lilyMap;
+            sync.hotSprings = W.hotSprings;
+            sync.dkRevision = W.dkRevision;
+            sync.echoTargets3D = W.echoTargets3D;
             sync.glowdeepPortal = W.glowdeepPortal;
             sync.moonGatePortal = W.moonGatePortal;
             sync.playerHomePortal = W.playerHomePortal;
@@ -5097,6 +5904,10 @@ export default function App() {
             sync.activeSpellTimers.dreamwalkTimer = 0;
             sync.activeSpellTimers.tideTimer = 0;
             sync.activeSpellTimers.moonPullTimer = 0;
+            sync.activeSpellTimers.echoTimer = 0;
+            sync.activeSpellTimers.frostGlowTimer = 0;
+            sync.activeSpellTimers.thermalGlideTimer = 0;
+            sync.activeSpellTimers.echoMagnetTimer = 0;
             sync.lowQuality = Boolean(liveSettings.low) || isPhone;
             sync.isTitleMode = true;
             sync.cameraYaw = 0;
@@ -5105,14 +5916,6 @@ export default function App() {
             sync.cameraPreset = CAMERA_PRESETS_3D[liveSettings.camPreset ?? 0] ?? 'cozy';
           }
           r3d.render(sync, dtTitle);
-          const canvasEl = canvasRef.current;
-          if (canvasEl) {
-            const c2d = canvasEl.getContext('2d');
-            if (c2d) {
-              c2d.setTransform(1, 0, 0, 1, 0, 0);
-              c2d.clearRect(0, 0, canvasEl.width, canvasEl.height);
-            }
-          }
         }
         animId = requestAnimationFrame(loop);
         return;
@@ -5125,30 +5928,24 @@ export default function App() {
       const liveUpgrades = upgradesRef.current;
       const lowQ = Boolean(liveSettings.low);
 
-      // Adaptive quality + universal >34ms frame-skipping (soft UI/scatter only; never resizes DPR)
-      if (lastLoopWorkMs > 0) {
-        emaWorkMs = emaWorkMs * 0.86 + Math.min(80, lastLoopWorkMs) * 0.14;
-        if (lastLoopWorkMs > 34) {
+      // Stable adaptive quality (high hysteresis to avoid prop rebuild thrashing; never drops HUD/nameplates)
+      if (!isPhone && !liveDevice.isLowEnd && lastLoopWorkMs > 0) {
+        emaWorkMs = emaWorkMs * 0.9 + Math.min(80, lastLoopWorkMs) * 0.1;
+        if (lastLoopWorkMs > 42) {
           slowFrameStreak++;
           fastFrameStreak = 0;
-          if (slowFrameStreak >= 10) adaptiveLowQ = true;
+          if (slowFrameStreak >= 18) adaptiveLowQ = true;
         } else {
           slowFrameStreak = 0;
-          if (emaWorkMs < 18) {
+          if (emaWorkMs < 16) {
             fastFrameStreak++;
-            if (fastFrameStreak >= 180) adaptiveLowQ = false;
+            if (fastFrameStreak >= 300) adaptiveLowQ = false;
           }
         }
       }
 
-      if ((rawFrameMs > 34 && rawFrameMs < 500) || lastLoopWorkMs > 34) {
-        skipUiHoldFrames = isPhone || liveDevice.isLowEnd || adaptiveLowQ ? 2 : 1;
-      } else if (skipUiHoldFrames > 0) {
-        skipUiHoldFrames--;
-      }
-
-      const dropNonEssentialUi = skipUiHoldFrames > 0;
-      const effLowQ = lowQ || isPhone || adaptiveLowQ;
+      const dropNonEssentialUi = false;
+      const effLowQ = lowQ || isPhone || liveDevice.isLowEnd || adaptiveLowQ;
       const viewScale = liveDevice.viewScale || 1;
       W.time += dt;
 
@@ -5163,9 +5960,27 @@ export default function App() {
         W.player.dive
       );
 
-      // Update NPC Weather Behavior strictly for NPCs on the player's current layer
+      // Update NPC Weather Behavior strictly for NPCs on the player's current layer with terrain walkability guard
       const activeWorldLayer = W.player.house ? undefined : getPlayerLayer(W.player);
-      updateNPCWeatherBehavior(W.npcs, weatherRef.current.currentWeather.id, W.time, dt, activeWorldLayer, W.towns);
+      const canNpcWalk = (nx: number, ny: number, npc: NPC) => {
+        const tx = Math.floor(nx / T);
+        const ty = Math.floor(ny / T);
+        if (tx < 1 || ty < 1 || tx >= N - 1 || ty >= N - 1) return false;
+        const lyr = getNpcLayer(npc);
+        if (lyr === 3) return isGlowdeepWalkable(tx, ty);
+        if (lyr === 4) return isMoonRoadWalkable(tx, ty);
+        if (lyr === 2) {
+          const idx = ty * N + tx;
+          return W.SB[idx] > 0 && W.SD[idx] === 0;
+        }
+        if (lyr === 1) {
+          const idx = ty * N + tx;
+          return W.B[idx] <= 1 && W.UD[idx] !== 5 && W.UD[idx] !== 6;
+        }
+        const idx = ty * N + tx;
+        return W.B[idx] >= 2 && !isSurfaceSolidDk(W.DK[idx]);
+      };
+      updateNPCWeatherBehavior(W.npcs, weatherRef.current.currentWeather.id, W.time, dt, activeWorldLayer, W.towns, canNpcWalk);
 
       // Update audio biome, weather/season crossfade & HUD realm location (diff-guarded)
       const tileX = (W.player.x / T) | 0;
@@ -5320,15 +6135,33 @@ export default function App() {
       const curTileIdx = tileY * N + tileX;
       const isSurface = !W.player.house && !W.player.sky && !W.player.dive && !W.player.glowdeep && !W.player.moonroad;
       const onFrozenIce = isSurface && W.iceMap.has(curTileIdx) && W.iceMap.get(curTileIdx)! > W.time;
+      const onLilyPad = isSurface && W.lilyMap.has(curTileIdx) && W.lilyMap.get(curTileIdx)! > W.time;
       const inGlowCanal = W.player.glowdeep && tileX >= 0 && tileY >= 0 && tileX < N && tileY < N && getGlowdeepCell(tileX, tileY) === 'canal';
-      const isSwimming = Boolean((isSurface && curB < 2 && !onFrozenIce) || inGlowCanal);
+      const isSwimming = Boolean((isSurface && curB < 2 && !onFrozenIce && !onLilyPad) || inGlowCanal);
 
-      // Water Entry Splash & Exit Hop
+      // Prune expired ice tiles, lily path pads, and hot springs so 3D props & collisions stay exact
+      if (W.iceMap.size > 0) {
+        for (const [k, exp] of W.iceMap) {
+          if (exp <= W.time) W.iceMap.delete(k);
+        }
+      }
+      if (W.lilyMap.size > 0) {
+        for (const [k, exp] of W.lilyMap) {
+          if (exp <= W.time) W.lilyMap.delete(k);
+        }
+      }
+      if (W.hotSprings.length > 0) {
+        for (let hi = W.hotSprings.length - 1; hi >= 0; hi--) {
+          if (W.hotSprings[hi].expires <= W.time) W.hotSprings.splice(hi, 1);
+        }
+      }
+
+      // Water Entry Splash & Exit Hop (pooled)
       if (isSwimming && !W.player.wasSwimming && W.player.z <= 14) {
-        W.magicRings.push({ x: W.player.x, y: W.player.y + 4, t: 0, m: 0.62, r: 52, c: '#a8f0ff' });
+        spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y + 4, m: 0.62, r: 52, c: '#a8f0ff' });
         for (let sp = 0; sp < 8; sp++) {
           const sa = (sp / 8) * Math.PI * 2;
-          W.particles.push({
+          spawnPooledParticle(W.particles, {
             x: W.player.x,
             y: W.player.y + 4,
             vx: Math.cos(sa) * 52,
@@ -5347,7 +6180,7 @@ export default function App() {
         audio.pop();
       } else if (!isSwimming && W.player.wasSwimming && !W.player.sky && !W.player.dive) {
         W.player.vz = Math.max(W.player.vz, 75);
-        W.magicRings.push({ x: W.player.x, y: W.player.y + 6, t: 0, m: 0.45, r: 30, c: '#b8f2ff' });
+        spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y + 6, m: 0.45, r: 30, c: '#b8f2ff' });
       }
       W.player.wasSwimming = isSwimming;
       W.player.swim = isSwimming;
@@ -5358,6 +6191,8 @@ export default function App() {
       let baseSpeed = 158 * (liveUpgrades.boots ? 1.14 : 1);
       if (isSwimming) {
         baseSpeed = (curB === 0 ? 108 : 128) * (liveUpgrades.boots ? 1.12 : 1);
+      } else if (onLilyPad) {
+        baseSpeed *= 1.12;
       }
       if (W.player.dive) baseSpeed = 130;
       if (W.player.sky) baseSpeed = 198;
@@ -5377,6 +6212,30 @@ export default function App() {
       baseSpeed *= weatherSpeedMult;
 
       // Active spell speed boosts, trails & buffs
+      if (W.starSenseTimer > 0) W.starSenseTimer = Math.max(0, W.starSenseTimer - dt);
+      if (W.frostGlowTimer > 0) W.frostGlowTimer = Math.max(0, W.frostGlowTimer - dt);
+      if (W.thermalGlideTimer > 0) {
+        W.thermalGlideTimer = Math.max(0, W.thermalGlideTimer - dt);
+        if (W.player.sky) {
+          baseSpeed *= 1.22;
+          W.player.st = Math.min(100, W.player.st + 24 * dt);
+          if (Math.random() < 0.45 && W.particles.length < 185) {
+            spawnPooledParticle(W.particles, {
+              x: W.player.x + (Math.random() - 0.5) * 18,
+              y: W.player.y + 4,
+              vx: -ix * 28 + (Math.random() - 0.5) * 20,
+              vy: -iy * 28 - 10,
+              z: 10,
+              vz: 38,
+              az: -15,
+              size: 0.95,
+              shape: 'spark',
+              l: 0.68,
+              c: Math.random() > 0.4 ? '#ff9642' : '#ffe073',
+            });
+          }
+        }
+      }
       if (W.tideTimer > 0) {
         W.tideTimer = Math.max(0, W.tideTimer - dt);
         baseSpeed *= 1.35;
@@ -5386,11 +6245,12 @@ export default function App() {
         baseSpeed *= 1.32;
         if (len > 0 && Math.random() < 0.35 && W.particles.length < 180) {
           const dwVar = getSeasonalSpellVariant('dreamwalk', currentSeasonRef.current);
-          W.particles.push({
+          spawnPooledParticle(W.particles, {
             x: W.player.x + (Math.random() - 0.5) * 14,
             y: W.player.y + (Math.random() - 0.5) * 10,
             vx: -ix * 25,
             vy: -iy * 25 - 10,
+            shape: 'crystal',
             l: 0.65,
             c: dwVar ? (Math.random() > 0.5 ? dwVar.orbiterColor : dwVar.orbiterAccent) : '#b48cff',
           });
@@ -5401,11 +6261,12 @@ export default function App() {
         baseSpeed *= 1.2;
         if (len > 0 && Math.random() < 0.3 && W.particles.length < 180) {
           const ewVar = getSeasonalSpellVariant('ember_warmth', currentSeasonRef.current);
-          W.particles.push({
+          spawnPooledParticle(W.particles, {
             x: W.player.x + (Math.random() - 0.5) * 12,
             y: W.player.y + 8,
             vx: -ix * 20,
             vy: -14 - Math.random() * 14,
+            shape: 'spark',
             l: 0.5,
             c: ewVar ? (Math.random() > 0.5 ? ewVar.orbiterColor : ewVar.orbiterAccent) : '#ff7b47',
           });
@@ -5416,11 +6277,12 @@ export default function App() {
         baseSpeed *= 1.15;
         if (len > 0 && Math.random() < 0.25 && W.particles.length < 180) {
           const fbVar = getSeasonalSpellVariant('frost_bridge', currentSeasonRef.current);
-          W.particles.push({
+          spawnPooledParticle(W.particles, {
             x: W.player.x + (Math.random() - 0.5) * 16,
             y: W.player.y + 6,
             vx: -ix * 18,
             vy: -10,
+            shape: 'crystal',
             l: 0.55,
             c: fbVar?.orbiterColor || '#b8f2ff',
           });
@@ -5444,13 +6306,48 @@ export default function App() {
       }
       if (W.hugTimer > 0) {
         W.hugTimer = Math.max(0, W.hugTimer - dt);
-        W.player.mp = Math.min(100, W.player.mp + 6 * dt);
-        W.player.st = Math.min(100, W.player.st + 10 * dt);
+        W.player.mp = Math.min(100, W.player.mp + 8 * dt);
+        W.player.st = Math.min(100, W.player.st + 14 * dt);
+        if (Math.random() < 0.08 && W.particles.length < 180) {
+          spawnPooledParticle(W.particles, {
+            x: W.player.x + (Math.random() - 0.5) * 24,
+            y: W.player.y - 8,
+            vx: (Math.random() - 0.5) * 14,
+            vy: -24,
+            shape: 'heart',
+            l: 0.75,
+            c: '#ff9ebb',
+          });
+        }
       }
       if (W.echoTimer > 0) W.echoTimer = Math.max(0, W.echoTimer - dt);
       if (W.dawnTimer > 0) {
         W.dawnTimer = Math.max(0, W.dawnTimer - dt);
         baseSpeed *= 1.25;
+      }
+      // Active Hot Springs rapidly rejuvenate Stamina & Oxygen + emit cozy steam puffs
+      if (W.hotSprings.length > 0) {
+        for (let hi = 0; hi < W.hotSprings.length; hi++) {
+          const hs = W.hotSprings[hi];
+          if (Math.random() < 0.25 && W.particles.length < 185) {
+            spawnPooledParticle(W.particles, {
+              x: hs.x + (Math.random() - 0.5) * 56,
+              y: hs.y + (Math.random() - 0.5) * 40,
+              vx: (Math.random() - 0.5) * 12,
+              vy: -22 - Math.random() * 14,
+              z: 4,
+              vz: 35,
+              az: -5,
+              l: 0.9,
+              c: Math.random() > 0.35 ? '#d8fff8' : '#ffb878',
+            });
+          }
+          if (Math.hypot(W.player.x - hs.x, W.player.y - hs.y) <= 125) {
+            W.player.st = Math.min(100, W.player.st + 45 * dt);
+            W.player.o2 = Math.min(100, W.player.o2 + 50 * dt);
+            W.player.mp = Math.min(100, W.player.mp + 16 * dt);
+          }
+        }
       }
       if (W.marketSpeedTimer > 0) {
         W.marketSpeedTimer = Math.max(0, W.marketSpeedTimer - dt);
@@ -5518,23 +6415,7 @@ export default function App() {
         }
         const dk = W.DK[idx];
         if (dk === 6 && W.player.z >= 13) return false;
-        return (
-          dk === 2 ||
-          dk === 4 ||
-          dk === 5 ||
-          dk === 6 ||
-          dk === 7 ||
-          dk === 10 ||
-          dk === 11 ||
-          dk === 13 ||
-          dk === 14 ||
-          dk === 16 ||
-          dk === 17 ||
-          dk === 18 ||
-          dk === 20 ||
-          dk === 21 ||
-          dk === 23
-        );
+        return isSurfaceSolidDk(dk);
       };
 
       const isPosBlocked = (px: number, py: number) => {
@@ -5552,26 +6433,82 @@ export default function App() {
         );
       };
 
-      const stepX = Math.max(T, Math.min((N - 1) * T, W.player.x + W.player.vx * dt));
-      const stepY = Math.max(T, Math.min((N - 1) * T, W.player.y + W.player.vy * dt));
-      const currentlyStuck = isPosBlocked(W.player.x, W.player.y);
-
-      if (currentlyStuck || !isPosBlocked(stepX, W.player.y)) {
-        W.player.x = stepX;
-      } else {
-        W.player.vx = 0;
-        if (W.player.moveTarget && Math.abs(stepX - W.player.x) > 0.1 && Math.abs(W.player.vy) < 5) {
-          W.player.moveTarget = null;
+      // Gently push player to nearest unblocked offset if trapped on a solid edge instead of walking through walls
+      if (W.dreamwalkTimer <= 0 && isPosBlocked(W.player.x, W.player.y)) {
+        const pushDirs: [number, number][] = [
+          [1, 0], [-1, 0], [0, 1], [0, -1],
+          [1, 1], [-1, 1], [1, -1], [-1, -1],
+        ];
+        outerPush: for (let distPx = 4; distPx <= 28; distPx += 6) {
+          for (const [pdx, pdy] of pushDirs) {
+            const cx = Math.max(T, Math.min((N - 1) * T, W.player.x + pdx * distPx));
+            const cy = Math.max(T, Math.min((N - 1) * T, W.player.y + pdy * distPx));
+            if (!isPosBlocked(cx, cy)) {
+              W.player.x = cx;
+              W.player.y = cy;
+              break outerPush;
+            }
+          }
         }
       }
 
-      if (currentlyStuck || !isPosBlocked(W.player.x, stepY)) {
+      const preMoveX = W.player.x;
+      const preMoveY = W.player.y;
+      const stepX = Math.max(T, Math.min((N - 1) * T, W.player.x + W.player.vx * dt));
+      const stepY = Math.max(T, Math.min((N - 1) * T, W.player.y + W.player.vy * dt));
+      const stillBlocked = W.dreamwalkTimer <= 0 && isPosBlocked(W.player.x, W.player.y);
+
+      if (!stillBlocked && !isPosBlocked(stepX, W.player.y)) {
+        W.player.x = stepX;
+      } else {
+        // Tangent nudge: slide smoothly around single trees/rocks/boulders when hitting slightly off-center
+        let nudgedX = false;
+        if (!stillBlocked && Math.abs(stepX - W.player.x) > 0.05 && Math.abs(W.player.vy) < 45) {
+          for (const offset of [6, -6, 12, -12]) {
+            const tryY = Math.max(T, Math.min((N - 1) * T, W.player.y + offset));
+            if (!isPosBlocked(stepX, tryY)) {
+              W.player.x = stepX;
+              W.player.y = W.player.y + Math.sign(offset) * Math.min(Math.abs(offset), Math.abs(W.player.vx * dt) * 0.85);
+              nudgedX = true;
+              break;
+            }
+          }
+        }
+        if (!nudgedX) W.player.vx = 0;
+      }
+
+      if (!stillBlocked && !isPosBlocked(W.player.x, stepY)) {
         W.player.y = stepY;
       } else {
-        W.player.vy = 0;
-        if (W.player.moveTarget && Math.abs(stepY - W.player.y) > 0.1 && Math.abs(W.player.vx) < 5) {
-          W.player.moveTarget = null;
+        let nudgedY = false;
+        if (!stillBlocked && Math.abs(stepY - W.player.y) > 0.05 && Math.abs(W.player.vx) < 45) {
+          for (const offset of [6, -6, 12, -12]) {
+            const tryX = Math.max(T, Math.min((N - 1) * T, W.player.x + offset));
+            if (!isPosBlocked(tryX, stepY)) {
+              W.player.y = stepY;
+              W.player.x = W.player.x + Math.sign(offset) * Math.min(Math.abs(offset), Math.abs(W.player.vy * dt) * 0.85);
+              nudgedY = true;
+              break;
+            }
+          }
         }
+        if (!nudgedY) W.player.vy = 0;
+      }
+
+      // Tolerate brief corner slides during tap-to-move; cancel only if stalled > 0.35s
+      if (W.player.moveTarget) {
+        const movedDist = Math.hypot(W.player.x - preMoveX, W.player.y - preMoveY);
+        if (movedDist < Math.max(0.25, 16 * dt)) {
+          moveTargetStallRef.current.timer += dt;
+          if (moveTargetStallRef.current.timer > 0.35) {
+            W.player.moveTarget = null;
+            moveTargetStallRef.current.timer = 0;
+          }
+        } else {
+          moveTargetStallRef.current.timer = 0;
+        }
+      } else {
+        moveTargetStallRef.current.timer = 0;
       }
 
       // Vertical Jump & Boulder-Perch Physics
@@ -5594,10 +6531,10 @@ export default function App() {
           W.player.jumpCount = 0;
           if (prevZ > groundFloorZ + 8) {
             if (isSwimming) {
-              W.magicRings.push({ x: W.player.x, y: W.player.y + 4, t: 0, m: 0.62, r: 56, c: '#a8f0ff' });
+              spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y + 4, m: 0.62, r: 56, c: '#a8f0ff' });
               for (let sp = 0; sp < 8; sp++) {
                 const sa = (sp / 8) * Math.PI * 2;
-                W.particles.push({
+                spawnPooledParticle(W.particles, {
                   x: W.player.x,
                   y: W.player.y + 4,
                   vx: Math.cos(sa) * 58,
@@ -5615,7 +6552,7 @@ export default function App() {
               }
               audio.pop();
             } else {
-              W.magicRings.push({ x: W.player.x, y: W.player.y + 6, t: 0, m: 0.38, r: 24, c: 'rgba(255, 255, 255, 0.68)' });
+              spawnMagicRing(W.magicRings, { x: W.player.x, y: W.player.y + 6, m: 0.38, r: 24, c: 'rgba(255, 255, 255, 0.68)' });
               if (W.particles.length < 176) {
                 const landColor = W.player.glowdeep
                   ? '#78f5c8'
@@ -5631,7 +6568,7 @@ export default function App() {
                 for (let lp = 0; lp < 5; lp++) {
                   const la = (lp / 5) * Math.PI * 2 + Math.random() * 0.4;
                   const spd = 28 + Math.random() * 20;
-                  W.particles.push({
+                  spawnPooledParticle(W.particles, {
                     x: W.player.x + Math.cos(la) * 4,
                     y: W.player.y + 5 + Math.sin(la) * 4,
                     vx: Math.cos(la) * spd,
@@ -5667,16 +6604,15 @@ export default function App() {
         if (W.footstepTimer <= 0) {
           W.footstepTimer = isSwimming ? (isRunning ? 0.14 : 0.24) : W.player.dive ? 0.28 : 0.22;
           if (isSwimming) {
-            W.magicRings.push({
+            spawnMagicRing(W.magicRings, {
               x: W.player.x,
               y: W.player.y + 6,
-              t: 0,
               m: isRunning ? 0.56 : 0.48,
               r: isRunning ? 28 : 20,
               c: isRunning ? 'rgba(235, 252, 255, 0.88)' : 'rgba(205, 245, 255, 0.72)',
             });
             if (W.particles.length < 180) {
-              W.particles.push({
+              spawnPooledParticle(W.particles, {
                 x: W.player.x - ix * 8 + (Math.random() - 0.5) * 8,
                 y: W.player.y + 4 - iy * 8,
                 vx: -ix * 24 + (Math.random() - 0.5) * 18,
@@ -5710,7 +6646,7 @@ export default function App() {
             const puffCount = isRunning ? 2 : 1;
             for (let sp = 0; sp < puffCount; sp++) {
               const lateral = sp === 0 ? 1 : -1;
-              W.particles.push({
+              spawnPooledParticle(W.particles, {
                 x: W.player.x - stepDirX * 5 + (Math.random() - 0.5) * 6 + lateral * stepDirY * 3,
                 y: W.player.y + 6 - stepDirY * 5 + (Math.random() - 0.5) * 4 - lateral * stepDirX * 3,
                 vx: -stepDirX * (isRunning ? 28 : 16) + (Math.random() - 0.5) * 18,
@@ -5781,7 +6717,7 @@ export default function App() {
               ? '#ff9ebb'
               : '#9ef4ff'
             : '#ffb703';
-        W.particles.push({
+        spawnPooledParticle(W.particles, {
           x: W.companionPos.x + (Math.random() - 0.5) * 10,
           y: W.companionPos.y + (Math.random() - 0.5) * 6,
           vx: (Math.random() - 0.5) * 12,
@@ -5873,14 +6809,47 @@ export default function App() {
         });
       }
 
-      // Dawn Break magnetic starlight + Moon Pull + Bee nectar magnet attraction toward player (allocation-free)
+      // Dawn Break magnetic starlight + Moon Pull + Echo Magnet + Bee nectar magnet attraction toward player (allocation-free)
       const hasBeeMagnet = (playerLookRef.current.companion ?? 'gloom') === 'bee';
-      const pickupRadBonus = (W.dawnTimer > 0 ? 34 : 0) + (hasBeeMagnet ? 16 : 0);
-      if (W.moonPullTimer > 0 || W.dawnTimer > 0 || hasBeeMagnet) {
+      const pickupRadBonus =
+        (W.dawnTimer > 0 ? 34 : 0) +
+        (W.moonPullTimer > 0 || W.echoMagnetTimer > 0 ? 24 : 0) +
+        (hasBeeMagnet ? 16 : 0);
+      if (W.moonPullTimer > 0 || W.dawnTimer > 0 || W.echoMagnetTimer > 0 || hasBeeMagnet) {
         if (W.moonPullTimer > 0) W.moonPullTimer = Math.max(0, W.moonPullTimer - dt);
-        const pullRadius = W.moonPullTimer > 0 ? 560 : W.dawnTimer > 0 ? 180 : 92;
+        if (W.echoMagnetTimer > 0) {
+          W.echoMagnetTimer = Math.max(0, W.echoMagnetTimer - dt);
+          W.echoMagnetTick += dt;
+          if (W.echoMagnetTick >= 0.35) {
+            W.echoMagnetTick = 0;
+            const curLayerMagnet = getPlayerLayer(W.player);
+            const magnetCoinMult = (liveUpgrades.clover ? 1.5 : 1) * (W.marketLuckTimer > 0 ? 1.35 : 1);
+            for (const echo of MEMORY_ECHOES) {
+              if (echo.w !== curLayerMagnet || W.discoveredEchoIds.has(echo.id)) continue;
+              const ex = echo.x * T + T / 2;
+              const ey = echo.y * T + T / 2;
+              if (Math.hypot(ex - W.player.x, ey - W.player.y) <= 640) {
+                W.discoveredEchoIds.add(echo.id);
+                echo.got = true;
+                const b = Math.round(15 * magnetCoinMult);
+                setCoins((c) => c + b);
+                setTotalCoins((c) => c + b);
+                setLoreEntries((prev) =>
+                  prev.some((l) => l.id === echo.id)
+                    ? prev
+                    : [...prev, { id: echo.id, t: `Memory Echo — ${echo.title} (${echo.speaker})`, x: echo.memory }]
+                );
+                spawnMagicRing(W.magicRings, { x: ex, y: ey, m: 0.75, r: 75, c: '#8fd5ff' });
+                spawnWorldPopup(W.player.x, W.player.y - 30, `🧲 Echo: ${echo.title} +${b} 🪙`, '#8fd5ff', 1.25);
+                audio.chime();
+                break;
+              }
+            }
+          }
+        }
+        const pullRadius = W.echoMagnetTimer > 0 ? 840 : W.moonPullTimer > 0 ? 580 : W.dawnTimer > 0 ? 210 : 92;
         const pullRadius2 = pullRadius * pullRadius;
-        const pullSpeed = (W.moonPullTimer > 0 ? 410 : W.dawnTimer > 0 ? 210 : 120) * dt;
+        const pullSpeed = (W.echoMagnetTimer > 0 ? 520 : W.moonPullTimer > 0 ? 410 : W.dawnTimer > 0 ? 225 : 120) * dt;
         const attractItem = (item: { x: number; y: number; got: number }) => {
           if (item.got) return;
           const dx = W.player.x - item.x;
@@ -5915,6 +6884,7 @@ export default function App() {
       const py0 = W.player.y;
       if (!W.player.sky && !W.player.dive && !W.player.glowdeep && !W.player.moonroad) {
         const starPickupR2 = (28 + pickupRadBonus) * (28 + pickupRadBonus);
+        const questPickupR2 = (30 + pickupRadBonus) * (30 + pickupRadBonus);
         for (const s of W.stars) {
           if (s.got) continue;
           const dx = s.x - px0;
@@ -5923,7 +6893,7 @@ export default function App() {
             s.got = 1;
             const gain = Math.round(3 * coinMult);
             setCoins((c) => c + gain);
-            setTotalCoins((c) => c + 3);
+            setTotalCoins((c) => c + gain);
             audio.chime();
             spawnWorldPopup(s.x, s.y - 12, `+${gain} 🪙 ⭐`, '#ffe875');
             showToast('Found a Star Gem! ✨');
@@ -5934,9 +6904,10 @@ export default function App() {
           if (qi.got || qi.w !== 0) continue;
           const dx = qi.x - px0;
           const dy = qi.y - py0;
-          if (dx * dx + dy * dy < 900) {
+          if (dx * dx + dy * dy < questPickupR2) {
             qi.got = 1;
             qi.q.c = (qi.q.c || 0) + 1;
+            setQuestRevision((r) => r + 1);
             audio.chime();
             spawnWorldPopup(qi.x, qi.y - 12, `✨ ${qi.q.it}`, '#b8f2ff');
             if (qi.q.st === 1 && qi.q.c >= (qi.q.n || 1)) {
@@ -5948,16 +6919,17 @@ export default function App() {
           }
         }
       } else if (W.player.dive) {
+        const pearlPickupR2 = (26 + pickupRadBonus) * (26 + pickupRadBonus);
         for (const p of W.pearls) {
           if (p.got) continue;
           const dx = p.x - px0;
           const dy = p.y - py0;
-          if (dx * dx + dy * dy < 676) {
+          if (dx * dx + dy * dy < pearlPickupR2) {
             p.got = 1;
             W.player.o2 = 100;
             const gain = Math.round(4 * coinMult);
             setCoins((c) => c + gain);
-            setTotalCoins((c) => c + 4);
+            setTotalCoins((c) => c + gain);
             audio.chime();
             spawnWorldPopup(p.x, p.y - 12, `+${gain} 🪙 🐚`, '#b8f2ff');
             showToast('Gathered a luminous Pearl! Air restored 🐚');
@@ -5965,15 +6937,16 @@ export default function App() {
           }
         }
       } else if (W.player.sky) {
+        const featherPickupR2 = (30 + pickupRadBonus) * (30 + pickupRadBonus);
         for (const f of W.feathers) {
           if (f.got) continue;
           const dx = f.x - px0;
           const dy = f.y - py0;
-          if (dx * dx + dy * dy < 900) {
+          if (dx * dx + dy * dy < featherPickupR2) {
             f.got = 1;
             const gain = Math.round(2 * coinMult);
             setCoins((c) => c + gain);
-            setTotalCoins((c) => c + 2);
+            setTotalCoins((c) => c + gain);
             audio.chime();
             spawnWorldPopup(f.x, f.y - 12, `+${gain} 🪙 🪶`, '#fff7d6');
             showToast('Found a Cloud Feather! 🪶');
@@ -5989,6 +6962,7 @@ export default function App() {
             W.player.dash = 0.35;
             const gain = Math.round(5 * coinMult);
             setCoins((c) => c + gain);
+            setTotalCoins((c) => c + gain);
             audio.chime();
             spawnWorldPopup(r.x, r.y - 14, `🌈 +${gain} 🪙`, '#ff9ebb');
             showToast('Zoomed through a Rainbow Ring! 🌈');
@@ -5996,20 +6970,22 @@ export default function App() {
           }
         }
       } else if (W.player.glowdeep) {
+        const sporePickupR2 = (30 + pickupRadBonus) * (30 + pickupRadBonus);
         for (const sp of W.glowSpores) {
           if (sp.got) continue;
           const dx = sp.x - px0;
           const dy = sp.y - py0;
-          if (dx * dx + dy * dy < 900) {
+          if (dx * dx + dy * dy < sporePickupR2) {
             sp.got = 1;
             const gain = Math.round(4 * coinMult);
             setCoins((c) => c + gain);
-            setTotalCoins((c) => c + 4);
+            setTotalCoins((c) => c + gain);
             audio.chime();
             spawnWorldPopup(sp.x, sp.y - 12, `+${gain} 🪙 🍄`, '#64f5c1');
             const soupQ = W.quests.find((q) => q.t === 'Soup of Remembering');
             if (soupQ) {
               soupQ.c = (soupQ.c || 0) + 1;
+              setQuestRevision((r) => r + 1);
               if (soupQ.st === 1 && soupQ.c >= (soupQ.n || 5)) {
                 soupQ.st = 2;
                 showToast('🍲 Enough Glowcap Spores! Return to Lumi in Glowdeep!');
@@ -6023,15 +6999,16 @@ export default function App() {
           }
         }
       } else if (W.player.moonroad) {
+        const notePickupR2 = (30 + pickupRadBonus) * (30 + pickupRadBonus);
         for (const mn of W.moonNotes) {
           if (mn.got) continue;
           const dx = mn.x - px0;
           const dy = mn.y - py0;
-          if (dx * dx + dy * dy < 900) {
+          if (dx * dx + dy * dy < notePickupR2) {
             mn.got = 1;
             const gain = Math.round(5 * coinMult);
             setCoins((c) => c + gain);
-            setTotalCoins((c) => c + 5);
+            setTotalCoins((c) => c + gain);
             audio.chime();
             spawnWorldPopup(mn.x, mn.y - 12, `+${gain} 🪙 ♪`, '#e2d4ff');
             showToast('♪ Gathered a Starlight Note! ✨');
@@ -6177,7 +7154,7 @@ export default function App() {
           town.vis = 1;
           if (town.n === 'Bellwood Treetops') W.dawnChimesCount += 2;
           audio.chime();
-          W.magicRings.push({ x: tx, y: ty, t: 0, m: 1.0, r: 160, c: '#7bd88f' });
+          spawnMagicRing(W.magicRings, { x: tx, y: ty, m: 1.0, r: 160, c: '#7bd88f' });
           spawnWorldPopup(tx, ty - 28, `🏘️ ${town.n} Unlocked!`, '#9be8a8', 1.5);
           showToast(`🏘️ Town Center Unlocked: ${town.n}! Fast travel ready via Song of Teleportation 🌀`);
           evalStoryFnRef.current();
@@ -6198,7 +7175,8 @@ export default function App() {
         saveGameFnRef.current(false);
       }
 
-      // Skip world rendering during fullscreen cutscenes or fullscreen 3D cottage modal (prevents dual-WebGL GPU contention)
+      // Pause world rendering when occluded by fullscreen cutscenes or fullscreen opaque modals
+      // (prevents dual-WebGL context contention on phones & zero preserveDrawingBuffer:false strobing)
       if (activeCutsceneRef.current !== null) {
         lastLoopWorkMs = 0;
         animId = requestAnimationFrame(loop);
@@ -6206,20 +7184,15 @@ export default function App() {
       }
       const curModal = activeModalRef.current;
       const isSideDrawerModal = curModal === 'cottage' && W.player.house;
+      const modalOccluding3D = curModal !== 'none' && curModal !== 'dialog' && !isSideDrawerModal;
       const modalCovering = curModal !== 'none' && !isSideDrawerModal;
-      if (curModal === 'cottage' && !W.player.house && renderer3DRef.current) {
+      if (modalOccluding3D && renderer3DRef.current) {
         lastLoopWorkMs = 0;
         animId = requestAnimationFrame(loop);
         return;
       }
-      if (modalCovering && now - hudSyncRef.current.lastModalDrawMs < 250) {
-        lastLoopWorkMs = 0;
-        animId = requestAnimationFrame(loop);
-        return;
-      }
-      hudSyncRef.current.lastModalDrawMs = now;
 
-      // 3. Render Canvas (deterministic pixel-budget DPR — never oscillates with frame timing)
+      // 3. Render Canvas (deterministic pixel-budget DPR — never cleared mid-walk by micro viewport jitter)
       const canvas = canvasRef.current;
       if (canvas) {
         const rawW = canvas.clientWidth || logicalW;
@@ -6233,13 +7206,15 @@ export default function App() {
           isPhone,
           isTablet,
           lowQ,
-          false
+          Boolean(r3d?.isSoftwareGl)
         );
         const safeScale = Number.isFinite(viewScale) && viewScale > 0 ? viewScale : 1;
         const bw = Math.max(1, Math.round(w * safeDpr));
         const bh = Math.max(1, Math.round(h * safeDpr));
-        if (canvas.width !== bw) canvas.width = bw;
-        if (canvas.height !== bh) canvas.height = bh;
+        if (Math.abs(canvas.width - bw) >= 2 || Math.abs(canvas.height - bh) >= 2) {
+          canvas.width = bw;
+          canvas.height = bh;
+        }
 
         const ctx = canvas.getContext('2d');
         if (ctx) {
@@ -6288,11 +7263,9 @@ export default function App() {
               W.dashGhosts[i].alpha -= dt * 2.6;
               if (W.dashGhosts[i].alpha <= 0) W.dashGhosts.splice(i, 1);
             }
-            for (let i = W.magicRings.length - 1; i >= 0; i--) {
-              W.magicRings[i].t += dt;
-              if (W.magicRings[i].t >= W.magicRings[i].m) W.magicRings.splice(i, 1);
-            }
+            tickMagicRings(W.magicRings, dt);
             tickWorldParticles(W.particles, dt, effLowQ);
+            tickScreenShake(W.screenShake, dt);
             for (let i = W.hollows.length - 1; i >= 0; i--) {
               const hl = W.hollows[i];
               if (hl.bloomT && hl.bloomT > 0) {
@@ -6314,6 +7287,41 @@ export default function App() {
               r3d.isSoftwareGl
             );
             r3d.resize(w, h, targetDpr3D);
+            // Refresh W.echoTargets3D when Star Sense (within 680px) or Echo Call (map-wide) is active
+            W.echoTargets3D.length = 0;
+            if ((W.echoTimer > 0 || W.starSenseTimer > 0) && !W.player.house) {
+              const curEchoLayer = getPlayerLayer(W.player);
+              const maxEchoD2 = W.echoTimer > 0 ? 1e12 : 680 * 680;
+              for (const e of MEMORY_ECHOES) {
+                if (e.w === curEchoLayer && !W.discoveredEchoIds.has(e.id)) {
+                  const ex = e.x * T + T / 2;
+                  const ey = e.y * T + T / 2;
+                  const d2 = (ex - W.player.x) * (ex - W.player.x) + (ey - W.player.y) * (ey - W.player.y);
+                  if (d2 <= maxEchoD2) {
+                    W.echoTargets3D.push({ x: ex, y: ey, kind: 'echo' });
+                  }
+                }
+              }
+              for (const p of MOON_DIARY_PAGES) {
+                if (p.w === curEchoLayer && !W.discoveredDiaryPages.has(p.page)) {
+                  const ex = p.x * T + T / 2;
+                  const ey = p.y * T + T / 2;
+                  const d2 = (ex - W.player.x) * (ex - W.player.x) + (ey - W.player.y) * (ey - W.player.y);
+                  if (d2 <= maxEchoD2) {
+                    W.echoTargets3D.push({ x: ex, y: ey, kind: 'diary' });
+                  }
+                }
+              }
+              if (W.echoTargets3D.length > 1) {
+                W.echoTargets3D.sort(
+                  (a, b) =>
+                    (a.x - W.player.x) * (a.x - W.player.x) +
+                    (a.y - W.player.y) * (a.y - W.player.y) -
+                    ((b.x - W.player.x) * (b.x - W.player.x) + (b.y - W.player.y) * (b.y - W.player.y))
+                );
+              }
+            }
+
             let sync = syncState3DRef.current;
             const livePreset = CAMERA_PRESETS_3D[liveSettings.camPreset ?? 0] ?? 'cozy';
             if (!sync) {
@@ -6339,6 +7347,10 @@ export default function App() {
                 magicRings: W.magicRings,
                 particles: W.particles,
                 iceMap: W.iceMap,
+                lilyMap: W.lilyMap,
+                hotSprings: W.hotSprings,
+                dkRevision: W.dkRevision,
+                echoTargets3D: W.echoTargets3D,
                 glowdeepPortal: W.glowdeepPortal,
                 moonGatePortal: W.moonGatePortal,
                 playerHomePortal: W.playerHomePortal,
@@ -6366,6 +7378,10 @@ export default function App() {
                   dreamwalkTimer: W.dreamwalkTimer,
                   tideTimer: W.tideTimer,
                   moonPullTimer: W.moonPullTimer,
+                  echoTimer: W.echoTimer,
+                  frostGlowTimer: W.frostGlowTimer,
+                  thermalGlideTimer: W.thermalGlideTimer,
+                  echoMagnetTimer: W.echoMagnetTimer,
                 },
                 lowQuality: effLowQ,
                 isTitleMode: false,
@@ -6373,6 +7389,7 @@ export default function App() {
                 cameraPitch: camera3DStateRef.current.pitch,
                 cameraZoom: camera3DStateRef.current.zoom,
                 cameraPreset: livePreset,
+                cameraShake: { x: W.screenShake.offsetX, y: W.screenShake.offsetY },
               };
               syncState3DRef.current = sync;
             } else {
@@ -6397,6 +7414,10 @@ export default function App() {
               sync.magicRings = W.magicRings;
               sync.particles = W.particles;
               sync.iceMap = W.iceMap;
+              sync.lilyMap = W.lilyMap;
+              sync.hotSprings = W.hotSprings;
+              sync.dkRevision = W.dkRevision;
+              sync.echoTargets3D = W.echoTargets3D;
               sync.glowdeepPortal = W.glowdeepPortal;
               sync.moonGatePortal = W.moonGatePortal;
               sync.playerHomePortal = W.playerHomePortal;
@@ -6423,12 +7444,22 @@ export default function App() {
               sync.activeSpellTimers.dreamwalkTimer = W.dreamwalkTimer;
               sync.activeSpellTimers.tideTimer = W.tideTimer;
               sync.activeSpellTimers.moonPullTimer = W.moonPullTimer;
+              sync.activeSpellTimers.echoTimer = W.echoTimer;
+              sync.activeSpellTimers.frostGlowTimer = W.frostGlowTimer;
+              sync.activeSpellTimers.thermalGlideTimer = W.thermalGlideTimer;
+              sync.activeSpellTimers.echoMagnetTimer = W.echoMagnetTimer;
               sync.lowQuality = effLowQ;
               sync.isTitleMode = false;
               sync.cameraYaw = camera3DStateRef.current.yaw;
               sync.cameraPitch = camera3DStateRef.current.pitch;
               sync.cameraZoom = camera3DStateRef.current.zoom;
               sync.cameraPreset = livePreset;
+              if (!sync.cameraShake) {
+                sync.cameraShake = { x: W.screenShake.offsetX, y: W.screenShake.offsetY };
+              } else {
+                sync.cameraShake.x = W.screenShake.offsetX;
+                sync.cameraShake.y = W.screenShake.offsetY;
+              }
             }
             r3d.render(sync, dt);
 
@@ -6783,24 +7814,23 @@ export default function App() {
               }
             }
 
-            // Star Sense, Moon Pull & Echo Call Projected Guide Beams
+            // Star Sense, Moon Pull & Echo Call Projected Guide Beams (timer decremented once in physics loop)
             if (W.starSenseTimer > 0) {
-              W.starSenseTimer -= dt;
               if (playerProjOut.visible) {
-                const nearestItems: { x: number; y: number; d2: number }[] = [];
-                const consider = (x: number, y: number, got: number | boolean | undefined) => {
+                const nearestItems: { x: number; y: number; d2: number; echoLabel?: string }[] = [];
+                const consider = (x: number, y: number, got: number | boolean | undefined, echoLabel?: string) => {
                   if (got) return;
                   const dx = x - W.player.x;
                   const dy = y - W.player.y;
                   const d2 = dx * dx + dy * dy;
-                  if (nearestItems.length < 6) {
-                    nearestItems.push({ x, y, d2 });
+                  if (nearestItems.length < 7) {
+                    nearestItems.push({ x, y, d2, echoLabel });
                   } else {
                     let worst = 0;
                     for (let k = 1; k < nearestItems.length; k++) {
                       if (nearestItems[k].d2 > nearestItems[worst].d2) worst = k;
                     }
-                    if (d2 < nearestItems[worst].d2) nearestItems[worst] = { x, y, d2 };
+                    if (d2 < nearestItems[worst].d2) nearestItems[worst] = { x, y, d2, echoLabel };
                   }
                 };
                 if (W.player.sky) {
@@ -6818,11 +7848,30 @@ export default function App() {
                     if (qi.w === 0) consider(qi.x, qi.y, qi.got);
                   }
                 }
+                const ssLayer = getPlayerLayer(W.player);
+                for (const e of MEMORY_ECHOES) {
+                  if (e.w === ssLayer && !W.discoveredEchoIds.has(e.id)) {
+                    const ex = e.x * T + T / 2;
+                    const ey = e.y * T + T / 2;
+                    if (Math.hypot(ex - W.player.x, ey - W.player.y) <= 680) {
+                      consider(ex, ey, false, `✨ ${e.title}`);
+                    }
+                  }
+                }
+                for (const p of MOON_DIARY_PAGES) {
+                  if (p.w === ssLayer && !W.discoveredDiaryPages.has(p.page)) {
+                    const px = p.x * T + T / 2;
+                    const py = p.y * T + T / 2;
+                    if (Math.hypot(px - W.player.x, py - W.player.y) <= 680) {
+                      consider(px, py, false, `🌙 Diary p.${p.page}`);
+                    }
+                  }
+                }
                 ctx.save();
                 for (const item of nearestItems) {
                   r3d.projectWorldToScreen(item.x, item.y, 0.55, w, h, W.B, W.SB, W.iceMap, layerName3D, projOut);
                   if (!projOut.visible) continue;
-                  ctx.strokeStyle = 'rgba(255, 216, 77, 0.85)';
+                  ctx.strokeStyle = item.echoLabel ? 'rgba(130, 226, 255, 0.85)' : 'rgba(255, 216, 77, 0.85)';
                   ctx.lineWidth = 2;
                   ctx.setLineDash([5, 5]);
                   ctx.lineDashOffset = -W.time * 24;
@@ -6831,23 +7880,29 @@ export default function App() {
                   ctx.lineTo(projOut.x, projOut.y);
                   ctx.stroke();
                   ctx.setLineDash([]);
-                  ctx.strokeStyle = '#ffd23f';
+                  ctx.strokeStyle = item.echoLabel ? '#7ce6ff' : '#ffd23f';
                   ctx.lineWidth = 2.4;
                   ctx.beginPath();
                   ctx.arc(projOut.x, projOut.y, 12 + Math.sin(W.time * 5) * 3, 0, Math.PI * 2);
                   ctx.stroke();
+                  if (item.echoLabel) {
+                    ctx.font = '800 11px Nunito, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillStyle = '#fff5b8';
+                    ctx.fillText(item.echoLabel, projOut.x, projOut.y - 16);
+                  }
                 }
                 ctx.restore();
               }
             }
 
-            if (W.moonPullTimer > 0 && playerProjOut.visible) {
+            if ((W.moonPullTimer > 0 || W.echoMagnetTimer > 0) && playerProjOut.visible) {
               ctx.save();
-              ctx.strokeStyle = 'rgba(180, 140, 255, 0.85)';
+              ctx.strokeStyle = W.echoMagnetTimer > 0 ? 'rgba(143, 213, 255, 0.88)' : 'rgba(180, 140, 255, 0.85)';
               ctx.lineWidth = 2.4;
               ctx.setLineDash([4, 6]);
               ctx.lineDashOffset = W.time * 48;
-              const maxPullD2 = 520 * 520;
+              const maxPullD2 = W.echoMagnetTimer > 0 ? 820 * 820 : 540 * 540;
               const drawPull = (x: number, y: number, got: number | boolean | undefined) => {
                 if (got) return;
                 const dx = x - W.player.x;
@@ -6933,10 +7988,11 @@ export default function App() {
             }
           } else {
             // === CLASSIC 2D CANVAS RENDER ===
+            tickScreenShake(W.screenShake, dt);
             const vw = w / safeScale;
             const vh = h / safeScale;
-            const cx = W.camera.x - vw / 2;
-            const cy = W.camera.y - vh / 2;
+            const cx = W.camera.x - vw / 2 - W.screenShake.offsetX;
+            const cy = W.camera.y - vh / 2 - W.screenShake.offsetY;
 
             // Scaled World-Viewport Camera Frame (keeps proportions consistent from phones to ultrawides)
             ctx.save();
@@ -7006,7 +8062,26 @@ export default function App() {
             ctx.restore();
           }
 
-          // 2. Active Spell Auras around Player (Dawn Break / Warmth / Dreamwalk / Tide / Moon Pull)
+          // 2. Active Spell Auras & Steaming Hot Springs (Dawn Break / Warmth / Dreamwalk / Tide / Moon Pull)
+          for (let hi = 0; hi < W.hotSprings.length; hi++) {
+            const hs = W.hotSprings[hi];
+            ctx.save();
+            const hsGrad = ctx.createRadialGradient(hs.x, hs.y, 8, hs.x, hs.y, 76);
+            hsGrad.addColorStop(0, 'rgba(128, 255, 232, 0.62)');
+            hsGrad.addColorStop(0.6, 'rgba(64, 215, 198, 0.34)');
+            hsGrad.addColorStop(1, 'rgba(64, 215, 198, 0)');
+            ctx.fillStyle = hsGrad;
+            ctx.beginPath();
+            ctx.ellipse(hs.x, hs.y, 76, 56, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(220, 255, 248, 0.72)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.ellipse(hs.x, hs.y, 58 + Math.sin(W.time * 3.5) * 4, 42 + Math.sin(W.time * 3.5) * 3, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+          }
+
           if (W.dawnTimer > 0) {
             ctx.save();
             drawGlowHalo(ctx, '255, 224, 120', W.player.x, W.player.y, 210, 0.46);
@@ -7044,9 +8119,9 @@ export default function App() {
             ctx.restore();
           }
 
-          if (W.moonPullTimer > 0) {
+          if (W.moonPullTimer > 0 || W.echoMagnetTimer > 0) {
             ctx.save();
-            ctx.strokeStyle = 'rgba(180, 140, 255, 0.7)';
+            ctx.strokeStyle = W.echoMagnetTimer > 0 ? 'rgba(130, 226, 255, 0.75)' : 'rgba(180, 140, 255, 0.7)';
             ctx.lineWidth = 2;
             const rMagnet = Math.max(4, 65 - ((Math.max(0, W.time) * 90) % 45));
             ctx.beginPath();
@@ -7055,7 +8130,7 @@ export default function App() {
             ctx.restore();
           }
 
-          // 3. Spell Blooms (flowers, coral anemones, cloud blossoms)
+          // 3. Spell Blooms (flowers, coral anemones, cloud blossoms, plus Rain Roots rainbow hybrids c>=4)
           const bloomColors = ['#ff7aa8', '#ffd23f', '#9be8a8', '#b48cff'];
           for (let i = W.blooms.length - 1; i >= 0; i--) {
             const bl = W.blooms[i];
@@ -7066,10 +8141,12 @@ export default function App() {
             if (dropNonEssentialUi || Boolean(bl.u) !== W.player.dive) continue;
             const age = Math.min(1, (W.time - bl.b) * 3.5);
             const sway = Math.sin(W.time * 3 + bl.x) * 1.5;
-            const petalColor = bloomColors[bl.c % bloomColors.length];
+            const petalColor = bl.c >= 4
+              ? `hsl(${((W.time * 65 + bl.x * 0.4 + bl.c * 45) % 360) | 0}, 92%, 70%)`
+              : bloomColors[bl.c % bloomColors.length];
             ctx.save();
             ctx.translate(bl.x + sway, bl.y);
-            ctx.scale(age, age);
+            ctx.scale(age * (bl.c >= 4 ? 1.3 : 1), age * (bl.c >= 4 ? 1.3 : 1));
             ctx.fillStyle = petalColor;
             for (let p = 0; p < 5; p++) {
               const pa = (p / 5) * Math.PI * 2;
@@ -7415,6 +8492,27 @@ export default function App() {
           yQueue.push({
             sortY: W.player.y + 8,
             draw: () => {
+              // 2D Cloud Wings / Thermal Breeze Ember Wings behind Mochi when soaring
+              if (W.player.sky || W.thermalGlideTimer > 0) {
+                const flap2D = Math.sin(W.time * (W.player.isMoving ? 10 : 5)) * 6;
+                const isEmberW = W.thermalGlideTimer > 0;
+                ctx.save();
+                ctx.translate(W.player.x, W.player.y - 6 - (W.player.z || 0) * 0.5);
+                ctx.fillStyle = isEmberW ? 'rgba(255, 168, 72, 0.85)' : 'rgba(232, 248, 255, 0.88)';
+                ctx.strokeStyle = isEmberW ? '#ffd23f' : '#8fd5ff';
+                ctx.lineWidth = 1.6;
+                for (const side of [-1, 1]) {
+                  ctx.beginPath();
+                  ctx.moveTo(side * 6, 0);
+                  ctx.quadraticCurveTo(side * 24, -14 + flap2D, side * 30, -2 + flap2D * 0.6);
+                  ctx.quadraticCurveTo(side * 18, 9 + flap2D * 0.3, side * 6, 5);
+                  ctx.closePath();
+                  ctx.fill();
+                  ctx.stroke();
+                }
+                ctx.restore();
+              }
+
               ctx.save();
               if (W.dreamwalkTimer > 0) {
                 ctx.globalAlpha = 0.72 + Math.sin(W.time * 7) * 0.1;
@@ -7514,25 +8612,23 @@ export default function App() {
 
           executeYRenderQueue(ctx, yQueue);
 
-          // Expanding Magic Rings & Sparkle Particles (always tick lifetimes; skip drawing under >30ms load)
-          for (let i = W.magicRings.length - 1; i >= 0; i--) {
-            const mr = W.magicRings[i];
-            mr.t = Math.max(0, mr.t + dt);
-            if (mr.t >= mr.m) {
-              W.magicRings.splice(i, 1);
-              continue;
+          // Pooled Expanding Magic Rings & Sparkle Particles (always tick lifetimes; skip drawing under >30ms load)
+          tickMagicRings(W.magicRings, dt);
+          if (!dropNonEssentialUi) {
+            for (let i = 0; i < W.magicRings.length; i++) {
+              const mr = W.magicRings[i];
+              if (mr.t < 0) continue;
+              const prog = Math.max(0, Math.min(1, mr.t / mr.m));
+              const ringRadius = Math.max(0.5, mr.r * prog);
+              ctx.save();
+              ctx.strokeStyle = mr.c;
+              ctx.globalAlpha = Math.max(0, 1 - prog);
+              ctx.lineWidth = 3 * (1 - prog) + 1;
+              ctx.beginPath();
+              ctx.arc(mr.x, mr.y, ringRadius, 0, Math.PI * 2);
+              ctx.stroke();
+              ctx.restore();
             }
-            if (dropNonEssentialUi) continue;
-            const prog = Math.max(0, Math.min(1, mr.t / mr.m));
-            const ringRadius = Math.max(0.5, mr.r * prog);
-            ctx.save();
-            ctx.strokeStyle = mr.c;
-            ctx.globalAlpha = Math.max(0, 1 - prog);
-            ctx.lineWidth = 3 * (1 - prog) + 1;
-            ctx.beginPath();
-            ctx.arc(mr.x, mr.y, ringRadius, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
           }
 
           tickWorldParticles(W.particles, dt, effLowQ);
@@ -7689,25 +8785,24 @@ export default function App() {
             W.realmFlash.alpha = Math.max(0, W.realmFlash.alpha - dt * 1.45);
           }
 
-          // Star Sense & Moon Pull World Beacons (allocation-light nearest selection)
+          // Star Sense & Moon Pull World Beacons (allocation-light nearest selection; timers decremented once in physics loop)
           if (W.starSenseTimer > 0) {
-            W.starSenseTimer -= dt;
             ctx.save();
-            const nearest: { x: number; y: number; d2: number }[] = [];
-            const considerTarget = (x: number, y: number, got: number | boolean | undefined) => {
+            const nearest: { x: number; y: number; d2: number; echoLabel?: string }[] = [];
+            const considerTarget = (x: number, y: number, got: number | boolean | undefined, echoLabel?: string) => {
               if (got) return;
               const dx = x - W.player.x;
               const dy = y - W.player.y;
               const d2 = dx * dx + dy * dy;
-              if (nearest.length < 6) {
-                nearest.push({ x, y, d2 });
+              if (nearest.length < 7) {
+                nearest.push({ x, y, d2, echoLabel });
               } else {
                 let worstIdx = 0;
                 for (let k = 1; k < nearest.length; k++) {
                   if (nearest[k].d2 > nearest[worstIdx].d2) worstIdx = k;
                 }
                 if (d2 < nearest[worstIdx].d2) {
-                  nearest[worstIdx] = { x, y, d2 };
+                  nearest[worstIdx] = { x, y, d2, echoLabel };
                 }
               }
             };
@@ -7726,12 +8821,31 @@ export default function App() {
                 if (qi.w === 0) considerTarget(qi.x, qi.y, qi.got);
               }
             }
+            const ss2DLayer = getPlayerLayer(W.player);
+            for (const e of MEMORY_ECHOES) {
+              if (e.w === ss2DLayer && !W.discoveredEchoIds.has(e.id)) {
+                const ex = e.x * T + T / 2;
+                const ey = e.y * T + T / 2;
+                if (Math.hypot(ex - W.player.x, ey - W.player.y) <= 680) {
+                  considerTarget(ex, ey, false, `✨ ${e.title}`);
+                }
+              }
+            }
+            for (const p of MOON_DIARY_PAGES) {
+              if (p.w === ss2DLayer && !W.discoveredDiaryPages.has(p.page)) {
+                const px = p.x * T + T / 2;
+                const py = p.y * T + T / 2;
+                if (Math.hypot(px - W.player.x, py - W.player.y) <= 680) {
+                  considerTarget(px, py, false, `🌙 Diary p.${p.page}`);
+                }
+              }
+            }
 
             for (const item of nearest) {
               const sx = item.x - cx;
               const sy = item.y - cy;
 
-              ctx.strokeStyle = 'rgba(255, 216, 77, 0.85)';
+              ctx.strokeStyle = item.echoLabel ? 'rgba(130, 226, 255, 0.85)' : 'rgba(255, 216, 77, 0.85)';
               ctx.lineWidth = 2;
               ctx.setLineDash([5, 5]);
               ctx.lineDashOffset = -W.time * 24;
@@ -7742,23 +8856,30 @@ export default function App() {
 
               // Pulsing target ring around visible items
               ctx.setLineDash([]);
-              ctx.strokeStyle = '#ffd23f';
+              ctx.strokeStyle = item.echoLabel ? '#7ce6ff' : '#ffd23f';
               ctx.lineWidth = 2.5;
               ctx.beginPath();
               ctx.arc(sx, sy, 13 + Math.sin(W.time * 5) * 3, 0, Math.PI * 2);
               ctx.stroke();
+
+              if (item.echoLabel) {
+                ctx.font = '800 11px Nunito, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#fff5b8';
+                ctx.fillText(item.echoLabel, sx, sy - 16);
+              }
             }
             ctx.restore();
           }
 
-          // Moon Pull magnetic tractor beams visibly pulling nearby gems/pearls/feathers/spores/notes
-          if (W.moonPullTimer > 0) {
+          // Moon Pull & Echo Magnet beams visibly pulling nearby gems/pearls/feathers/spores/notes
+          if (W.moonPullTimer > 0 || W.echoMagnetTimer > 0) {
             ctx.save();
-            ctx.strokeStyle = 'rgba(180, 140, 255, 0.85)';
+            ctx.strokeStyle = W.echoMagnetTimer > 0 ? 'rgba(143, 213, 255, 0.88)' : 'rgba(180, 140, 255, 0.85)';
             ctx.lineWidth = 2.4;
             ctx.setLineDash([4, 6]);
             ctx.lineDashOffset = W.time * 48;
-            const maxPullD2 = 520 * 520;
+            const maxPullD2 = W.echoMagnetTimer > 0 ? 820 * 820 : 520 * 520;
             const drawPullBeam = (x: number, y: number, got: number | boolean | undefined) => {
               if (got) return;
               const dx = x - W.player.x;
@@ -7789,7 +8910,6 @@ export default function App() {
 
           // Echo Call Sonar Beacons toward unfound Memory Echoes & Moon Diary Pages on current layer
           if (W.echoTimer > 0) {
-            W.echoTimer = Math.max(0, W.echoTimer - dt);
             ctx.save();
             const playerLayer = W.player.sky
               ? 2
@@ -8002,13 +9122,83 @@ export default function App() {
                 }
               }
 
-              // Player blip
+              // Active Objective / Quest Waypoint Pin on Minimap (current layer)
+              if (!W.player.house && !lullabyDoneRef.current) {
+                const curLyr = getPlayerLayer(W.player);
+                let wayX: number | null = null;
+                let wayY: number | null = null;
+                const readyQ = W.quests.find((q) => q.st === 2);
+                const delivQ = W.quests.find((q) => q.k === 'd' && q.st === 1 && q.to);
+                const questNpcName = readyQ ? readyQ.g : delivQ ? delivQ.to! : '';
+                if (questNpcName) {
+                  const qNpc = W.npcs.find((n) => n.n === questNpcName && getNpcLayer(n) === curLyr);
+                  if (qNpc) {
+                    wayX = qNpc.x;
+                    wayY = qNpc.y;
+                  }
+                }
+                if (wayX === null) {
+                  const chNow = currentChapterRef.current;
+                  const chNpcMap: Record<number, string> = {
+                    1: 'Pip',
+                    2: 'Captain Barnacle',
+                    3: 'Bumble',
+                    4: 'Tidbit',
+                    5: 'Ember',
+                    6: 'Madame Mizzle',
+                    7: curLyr === 4 ? 'The Moon' : 'Penny and Quill',
+                    8: 'Bellamy',
+                    9: 'Lumi',
+                    10: 'The Moon',
+                    11: 'Aurelle',
+                    12: 'Aurelle',
+                  };
+                  const targetNpcName = chNpcMap[chNow];
+                  const tNpc = targetNpcName ? W.npcs.find((n) => n.n === targetNpcName && getNpcLayer(n) === curLyr) : null;
+                  if (tNpc) {
+                    wayX = tNpc.x;
+                    wayY = tNpc.y;
+                  } else if (curLyr === 0 && (chNow === 7 || chNow === 10) && W.moonGatePortal) {
+                    wayX = W.moonGatePortal.x;
+                    wayY = W.moonGatePortal.y;
+                  } else if (curLyr === 0 && chNow === 9 && W.glowdeepPortal) {
+                    wayX = W.glowdeepPortal.x;
+                    wayY = W.glowdeepPortal.y;
+                  }
+                }
+                if (wayX !== null && wayY !== null) {
+                  const wx = Math.max(5, Math.min(123, (wayX / (N * T)) * 128));
+                  const wy = Math.max(5, Math.min(123, (wayY / (N * T)) * 128));
+                  mCtx.save();
+                  mCtx.fillStyle = '#ffd23f';
+                  mCtx.strokeStyle = '#271d31';
+                  mCtx.lineWidth = 1.4;
+                  mCtx.translate(wx, wy);
+                  mCtx.rotate(Math.PI / 4);
+                  mCtx.fillRect(-3, -3, 6, 6);
+                  mCtx.strokeRect(-3, -3, 6, 6);
+                  mCtx.restore();
+                }
+              }
+
+              // Player blip + facing chevron
               const px = W.player.house
                 ? Math.max(12, Math.min(114, 63 + ((W.player.x / T - HOUSE_ORIGIN_TX) / 10.5) * 51))
-                : Math.max(2, Math.min(126, (W.player.x / (N * T)) * 128));
+                : Math.max(4, Math.min(124, (W.player.x / (N * T)) * 128));
               const py = W.player.house
                 ? Math.max(22, Math.min(104, 63 + ((W.player.y / T - HOUSE_ORIGIN_TZ) / 7.5) * 41))
-                : Math.max(2, Math.min(126, (W.player.y / (N * T)) * 128));
+                : Math.max(4, Math.min(124, (W.player.y / (N * T)) * 128));
+              const dirLen = Math.hypot(W.player.dx, W.player.dy);
+              const fdx = dirLen > 0.01 ? W.player.dx / dirLen : W.player.face;
+              const fdy = dirLen > 0.01 ? W.player.dy / dirLen : 0;
+              mCtx.fillStyle = '#fff5a8';
+              mCtx.beginPath();
+              mCtx.moveTo(px + fdx * 7.2, py + fdy * 7.2);
+              mCtx.lineTo(px + fdy * 3.2 - fdx * 1.5, py - fdx * 3.2 - fdy * 1.5);
+              mCtx.lineTo(px - fdy * 3.2 - fdx * 1.5, py + fdx * 3.2 - fdy * 1.5);
+              mCtx.closePath();
+              mCtx.fill();
+
               mCtx.fillStyle = '#ff7aa8';
               mCtx.strokeStyle = '#ffffff';
               mCtx.lineWidth = 1.5;
@@ -8045,13 +9235,13 @@ export default function App() {
       case 4:
         return 'Ch. 4: Help Tidbit gather 3 Star Shards on the coast for Verse 2';
       case 5:
-        return 'Ch. 5: Befriend Ember in the dunes or soothe 2 Hollows for Verse 3';
+        return 'Ch. 5: Meet Ember in Cinder Cradle or soothe 3 Hollows for Verse 3';
       case 6:
-        return 'Ch. 6: Befriend Madame Mizzle or 5 islanders to unseal the Moon Road!';
+        return 'Ch. 6: Meet Madame Mizzle in Mirror Fens or soothe 4 Hollows for Moon Road';
       case 7:
-        return 'Ch. 7: Silver Moon Gate OPEN! Visit Moon Road or Penny & Quill';
+        return 'Ch. 7: Silver Moon Gate OPEN! Step onto Moon Road or meet Penny & Quill';
       case 8:
-        return 'Ch. 8: Befriend Bellamy or collect 10 Star Gems to unseal Glowdeep!';
+        return 'Ch. 8: Befriend Bellamy or fly 2 Rainbow Rings by Cirrus Castle for Glowdeep';
       case 9:
         return 'Ch. 9: Enter Glowdeep Roots by the Lantern Tree & help Lumi cook the Soup';
       case 10:
@@ -8065,8 +9255,9 @@ export default function App() {
     }
   };
 
-  // Detailed persistent Quest Tracker data for the HUD overlay
+  // Detailed persistent Quest Tracker data for the HUD overlay (questRevision keeps UI reactive on in-place mutations)
   const getQuestTrackerData = (): QuestTrackerData => {
+    void questRevision;
     const W = worldRef.current;
     const chInfo = STORY_CHAPTERS.find((c) => c.num === currentChapter) ?? STORY_CHAPTERS[0];
     const friendsCount = W.npcs.filter((n) => n.fr && !n.tree).length;
@@ -8207,36 +9398,43 @@ export default function App() {
       case 5: {
         const ember = byName('Ember');
         const cinderVisited = W.towns.some((t) => t.n === 'Cinder Spas' && t.vis === 1);
-        objective = 'Seek Ember in Cinder Cradle (South), or soothe 2 Hollows for Verse 3: Warm.';
+        objective = 'Meet Ember in Cinder Cradle (South) or soothe 3 Hollows for Verse 3: Warm.';
         locationHint = 'Cinder Cradle (South)';
-        progressCurrent = Math.min(2, Math.max(soothedCount, (ember?.met ? 1 : 0) + (cinderVisited ? 1 : 0)));
-        progressTarget = 2;
+        progressCurrent = Math.min(3, Math.max(soothedCount, (ember?.met ? 1 : 0) + (cinderVisited ? 2 : 0)));
+        progressTarget = 3;
         progressUnit = 'Steps';
         break;
       }
       case 6: {
         const mizzle = byName('Madame Mizzle');
-        objective = 'Speak with Madame Mizzle in Mirror Fens (SE) or reach 5 friends to unseal Moon Road!';
+        const lilyVisited = W.towns.some((t) => t.n === 'Lily Pavilion' && t.vis === 1);
+        objective = 'Meet Madame Mizzle in Mirror Fens (SE) or soothe 4 Hollows to unseal Moon Road!';
         locationHint = 'Mirror Fens (SE) · Moon Gate';
-        progressCurrent = Math.min(5, Math.max(friendsCount, mizzle?.met ? 4 : 0));
-        progressTarget = 5;
-        progressUnit = 'Friends';
+        progressCurrent = Math.min(4, Math.max(soothedCount, (mizzle?.met ? 2 : 0) + (lilyVisited ? 1 : 0)));
+        progressTarget = 4;
+        progressUnit = 'Steps';
         break;
       }
-      case 7:
-        objective = 'Silver Moon Gate is OPEN! Visit Moon Road, meet Penny & Quill (NE), or gather 4 Feathers.';
+      case 7: {
+        const ringsGot = W.rings.filter((r) => r.got).length;
+        const twins = byName('Penny and Quill');
+        objective = 'Silver Moon Gate OPEN! Visit Moon Road, or meet Penny & Quill in Aurora Reach (NE).';
         locationHint = 'Aurora Reach / Moon Gate';
-        progressCurrent = Math.min(4, Math.max(feathersGot, visitedMoonRoad ? 4 : 0));
-        progressTarget = 4;
-        progressUnit = 'Feathers';
+        progressCurrent = Math.min(3, Math.max(ringsGot, visitedMoonRoad ? 3 : twins?.met ? 2 : Math.floor(feathersGot / 2)));
+        progressTarget = 3;
+        progressUnit = 'Steps';
         break;
-      case 8:
-        objective = 'Meet Bellamy in Chime Canopy (N), visit Cirrus Castle, or collect 10 Star Gems to unseal Glowdeep!';
+      }
+      case 8: {
+        const ringsGot = W.rings.filter((r) => r.got).length;
+        const bellamy = byName('Bellamy');
+        objective = 'Befriend Bellamy in Chime Canopy (N) or fly 2 Rainbow Rings by Cirrus Castle to unseal Glowdeep!';
         locationHint = 'Chime Canopy (N) / Cirrus Castle';
-        progressCurrent = Math.min(10, starsGot);
-        progressTarget = 10;
-        progressUnit = 'Stars';
+        progressCurrent = Math.min(3, Math.max(ringsGot, bellamy?.fr ? 3 : bellamy?.met ? 2 : 0));
+        progressTarget = 3;
+        progressUnit = 'Steps';
         break;
+      }
       case 9: {
         const lq = qByTitle('Soup of Remembering');
         const lNeed = lq?.n ?? 5;
@@ -8307,10 +9505,17 @@ export default function App() {
   const is3DActive = webglReady;
   is3DActiveRef.current = is3DActive;
   const activeCamPresetLabel = CAMERA_PRESET_LABELS[settings.camPreset ?? 0] ?? 'Cozy 3/4';
+  const is3DOccluded =
+    activeCutscene !== null ||
+    (gameState !== 'playing' && activeModal !== 'none') ||
+    (gameState === 'playing' &&
+      activeModal !== 'none' &&
+      activeModal !== 'dialog' &&
+      !(activeModal === 'cottage' && playerPos.house));
 
   return (
     <div
-      className="relative w-screen h-dvh overflow-hidden select-none bg-[#5fb0e6]"
+      className="fixed inset-0 w-full h-full overflow-hidden select-none bg-[#181028]"
       onWheel={(e) => {
         if (!is3DActive || gameState !== 'playing' || activeModal !== 'none' || activeCutscene) return;
         const delta = Math.sign(e.deltaY) * 0.08;
@@ -8321,7 +9526,7 @@ export default function App() {
       <div
         ref={threeMountRef}
         aria-hidden="true"
-        className={`fixed inset-0 z-0 pointer-events-none ${is3DActive ? 'opacity-100 visible' : 'opacity-0 invisible'}`}
+        className={`fixed inset-0 z-0 pointer-events-none ${is3DActive && !is3DOccluded ? 'opacity-100 visible' : 'opacity-0 invisible'}`}
       />
 
       {/* Transparent 2D HUD projection overlay above 3D world canvas */}
@@ -8368,9 +9573,11 @@ export default function App() {
         }}
         onTouchStart={(e) => {
           if (!is3DActive || gameState !== 'playing' || activeModal !== 'none' || activeCutscene) return;
-          if (e.touches.length === 1) {
-            const t0 = e.touches[0];
-            const cam = camera3DStateRef.current;
+          const cam = camera3DStateRef.current;
+          // Use e.targetTouches (touches on the canvas itself) so Finger 1 on the joystick
+          // never blocks Finger 2 from rotating/zooming the 3D camera on the canvas.
+          if (e.targetTouches.length === 1) {
+            const t0 = e.targetTouches[0];
             cam.touchId = t0.identifier;
             cam.pointerDown = true;
             cam.dragging = false;
@@ -8379,15 +9586,33 @@ export default function App() {
             cam.lastX = t0.clientX;
             cam.lastY = t0.clientY;
             cam.didDrag = false;
+            cam.pinchStartDist = 0;
+          } else if (e.targetTouches.length >= 2) {
+            const t0 = e.targetTouches[0];
+            const t1 = e.targetTouches[1];
+            cam.pinchStartDist = Math.max(12, Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY));
+            cam.pinchStartZoom = cam.zoom;
+            cam.pointerDown = false;
+            cam.dragging = false;
+            cam.touchId = null;
+            cam.didDrag = true;
           }
         }}
         onTouchMove={(e) => {
           const cam = camera3DStateRef.current;
+          if (e.targetTouches.length >= 2 && cam.pinchStartDist > 0) {
+            const t0 = e.targetTouches[0];
+            const t1 = e.targetTouches[1];
+            const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+            cam.zoom = Math.max(0.65, Math.min(1.55, cam.pinchStartZoom * (dist / cam.pinchStartDist)));
+            cam.didDrag = true;
+            return;
+          }
           if (!cam.pointerDown || cam.touchId === null) return;
           let tMatch: React.Touch | null = null;
-          for (let i = 0; i < e.touches.length; i++) {
-            if (e.touches[i].identifier === cam.touchId) {
-              tMatch = e.touches[i];
+          for (let i = 0; i < e.targetTouches.length; i++) {
+            if (e.targetTouches[i].identifier === cam.touchId) {
+              tMatch = e.targetTouches[i];
               break;
             }
           }
@@ -8404,19 +9629,46 @@ export default function App() {
           cam.yaw -= dx * 0.009;
           cam.pitch = Math.max(-0.55, Math.min(0.65, cam.pitch - dy * 0.006));
         }}
-        onTouchEnd={() => {
-          camera3DStateRef.current.pointerDown = false;
-          camera3DStateRef.current.dragging = false;
-          camera3DStateRef.current.touchId = null;
+        onTouchEnd={(e) => {
+          const cam = camera3DStateRef.current;
+          if (e.targetTouches.length >= 2) {
+            const t0 = e.targetTouches[0];
+            const t1 = e.targetTouches[1];
+            cam.pinchStartDist = Math.max(12, Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY));
+            cam.pinchStartZoom = cam.zoom;
+            return;
+          }
+          cam.pinchStartDist = 0;
+          if (e.targetTouches.length === 1) {
+            const rem = e.targetTouches[0];
+            cam.touchId = rem.identifier;
+            cam.pointerDown = true;
+            cam.dragging = false;
+            cam.startX = rem.clientX;
+            cam.startY = rem.clientY;
+            cam.lastX = rem.clientX;
+            cam.lastY = rem.clientY;
+            return;
+          }
+          cam.pointerDown = false;
+          cam.dragging = false;
+          cam.touchId = null;
         }}
-        onTouchCancel={() => {
-          camera3DStateRef.current.pointerDown = false;
-          camera3DStateRef.current.dragging = false;
-          camera3DStateRef.current.touchId = null;
+        onTouchCancel={(e) => {
+          const cam = camera3DStateRef.current;
+          cam.pinchStartDist = 0;
+          if (e.targetTouches.length === 0) {
+            cam.pointerDown = false;
+            cam.dragging = false;
+            cam.touchId = null;
+          }
         }}
         onClick={(e) => {
           if (camera3DStateRef.current.didDrag) {
             camera3DStateRef.current.didDrag = false;
+            return;
+          }
+          if (worldRef.current.touchJoystick.active) {
             return;
           }
           if (gameState !== 'playing' || activeModal !== 'none' || activeCutscene) return;
@@ -8437,7 +9689,7 @@ export default function App() {
               : W.player.moonroad
               ? 'moonroad'
               : 'surface';
-            const planeY = getTerrainHeight3D(W.player.x / T, W.player.y / T, layerName3D, W.B, W.SB, W.iceMap);
+            const planeY = getTerrainHeight3D(W.player.x / T, W.player.y / T, layerName3D, W.B, W.SB, W.iceMap, W.lilyMap);
             const hit = { x: W.player.x, y: W.player.y };
             if (renderer3DRef.current.raycastGroundPoint(e.clientX, e.clientY, rect, planeY, hit)) {
               W.player.moveTarget = hit;
@@ -8459,27 +9711,21 @@ export default function App() {
       {/* Title Screen */}
       {gameState === 'title' && (
         <TitleScreen
-          hasSavedGame={Boolean(
-            localStorage.getItem(LOCAL_STORAGE_SAVE_PREFIX + currentSlot) ||
-              localStorage.getItem(LOCAL_STORAGE_LEGACY_SAVE)
-          )}
+          hasSavedGame={Boolean(readSlotSaveRaw(currentSlot))}
           playerLook={playerLook}
           currentSlot={currentSlot}
+          slotSummaries={readSlotSummaries()}
           season={currentSeason}
           weather={currentWeather}
           is3DBackdrop={is3DActive}
           onSelectSlot={handleSelectSlot}
+          onDeleteSlot={handleDeleteSlot}
           onContinue={() => {
             audio.init();
             snapCamera();
             setGameState('playing');
           }}
-          onNewGame={() => {
-            audio.init();
-            snapCamera();
-            setGameState('playing');
-            triggerCutscene('intro');
-          }}
+          onNewGame={(preserveEmptySlotLook) => handleStartNewGame(Boolean(preserveEmptySlotLook))}
           onCustomize={() => setActiveModal('wardrobe')}
           onOpenSettings={() => {
             setPauseInitialTab('settings');
@@ -8662,8 +9908,9 @@ export default function App() {
         >
           {activeHouseInteractable && (
             <button
-              onClick={() => handleHouseAction(activeHouseInteractable.id)}
-              className="px-3.5 py-1.5 rounded-2xl bg-linear-to-r from-[#ff7aa8] to-[#f46496] text-white font-black text-xs shadow-lg border border-white/60 flex items-center gap-1.5 cursor-pointer hover:brightness-105 active:scale-95 transition-transform"
+              type="button"
+              {...multiTouchTap(() => handleHouseAction(activeHouseInteractable.id))}
+              className="px-3.5 py-1.5 rounded-2xl touch-none bg-linear-to-r from-[#ff7aa8] to-[#f46496] text-white font-black text-xs shadow-lg border border-white/60 flex items-center gap-1.5 cursor-pointer hover:brightness-105 active:scale-95 transition-transform"
             >
               <span>{activeHouseInteractable.icon}</span>
               <span>
@@ -8687,8 +9934,9 @@ export default function App() {
               return (
                 <button
                   key={rm.id}
-                  onClick={() => jumpToHouseRoom3D(rm.id)}
-                  className={`px-2 py-1 rounded-xl text-[11px] font-black whitespace-nowrap shrink-0 flex items-center gap-1 cursor-pointer transition-colors ${
+                  type="button"
+                  {...multiTouchTap(() => jumpToHouseRoom3D(rm.id))}
+                  className={`px-2 py-1 rounded-xl touch-none text-[11px] font-black whitespace-nowrap shrink-0 flex items-center gap-1 cursor-pointer transition-colors ${
                     active
                       ? 'bg-[#ff7aa8] text-white shadow-xs'
                       : 'text-[#4a3550] dark:text-[#fdeeff] hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60'
@@ -8701,16 +9949,18 @@ export default function App() {
             })}
             <span className="w-px h-5 bg-[#e4b8ca] dark:bg-[#5f4070] shrink-0 mx-0.5" />
             <button
-              onClick={() => setActiveModal('cottage')}
-              className="px-2.5 py-1 rounded-xl bg-[#ffd23f] hover:brightness-105 text-[#4a3550] text-[11px] font-black whitespace-nowrap shrink-0 flex items-center gap-1 cursor-pointer"
+              type="button"
+              {...multiTouchTap(() => setActiveModal('cottage'))}
+              className="px-2.5 py-1 rounded-xl touch-none bg-[#ffd23f] hover:brightness-105 text-[#4a3550] text-[11px] font-black whitespace-nowrap shrink-0 flex items-center gap-1 cursor-pointer"
               title="Open House Decorator & Hamlet (Key H)"
             >
               <span>🎨</span>
               <span>Decorate</span>
             </button>
             <button
-              onClick={exitHouse3D}
-              className="px-2.5 py-1 rounded-xl storybook-well hover:border-[#ff7aa8] border border-transparent text-[#4a3550] dark:text-[#fdeeff] text-[11px] font-black whitespace-nowrap shrink-0 flex items-center gap-1 cursor-pointer"
+              type="button"
+              {...multiTouchTap(exitHouse3D)}
+              className="px-2.5 py-1 rounded-xl touch-none storybook-well hover:border-[#ff7aa8] border border-transparent text-[#4a3550] dark:text-[#fdeeff] text-[11px] font-black whitespace-nowrap shrink-0 flex items-center gap-1 cursor-pointer"
               title="Step Outside onto Lantern Isle"
             >
               <span>🚪</span>
@@ -8816,12 +10066,15 @@ export default function App() {
               q.st = 1;
               showToast(`Accepted quest: ${q.t}! 📜`);
             }
+            setQuestRevision((r) => r + 1);
             evaluateStoryProgress();
             checkAchFnRef.current();
           }}
           onTurnInQuest={(q) => {
             q.st = 3;
             setCoins((c) => c + 25);
+            setTotalCoins((c) => c + 25);
+            setQuestRevision((r) => r + 1);
             audio.chime();
             showToast(`Quest completed: ${q.t}! +25 coins! 🎁`);
             setLoreEntries((prev) =>
@@ -8832,6 +10085,7 @@ export default function App() {
           }}
           onDeliverQuest={(q) => {
             q.st = 2;
+            setQuestRevision((r) => r + 1);
             showToast(`Delivered item for ${q.t}! Return to ${q.g} to finish.`);
             evaluateStoryProgress();
           }}
@@ -9010,37 +10264,43 @@ export default function App() {
             })
           }
           onClose={() => {
-            handleSaveGame(false);
+            if (gameStateRef.current === 'playing' || readSlotSaveRaw(currentSlotRef.current)) {
+              handleSaveGame(false);
+            }
             setActiveModal('none');
           }}
           onSave={() => handleSaveGame(true)}
           onCopySaveCode={() => {
-            const code = btoa(JSON.stringify({ L: playerLook, coins, ch: currentChapter, ug: upgrades }));
+            const code = btoa(JSON.stringify(serializeSaveSnapshot()));
             navigator.clipboard.writeText(code);
-            showToast('Save code copied to clipboard! 📋');
+            showToast(`Slot ${currentSlotRef.current} save code copied to clipboard! 📋`);
           }}
-          onLoadSaveCode={() => {
-            const code = prompt('Paste your save code:');
-            if (code) {
-              try {
-                const parsed = JSON.parse(atob(code));
-                if (parsed.L) setPlayerLook((prev) => ({ ...prev, ...parsed.L }));
-                if (parsed.coins) setCoins(parsed.coins);
-                showToast('Save loaded successfully! 📥');
-              } catch (e) {
-                showToast('Invalid save code');
+          onLoadSaveCode={(code?: string) => {
+            if (!code) return;
+            try {
+              const parsed = JSON.parse(atob(code));
+              if (parsed && (typeof parsed.worldN === 'number' || typeof parsed.ch === 'number')) {
+                applySaveSnapshotToState(parsed);
+              } else {
+                if (parsed.L) {
+                  setPlayerLook((prev) => {
+                    const next = { ...prev, ...parsed.L };
+                    playerLookRef.current = next;
+                    return next;
+                  });
+                }
+                if (typeof parsed.coins === 'number') {
+                  coinsRef.current = parsed.coins;
+                  setCoins(parsed.coins);
+                }
               }
+              handleSaveGame(false);
+              showToast(`Save loaded into Slot ${currentSlotRef.current}! 📥`);
+            } catch (e) {
+              showToast('Invalid save code');
             }
           }}
-          onNewGame={() => {
-            if (confirm('Start fresh and reset current save slot?')) {
-              localStorage.removeItem(LOCAL_STORAGE_SAVE_PREFIX + currentSlotRef.current);
-              if (currentSlotRef.current === 1) {
-                localStorage.removeItem(LOCAL_STORAGE_LEGACY_SAVE);
-              }
-              window.location.reload();
-            }
-          }}
+          onNewGame={() => handleStartNewGame(false)}
           currentTrackIndex={currentTrackIdx}
           onSelectTrack={(idx) => {
             setCurrentTrackIdx(idx);
@@ -9082,6 +10342,8 @@ export default function App() {
             setActiveModal('none');
             setGameState('title');
           }}
+          currentSlot={currentSlot}
+          onStartFreshInSlot={() => handleStartNewGame(false)}
           settings={settings}
           onUpdateSettings={(key, val) => {
             setSettings((prev) => {
@@ -9093,46 +10355,10 @@ export default function App() {
               return updated;
             });
           }}
-          onExportSave={() => ({
-            L: playerLook,
-            coins,
-            tot: totalCoins,
-            ch: currentChapter,
-            done: lullabyDone,
-            skd: skyStoryDone,
-            vg: visitedGlowdeep,
-            vm: visitedMoonRoad,
-            lore: loreEntries,
-            ach: unlockedAchievements,
-            mv: unlockedCutscenes,
-            ug: upgrades,
-            fs: fishLog,
-            cottage: cottageState,
-            hamlet: hamletResidents,
-            visTowns: worldRef.current.towns.filter((t) => t.vis === 1).map((t) => t.n),
-          })}
+          onExportSave={serializeSaveSnapshot}
           onImportSave={(data) => {
-            if (data.L) setPlayerLook((prev) => ({ ...prev, ...data.L }));
-            if (typeof data.coins === 'number') setCoins(data.coins);
-            if (typeof data.tot === 'number') setTotalCoins(data.tot);
-            if (typeof data.ch === 'number') setCurrentChapter(data.ch);
-            if (data.done !== undefined) setLullabyDone(Boolean(data.done));
-            if (data.skd !== undefined) setSkyStoryDone(Boolean(data.skd));
-            if (data.vg) setVisitedGlowdeep(true);
-            if (data.vm) setVisitedMoonRoad(true);
-            if (Array.isArray(data.lore)) setLoreEntries(data.lore);
-            if (Array.isArray(data.ach)) setUnlockedAchievements(data.ach);
-            if (Array.isArray(data.mv)) setUnlockedCutscenes(data.mv);
-            if (data.ug) setUpgrades(data.ug);
-            if (data.fs) setFishLog(data.fs);
-            if (data.cottage) setCottageState(data.cottage);
-            if (Array.isArray(data.hamlet)) setHamletResidents(data.hamlet);
-            if (Array.isArray(data.visTowns)) {
-              worldRef.current.towns.forEach((t) => {
-                if (data.visTowns.includes(t.n)) t.vis = 1;
-              });
-            }
-            snapCamera();
+            applySaveSnapshotToState(data);
+            handleSaveGame(false);
             return true;
           }}
           currentSeason={currentSeason}
@@ -9446,6 +10672,7 @@ export default function App() {
       {/* Cutscene Overlay */}
       {activeCutscene && (
         <CutsceneOverlay
+          key={activeCutsceneKey || 'cutscene'}
           slides={activeCutscene}
           playerLook={playerLook}
           season={currentSeason}
@@ -9467,15 +10694,7 @@ export default function App() {
               name: found.n,
             };
           }}
-          onFinish={() => {
-            setActiveCutscene(null);
-            if (currentChapterRef.current === 1 && !unlockedCutscenesRef.current.includes('wake')) {
-              setUnlockedCutscenes((prev) => (prev.includes('wake') ? prev : [...prev, 'wake']));
-              showToast('🌟 Chapter 1: Morning After — Talk to Pip near the Lantern Tree!');
-            }
-            evaluateStoryProgress();
-            checkAchFnRef.current();
-          }}
+          onFinish={finishActiveCutscene}
         />
       )}
     </div>

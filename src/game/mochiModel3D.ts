@@ -31,6 +31,8 @@ export interface MochiActorOptions {
   moveSpeed?: number; // Normalized horizontal speed (~0 idle, ~1 walk, ~1.5 sprint)
   weatherBehavior?: 'dancing' | 'sheltering' | 'stargazing' | 'shivering' | 'idle';
   emoteAnim?: 'idle' | 'walk' | 'wave' | 'twirl' | 'dance' | 'cheer';
+  cloudWings?: boolean;
+  thermalWings?: boolean;
 }
 
 export interface HairSpringState {
@@ -1008,6 +1010,10 @@ export interface MochiRig {
   hairSpring: HairSpringState;
   wingL?: THREE.Group;
   wingR?: THREE.Group;
+  flightWingsGroup?: THREE.Group;
+  flightWingL?: THREE.Group;
+  flightWingR?: THREE.Group;
+  flightWingMat?: THREE.MeshStandardMaterial;
   frogLids?: THREE.Mesh[];
   torsoBaseScale: [number, number, number];
   bellyBaseScale: [number, number, number];
@@ -1224,6 +1230,52 @@ export function createMochiRig(): MochiRig {
     auraOrbs.push(m);
   }
 
+  const flightWingsGroup = new THREE.Group();
+  flightWingsGroup.position.set(0, 0.38, -0.34);
+  flightWingsGroup.visible = false;
+  const flightWingMat = new THREE.MeshStandardMaterial({
+    color: 0xf4fbff,
+    emissive: 0x8fd5ff,
+    emissiveIntensity: 0.48,
+    roughness: 0.25,
+    transparent: true,
+    opacity: 0.88,
+  });
+  const flightWingL = new THREE.Group();
+  const flightWingR = new THREE.Group();
+  flightWingL.position.set(-0.14, 0, 0);
+  flightWingR.position.set(0.14, 0, 0);
+  for (const [wg, k] of [
+    [flightWingL, -1],
+    [flightWingR, 1],
+  ] as const) {
+    // Primary upper pinion
+    const primary = new THREE.Mesh(GEO.wingPetal, flightWingMat);
+    primary.position.set(k * 0.34, 0.16, -0.04);
+    primary.rotation.set(0.18, k * 0.28, -k * 0.36);
+    primary.scale.set(2.1, 1.15, 0.24);
+    wg.add(primary);
+    // Mid billowing plume
+    const mid = new THREE.Mesh(GEO.wingPetal, flightWingMat);
+    mid.position.set(k * 0.28, 0.02, -0.06);
+    mid.rotation.set(0.14, k * 0.25, -k * 0.12);
+    mid.scale.set(1.75, 0.95, 0.22);
+    wg.add(mid);
+    // Lower trailing covert
+    const low = new THREE.Mesh(GEO.wingPetal, flightWingMat);
+    low.position.set(k * 0.2, -0.1, -0.05);
+    low.rotation.set(0.1, k * 0.2, k * 0.24);
+    low.scale.set(1.3, 0.72, 0.2);
+    wg.add(low);
+    // Soft cloud tuft at wing shoulder
+    const tuft = new THREE.Mesh(GEO.pom, flightWingMat);
+    tuft.position.set(k * 0.1, 0.06, 0.01);
+    tuft.scale.set(1.15, 0.95, 0.85);
+    wg.add(tuft);
+    flightWingsGroup.add(wg);
+  }
+  bodyPivot.add(flightWingsGroup);
+
   return {
     root,
     bodyPivot,
@@ -1299,6 +1351,10 @@ export function createMochiRig(): MochiRig {
     },
     wingL: undefined,
     wingR: undefined,
+    flightWingsGroup,
+    flightWingL,
+    flightWingR,
+    flightWingMat,
     frogLids: undefined,
     torsoBaseScale: [1.06, 0.92, 0.96],
     bellyBaseScale: [0.95, 0.86, 0.72],
@@ -4215,6 +4271,23 @@ export function updateMochiRig(rig: MochiRig, opts: MochiActorOptions): void {
   if (highlighted) {
     const pulse = 1 + Math.sin(time * 6) * 0.12;
     rig.highlightRing.scale.setScalar(pulse);
+  }
+
+  if (rig.flightWingsGroup && rig.flightWingL && rig.flightWingR && rig.flightWingMat) {
+    const showFlight = Boolean(opts.cloudWings);
+    rig.flightWingsGroup.visible = showFlight;
+    if (showFlight) {
+      const isThermal = Boolean(opts.thermalWings);
+      rig.flightWingMat.color.setHex(isThermal ? 0xffe4b8 : 0xf4fbff);
+      rig.flightWingMat.emissive.setHex(isThermal ? 0xff7b39 : 0x8fd5ff);
+      rig.flightWingMat.emissiveIntensity = isThermal ? 0.72 + Math.sin(time * 9) * 0.18 : 0.45 + Math.sin(time * 6) * 0.12;
+      rig.flightWingMat.opacity = Math.min(0.88, opacity);
+      const wingFlap = Math.sin(time * (isMoving ? 14 : 7.2) + bobOffset) * (isMoving ? 0.52 : 0.28);
+      rig.flightWingL.rotation.y = wingFlap;
+      rig.flightWingR.rotation.y = -wingFlap;
+      rig.flightWingL.rotation.z = Math.cos(time * 6 + bobOffset) * 0.08;
+      rig.flightWingR.rotation.z = -Math.cos(time * 6 + bobOffset) * 0.08;
+    }
   }
 
   const hasAura = Boolean(look.aura && look.aura > 0);

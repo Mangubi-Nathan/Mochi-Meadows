@@ -129,19 +129,20 @@ export class Cutscene3DStageRenderer {
   private slideElapsed = 0;
 
   constructor(canvas: HTMLCanvasElement, width: number, height: number) {
+    const isCompactViewport = typeof window !== 'undefined' && (window.innerWidth < 640 || window.innerHeight <= 520);
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: !isCompactViewport,
       alpha: false,
-      powerPreference: 'high-performance',
+      powerPreference: isCompactViewport ? 'default' : 'high-performance',
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isCompactViewport ? 1.1 : 1.75));
     this.renderer.setSize(Math.max(1, width), Math.max(1, height), false);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = isCompactViewport ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0xbce9ff, 0.012);

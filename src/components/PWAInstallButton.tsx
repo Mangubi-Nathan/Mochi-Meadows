@@ -78,7 +78,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 't
         </button>
 
         {showGuideModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-modal-safe bg-black/55 backdrop-blur-xs">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-modal-safe bg-[#160f24]/88">
             <div className="w-full max-w-sm storybook-modal rounded-3xl p-5 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-150">
               <div className="flex items-center justify-between">
                 <h3 className="font-display text-base sm:text-lg font-black text-[#4a3550] dark:text-[#fdeeff] flex items-center gap-2">

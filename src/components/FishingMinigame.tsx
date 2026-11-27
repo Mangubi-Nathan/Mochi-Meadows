@@ -199,7 +199,7 @@ export const FishingMinigame: React.FC<FishingMinigameProps> = ({
   }, [markerPos, catchZone, tries]);
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe bg-black/45 backdrop-blur-sm pointer-events-auto">
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe bg-[#160f24]/88 pointer-events-auto">
       <div className="w-full max-w-sm max-h-[94dvh] overflow-y-auto storybook-modal rounded-2xl sm:rounded-3xl p-4 sm:p-5 flex flex-col items-center gap-3 animate-in fade-in zoom-in-95 duration-150">
         <div className="text-center">
           <h3 className="font-black text-lg text-[#4a3550] dark:text-[#fdeeff] flex items-center justify-center gap-1.5">

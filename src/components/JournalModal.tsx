@@ -60,7 +60,7 @@ export const JournalModal: React.FC<JournalModalProps> = ({
   const completedQuestsCount = quests.filter((q) => q.st === 3).length;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe bg-black/50 backdrop-blur-sm pointer-events-auto">
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-modal-safe bg-[#160f24]/92 pointer-events-auto">
       <div className="w-full max-w-3xl storybook-modal rounded-2xl sm:rounded-3xl p-3 sm:p-5 max-h-[94dvh] flex flex-col gap-2.5 sm:gap-3.5 animate-in fade-in zoom-in-95 duration-150 overflow-hidden">
         {/* Header Bar */}
         <div className="flex items-center justify-between border-b border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 pb-2 shrink-0">
@@ -533,7 +533,7 @@ export const JournalModal: React.FC<JournalModalProps> = ({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {['intro', ...unlockedCutscenes].map((sceneKey) => (
+                {Array.from(new Set(['intro', ...unlockedCutscenes])).map((sceneKey) => (
                   <button
                     key={sceneKey}
                     onClick={() => {

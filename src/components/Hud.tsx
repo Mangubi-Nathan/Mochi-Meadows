@@ -8,6 +8,7 @@ import { MAGIC_SPELLS, SeasonId, WeatherConfig } from '../game/constants';
 import { SEASON_THEMES, normalizeSeasonId } from '../game/seasons';
 import { getSeasonalSpellVariant } from '../game/seasonalSpells';
 import { WeatherEffectBadges } from './WeatherEffectBadges';
+import { multiTouchTap } from '../utils/touchTap';
 
 export interface QuestTrackerSideQuest {
   title: string;
@@ -194,10 +195,11 @@ export const Hud: React.FC<HudProps> = React.memo(({
 
   const renderGazetteButton = (sizeClass: string) => (
     <button
-      onClick={onOpenGazette}
+      type="button"
+      {...multiTouchTap(onOpenGazette)}
       title={hasNewGazette ? 'Meadows Gazette — Fresh Edition Available!' : 'Island Gazette Newspaper'}
       aria-label={hasNewGazette ? 'Open Meadows Gazette (New edition available)' : 'Open Meadows Gazette'}
-      className={`relative ${sizeClass} rounded-xl flex items-center justify-center cursor-pointer transition-all hover:scale-105 active:scale-95 shrink-0 ${
+      className={`relative ${sizeClass} touch-none rounded-xl flex items-center justify-center cursor-pointer transition-all hover:scale-105 active:scale-95 shrink-0 ${
         hasNewGazette
           ? 'bg-[#fff2f7] dark:bg-[#492c54] ring-2 ring-[#ff7aa8]/75 shadow-[0_0_12px_rgba(255,122,168,0.55)] text-[#4a3550] dark:text-[#fdeeff]'
           : 'hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60 text-[#4a3550] dark:text-[#fdeeff]'
@@ -206,10 +208,10 @@ export const Hud: React.FC<HudProps> = React.memo(({
       <span>📰</span>
       {hasNewGazette && (
         <span className="pointer-events-none absolute -top-1.5 -right-1.5 flex items-center justify-center w-4 h-4">
-          <span className="absolute inset-0 rounded-full bg-[#ff7aa8]/65 animate-ping" />
+          <span className="absolute inset-0 rounded-full bg-[#ff7aa8]/45" />
           <svg
             viewBox="0 0 24 24"
-            className="relative w-3.5 h-3.5 drop-shadow-[0_0_5px_rgba(255,210,63,0.95)] animate-pulse"
+            className="relative w-3.5 h-3.5 drop-shadow-[0_0_5px_rgba(255,210,63,0.95)]"
             aria-hidden="true"
           >
             <g fill="#ff85b3" stroke="#fff7fb" strokeWidth="1.2">
@@ -250,10 +252,11 @@ export const Hud: React.FC<HudProps> = React.memo(({
       >
         {statusCollapsed ? (
           <button
-            onClick={() => setStatusCollapsed(false)}
+            type="button"
+            {...multiTouchTap(() => setStatusCollapsed(false))}
             title="Restore Status & Vitals"
             aria-label="Restore Status and Vitals panel"
-            className="storybook-panel border border-[#ffd3e2] dark:border-[#6b4a7a] rounded-2xl px-2.5 py-1 flex items-center justify-between gap-2 text-[#4a3550] dark:text-[#fdeeff] cursor-pointer hover:border-[#ff7aa8] transition-colors w-fit max-w-full"
+            className="storybook-panel touch-none border border-[#ffd3e2] dark:border-[#6b4a7a] rounded-2xl px-2.5 py-1 flex items-center justify-between gap-2 text-[#4a3550] dark:text-[#fdeeff] cursor-pointer hover:border-[#ff7aa8] transition-colors w-fit max-w-full"
           >
             <span className="flex items-center gap-1.5 min-w-0 text-[10.5px] font-black">
               <span className="shrink-0">📍</span>
@@ -306,10 +309,11 @@ export const Hud: React.FC<HudProps> = React.memo(({
                 );
               })()}
               <button
-                onClick={() => setStatusCollapsed(true)}
+                type="button"
+                {...multiTouchTap(() => setStatusCollapsed(true))}
                 title="Minimize Status & Vitals"
                 aria-label="Minimize Status and Vitals panel"
-                className="w-5 h-5 rounded-full bg-[#4a3550]/10 dark:bg-white/15 hover:bg-[#ff7aa8] hover:text-white text-[10px] font-black flex items-center justify-center cursor-pointer transition-colors shrink-0"
+                className="w-5 h-5 touch-none rounded-full bg-[#4a3550]/10 dark:bg-white/15 hover:bg-[#ff7aa8] hover:text-white text-[10px] font-black flex items-center justify-center cursor-pointer transition-colors shrink-0"
               >
                 —
               </button>
@@ -492,9 +496,10 @@ export const Hud: React.FC<HudProps> = React.memo(({
             return (
               <div className="storybook-panel border border-[#ffd3e2] dark:border-[#6b4a7a] rounded-2xl px-2.5 py-1 flex items-center justify-between gap-2 text-[#4a3550] dark:text-[#fdeeff]">
                 <button
-                  onClick={() => setTrackerCollapsed(false)}
+                  type="button"
+                  {...multiTouchTap(() => setTrackerCollapsed(false))}
                   title="Expand Quest Tracker"
-                  className="flex items-center gap-1.5 min-w-0 flex-1 text-left cursor-pointer group"
+                  className="flex items-center gap-1.5 min-w-0 flex-1 text-left touch-none cursor-pointer group"
                 >
                   <span className="text-xs shrink-0">{qt.everlightMode ? '✨' : '🧭'}</span>
                   <span className="text-[10.5px] font-black tracking-tight text-[#d94d80] dark:text-[#ff94ba] shrink-0">
@@ -509,9 +514,10 @@ export const Hud: React.FC<HudProps> = React.memo(({
                   <span className="text-[10px] opacity-65 shrink-0">▾</span>
                 </button>
                 <button
-                  onClick={onOpenJournal}
+                  type="button"
+                  {...multiTouchTap(onOpenJournal)}
                   title="Open Story Journal"
-                  className="text-[10px] font-black px-1.5 py-0.5 rounded-lg bg-[#ffd3e2]/45 dark:bg-[#5a3a6b]/55 hover:bg-[#ff7aa8]/30 cursor-pointer shrink-0"
+                  className="text-[10px] font-black px-1.5 py-0.5 rounded-lg touch-none bg-[#ffd3e2]/45 dark:bg-[#5a3a6b]/55 hover:bg-[#ff7aa8]/30 cursor-pointer shrink-0"
                 >
                   📖
                 </button>
@@ -551,27 +557,30 @@ export const Hud: React.FC<HudProps> = React.memo(({
                 <div className="flex items-center gap-1 shrink-0">
                   {onOpenAchievements && (
                     <button
-                      onClick={onOpenAchievements}
+                      type="button"
+                      {...multiTouchTap(onOpenAchievements)}
                       title="View Achievements & Milestones"
-                      className="px-1.5 py-0.5 rounded-lg bg-[#ffd23f]/25 hover:bg-[#ffd23f]/45 text-[9.5px] sm:text-[10px] font-black text-[#9b6200] dark:text-[#ffd23f] flex items-center gap-0.5 cursor-pointer transition-colors tabular-nums"
+                      className="px-1.5 py-0.5 rounded-lg touch-none bg-[#ffd23f]/25 hover:bg-[#ffd23f]/45 text-[9.5px] sm:text-[10px] font-black text-[#9b6200] dark:text-[#ffd23f] flex items-center gap-0.5 cursor-pointer transition-colors tabular-nums"
                     >
                       <span>🏆</span>
                       <span>{achievementsUnlocked}/{achievementsTotal}</span>
                     </button>
                   )}
                   <button
-                    onClick={onOpenJournal}
+                    type="button"
+                    {...multiTouchTap(onOpenJournal)}
                     title="Open Story Journal & Full Chapters"
-                    className="px-1.5 py-0.5 rounded-lg bg-[#ffd3e2]/45 dark:bg-[#5a3a6b]/55 hover:bg-[#ff7aa8]/30 text-[10px] font-black text-[#d94d80] dark:text-[#ff94ba] flex items-center gap-0.5 cursor-pointer transition-colors"
+                    className="px-1.5 py-0.5 rounded-lg touch-none bg-[#ffd3e2]/45 dark:bg-[#5a3a6b]/55 hover:bg-[#ff7aa8]/30 text-[10px] font-black text-[#d94d80] dark:text-[#ff94ba] flex items-center gap-0.5 cursor-pointer transition-colors"
                   >
                     <span>📖</span>
                     {!isTouch && <span className="opacity-80">J</span>}
                   </button>
                   <button
-                    onClick={() => setTrackerCollapsed(true)}
+                    type="button"
+                    {...multiTouchTap(() => setTrackerCollapsed(true))}
                     title="Minimize Quest Tracker"
                     aria-label="Minimize Quest Tracker"
-                    className="w-5 h-5 rounded-full bg-[#4a3550]/10 dark:bg-white/15 hover:bg-[#ff7aa8] hover:text-white text-[10px] font-black flex items-center justify-center cursor-pointer transition-colors shrink-0"
+                    className="w-5 h-5 touch-none rounded-full bg-[#4a3550]/10 dark:bg-white/15 hover:bg-[#ff7aa8] hover:text-white text-[10px] font-black flex items-center justify-center cursor-pointer transition-colors shrink-0"
                   >
                     —
                   </button>
@@ -580,9 +589,9 @@ export const Hud: React.FC<HudProps> = React.memo(({
 
               {/* Active Chapter Objective */}
               <div
-                onClick={onOpenJournal}
+                {...multiTouchTap(onOpenJournal)}
                 title="Tap to open full Story Journal"
-                className="cursor-pointer group space-y-1"
+                className="cursor-pointer touch-none group space-y-1"
               >
                 <p
                   className={`font-bold leading-snug text-[var(--fg)]/95 group-hover:text-[#d94d80] dark:group-hover:text-[#ff94ba] transition-colors ${
@@ -615,8 +624,8 @@ export const Hud: React.FC<HudProps> = React.memo(({
               {/* Active Side Quest / Sub-goal Callout */}
               {qt.activeSideQuest && (
                 <div
-                  onClick={onOpenJournal}
-                  className={`rounded-xl px-2 py-1 border cursor-pointer transition-colors ${
+                  {...multiTouchTap(onOpenJournal)}
+                  className={`rounded-xl px-2 py-1 border touch-none cursor-pointer transition-colors ${
                     qt.activeSideQuest.ready
                       ? 'bg-[#e9fbef]/85 dark:bg-[#1f3d2d]/75 border-[#6ad492]/70 dark:border-[#4fa870]/70'
                       : 'bg-[#fff3f8]/75 dark:bg-[#3a2548]/65 border-[#ffd3e2]/80 dark:border-[#6b4a7a]/70'
@@ -639,8 +648,9 @@ export const Hud: React.FC<HudProps> = React.memo(({
 
               {canSingDawnDuet && onSingDawnDuet && (
                 <button
-                  onClick={onSingDawnDuet}
-                  className="w-full py-1 px-2 rounded-xl border border-[#ffd23f] bg-linear-to-r from-[#ffd23f] via-[#ff9f43] to-[#ff7aa8] text-[#3b2a45] text-[10.5px] font-black shadow-sm hover:brightness-105 active:scale-95 transition-all cursor-pointer flex items-center justify-center gap-1 animate-pulse"
+                  type="button"
+                  {...multiTouchTap(onSingDawnDuet)}
+                  className="w-full py-1 px-2 rounded-xl touch-none border border-[#ffd23f] bg-linear-to-r from-[#ffd23f] via-[#ff9f43] to-[#ff7aa8] text-[#3b2a45] text-[10.5px] font-black shadow-sm hover:brightness-105 active:scale-95 transition-all cursor-pointer flex items-center justify-center gap-1"
                 >
                   <span>🎶</span>
                   <span>Sing the Dawn Duet!</span>
@@ -658,57 +668,68 @@ export const Hud: React.FC<HudProps> = React.memo(({
           {minimapCollapsed ? (
             <div className="storybook-panel border border-[#ffd3e2] dark:border-[#6b4a7a] rounded-xl p-0.5 flex items-center gap-0.5 shadow-xs">
               <button
-                onClick={() => setMinimapCollapsed(false)}
+                type="button"
+                {...multiTouchTap(() => setMinimapCollapsed(false))}
                 title="Show Minimap"
-                className="px-2 h-8 rounded-lg hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60 text-[11px] font-black text-[#4a3550] dark:text-[#fdeeff] flex items-center gap-1 cursor-pointer"
+                className="px-2 h-8 touch-none rounded-lg hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60 text-[11px] font-black text-[#4a3550] dark:text-[#fdeeff] flex items-center gap-1 cursor-pointer"
               >
                 <span>🧭</span>
                 <span className="hidden xs:inline">Radar</span>
               </button>
               <button
-                onClick={onOpenMap}
+                type="button"
+                {...multiTouchTap(onOpenMap)}
                 title="Open Full World Atlas (Key M)"
                 aria-label="Open Full World Atlas"
-                className="w-8 h-8 rounded-lg hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60 text-[#4a3550] dark:text-[#fdeeff] flex items-center justify-center cursor-pointer"
+                className="w-8 h-8 touch-none rounded-lg hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60 text-[#4a3550] dark:text-[#fdeeff] flex items-center justify-center cursor-pointer"
               >
                 🗺️
               </button>
             </div>
           ) : (
-            <div
-              onClick={onOpenMap}
-              title="Tap to open full World Atlas (Key M)"
-              className="cursor-pointer relative overflow-hidden rounded-2xl group transition-transform active:scale-95 shadow-[0_10px_24px_-6px_rgba(35,20,55,0.45)]"
-            >
-              <canvas
-                ref={minimapRef}
-                width={128}
-                height={128}
-                className={`rounded-2xl border-2 border-[#fffaf2]/90 dark:border-[#8e6bb5]/90 ring-1 ring-[#ff7aa8]/45 bg-[#271d31] transition-all duration-200 group-hover:border-[#ffd23f] ${
-                  isLandscapePhone
-                    ? 'w-16 h-16'
-                    : isPhone
-                    ? 'w-[72px] h-[72px]'
-                    : isTablet
-                    ? 'w-24 h-24'
-                    : 'w-28 h-28'
-                }`}
-              />
-              <span className="absolute top-1 left-1/2 -translate-x-1/2 text-[8px] font-black tracking-widest bg-[#271d31]/75 text-[#ffd23f] px-1 rounded pointer-events-none">
-                N
-              </span>
-              <span className="absolute bottom-1 right-1 text-[8.5px] sm:text-[9px] font-black bg-[#271d31]/80 text-white px-1 sm:px-1.5 py-0.5 rounded-md pointer-events-none opacity-85 group-hover:opacity-100 flex items-center gap-0.5 shadow-xs whitespace-nowrap">
-                <span>🗺️</span>
-                <span className="hidden sm:inline">Map</span>
-              </span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMinimapCollapsed(true);
+            <div className="relative">
+              <div
+                {...multiTouchTap(onOpenMap)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onOpenMap();
+                  }
                 }}
+                aria-label="Open Full World Atlas"
+                title="Tap to open full World Atlas (Key M)"
+                className="cursor-pointer touch-none relative overflow-hidden rounded-2xl group transition-transform active:scale-95 shadow-[0_10px_24px_-6px_rgba(35,20,55,0.45)]"
+              >
+                <canvas
+                  ref={minimapRef}
+                  width={128}
+                  height={128}
+                  className={`rounded-2xl border-2 border-[#fffaf2]/90 dark:border-[#8e6bb5]/90 ring-1 ring-[#ff7aa8]/45 bg-[#271d31] transition-all duration-200 group-hover:border-[#ffd23f] ${
+                    isLandscapePhone
+                      ? 'w-16 h-16'
+                      : isPhone
+                      ? 'w-[72px] h-[72px]'
+                      : isTablet
+                      ? 'w-24 h-24'
+                      : 'w-28 h-28'
+                  }`}
+                />
+                <span className="absolute top-1 left-1/2 -translate-x-1/2 text-[8px] font-black tracking-widest bg-[#271d31]/75 text-[#ffd23f] px-1 rounded pointer-events-none">
+                  N
+                </span>
+                <span className="absolute bottom-1 right-1 text-[8.5px] sm:text-[9px] font-black bg-[#271d31]/80 text-white px-1 sm:px-1.5 py-0.5 rounded-md pointer-events-none opacity-85 group-hover:opacity-100 flex items-center gap-0.5 shadow-xs whitespace-nowrap">
+                  <span>🗺️</span>
+                  <span className="hidden sm:inline">Map</span>
+                </span>
+              </div>
+              <button
+                type="button"
+                {...multiTouchTap(() => setMinimapCollapsed(true))}
                 title="Minimize radar"
                 aria-label="Minimize minimap"
-                className="absolute left-0.5 top-0.5 w-5 h-5 rounded-full bg-[#271d31]/75 text-white text-[10px] font-black flex items-center justify-center hover:bg-[#ff7aa8] cursor-pointer"
+                className="absolute left-0.5 top-0.5 z-10 w-5 h-5 touch-none rounded-full bg-[#271d31]/85 text-white text-[10px] font-black flex items-center justify-center hover:bg-[#ff7aa8] cursor-pointer"
               >
                 —
               </button>
@@ -721,12 +742,13 @@ export const Hud: React.FC<HudProps> = React.memo(({
           {is3D && (onSelectCameraPreset || onCycleCamera) && (
             <div className="relative">
               <button
-                onClick={() => {
+                type="button"
+                {...multiTouchTap(() => {
                   if (onSelectCameraPreset) setCamMenuOpen((prev) => !prev);
                   else onCycleCamera?.();
-                }}
+                })}
                 title={`Camera: ${cameraPresetLabel} (Choose 1st/3rd Person or Key V)`}
-                className="h-9 sm:h-10 px-2 rounded-xl hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60 text-[#4a3550] dark:text-[#fdeeff] flex items-center gap-1 cursor-pointer transition-all hover:scale-105 active:scale-95 text-[10.5px] font-black"
+                className="h-9 sm:h-10 px-2 touch-none rounded-xl hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60 text-[#4a3550] dark:text-[#fdeeff] flex items-center gap-1 cursor-pointer transition-all hover:scale-105 active:scale-95 text-[10.5px] font-black"
               >
                 <span>{cameraPresetLabel === '1st Person' ? '👁️' : '🎥'}</span>
                 <span className="hidden md:inline">{camShortBadge}</span>
@@ -749,11 +771,12 @@ export const Hud: React.FC<HudProps> = React.memo(({
                     return (
                       <button
                         key={opt.idx}
-                        onClick={() => {
+                        type="button"
+                        {...multiTouchTap(() => {
                           onSelectCameraPreset(opt.idx);
                           setCamMenuOpen(false);
-                        }}
-                        className={`w-full px-2.5 py-1.5 rounded-xl text-left text-[11px] font-bold flex items-center gap-2 cursor-pointer transition-colors ${
+                        })}
+                        className={`w-full px-2.5 py-1.5 touch-none rounded-xl text-left text-[11px] font-bold flex items-center gap-2 cursor-pointer transition-colors ${
                           active
                             ? 'bg-[#ff7aa8] text-white shadow-xs'
                             : 'hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60 text-[#4a3550] dark:text-[#fdeeff]'
@@ -769,19 +792,21 @@ export const Hud: React.FC<HudProps> = React.memo(({
             </div>
           )}
           <button
-            onClick={onToggleMusic}
+            type="button"
+            {...multiTouchTap(onToggleMusic)}
             title="Cycle Music Track / Mute (Key N)"
             aria-label="Cycle Music Track"
-            className={`${dockBtnSize} rounded-xl hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60 text-[#4a3550] dark:text-[#fdeeff] flex items-center justify-center cursor-pointer transition-all hover:scale-105 active:scale-95`}
+            className={`${dockBtnSize} touch-none rounded-xl hover:bg-[#ffd3e2]/55 dark:hover:bg-[#5a3a6b]/60 text-[#4a3550] dark:text-[#fdeeff] flex items-center justify-center cursor-pointer transition-all hover:scale-105 active:scale-95`}
           >
             {musicIcon}
           </button>
           {renderGazetteButton(dockBtnSize)}
           <button
-            onClick={onOpenPause}
+            type="button"
+            {...multiTouchTap(onOpenPause)}
             title="Game Menu, Tools & Settings (Esc)"
             aria-label="Open Game Menu and Tools"
-            className={`${dockBtnSize} rounded-xl bg-linear-to-b from-[#ff8bb3] to-[#f05c93] hover:brightness-105 text-white flex items-center justify-center cursor-pointer transition-all hover:scale-105 active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]`}
+            className={`${dockBtnSize} touch-none rounded-xl bg-linear-to-b from-[#ff8bb3] to-[#f05c93] hover:brightness-105 text-white flex items-center justify-center cursor-pointer transition-all hover:scale-105 active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]`}
           >
             ⚙️
           </button>
@@ -791,10 +816,11 @@ export const Hud: React.FC<HudProps> = React.memo(({
       {/* Bottom Center: Enchanted Magic Spells Bar (Hidden on phones where TouchControls provides Quick Spell Tray; sized safely on tablets & desktops) */}
       {spellsCollapsed ? (
         <button
-          onClick={() => setSpellsCollapsed(false)}
+          type="button"
+          {...multiTouchTap(() => setSpellsCollapsed(false))}
           title="Restore Magic Spells Bar"
           aria-label="Restore Magic Spells Bar"
-          className={`fixed left-1/2 -translate-x-1/2 items-center gap-1.5 pointer-events-auto storybook-panel border border-[#ffd3e2] dark:border-[#6b4a7a] rounded-2xl px-3 py-1.5 text-[11px] font-black text-[#4a3550] dark:text-[#fdeeff] hover:border-[#ff7aa8] cursor-pointer transition-colors ${
+          className={`fixed left-1/2 -translate-x-1/2 items-center gap-1.5 pointer-events-auto touch-none storybook-panel border border-[#ffd3e2] dark:border-[#6b4a7a] rounded-2xl px-3 py-1.5 text-[11px] font-black text-[#4a3550] dark:text-[#fdeeff] hover:border-[#ff7aa8] cursor-pointer transition-colors ${
             isTouch
               ? isPhone
                 ? 'hidden'
@@ -805,7 +831,7 @@ export const Hud: React.FC<HudProps> = React.memo(({
           <span>✨</span>
           <span>Spells</span>
           {Object.values(activeSpells).some(Boolean) && (
-            <span className="w-2 h-2 rounded-full bg-[#ffd23f] animate-pulse" />
+            <span className="w-2 h-2 rounded-full bg-[#ffd23f]" />
           )}
           <span className="text-[10px] opacity-70">▴</span>
         </button>
@@ -841,7 +867,8 @@ export const Hud: React.FC<HudProps> = React.memo(({
           return (
             <button
               key={spell.name}
-              onClick={() => onCastSpell(idx)}
+              type="button"
+              {...multiTouchTap(() => onCastSpell(idx), { disabled: isLocked })}
               title={spellTooltip}
               disabled={isLocked}
               style={
@@ -852,7 +879,7 @@ export const Hud: React.FC<HudProps> = React.memo(({
                     }
                   : undefined
               }
-              className={`relative w-8 h-8 sm:w-9 sm:h-9 lg:w-10 lg:h-10 rounded-full flex items-center justify-center text-base sm:text-lg lg:text-xl transition-all cursor-pointer shrink-0 border border-transparent ${
+              className={`relative w-8 h-8 sm:w-9 sm:h-9 lg:w-10 lg:h-10 touch-none rounded-full flex items-center justify-center text-base sm:text-lg lg:text-xl transition-all cursor-pointer shrink-0 border border-transparent ${
                 isTeleport ? 'ml-0.5 ring-1 ring-[#7de0ff]/60' : ''
               } ${
                 isLocked
@@ -881,10 +908,11 @@ export const Hud: React.FC<HudProps> = React.memo(({
           );
         })}
         <button
-          onClick={() => setSpellsCollapsed(true)}
+          type="button"
+          {...multiTouchTap(() => setSpellsCollapsed(true))}
           title="Minimize Spells Bar"
           aria-label="Minimize Magic Spells Bar"
-          className="w-6 h-8 sm:h-9 rounded-full bg-[#4a3550]/10 dark:bg-white/15 hover:bg-[#ff7aa8] hover:text-white text-[10px] font-black flex items-center justify-center cursor-pointer transition-colors shrink-0 ml-0.5"
+          className="w-6 h-8 sm:h-9 touch-none rounded-full bg-[#4a3550]/10 dark:bg-white/15 hover:bg-[#ff7aa8] hover:text-white text-[10px] font-black flex items-center justify-center cursor-pointer transition-colors shrink-0 ml-0.5"
         >
           —
         </button>
@@ -897,7 +925,7 @@ export const Hud: React.FC<HudProps> = React.memo(({
           {nearNpc && (
             <button
               onClick={onTalk}
-              className="absolute left-4 bottom-[max(1rem,env(safe-area-inset-bottom,0px))] pointer-events-auto w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-linear-to-b from-[#ffe26a] to-[#f4b932] border-2 border-[#fff3b8] text-[#4a3550] font-black text-2xl flex items-center justify-center shadow-[0_8px_20px_rgba(180,120,20,0.45)] active:scale-95 transition-transform animate-bounce cursor-pointer"
+              className="absolute left-4 bottom-[max(1rem,env(safe-area-inset-bottom,0px))] pointer-events-auto w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-linear-to-b from-[#ffe26a] to-[#f4b932] border-2 border-[#fff3b8] text-[#4a3550] font-black text-2xl flex items-center justify-center shadow-[0_8px_20px_rgba(180,120,20,0.45)] active:scale-95 transition-transform cursor-pointer"
               title="Talk (Key E)"
             >
               💬
@@ -930,7 +958,7 @@ export const Hud: React.FC<HudProps> = React.memo(({
           {nearbyPortal && onUsePortal && (
             <button
               onClick={onUsePortal}
-              className="absolute right-4 bottom-[max(1rem,env(safe-area-inset-bottom,0px))] pointer-events-auto px-3.5 h-14 sm:h-16 rounded-full border-2 font-black text-xs sm:text-sm flex items-center gap-1.5 shadow-[0_8px_20px_rgba(80,45,140,0.45)] hover:scale-105 active:scale-95 transition-transform cursor-pointer animate-pulse bg-linear-to-b from-[#9b6bff] to-[#6a3fd9] border-[#e8dcff] text-white"
+              className="absolute right-4 bottom-[max(1rem,env(safe-area-inset-bottom,0px))] pointer-events-auto px-3.5 h-14 sm:h-16 rounded-full border-2 font-black text-xs sm:text-sm flex items-center gap-1.5 shadow-[0_8px_20px_rgba(80,45,140,0.45)] hover:scale-105 active:scale-95 transition-transform cursor-pointer bg-linear-to-b from-[#9b6bff] to-[#6a3fd9] border-[#e8dcff] text-white"
               title={`${nearbyPortal.label} (Key F)`}
             >
               <span className="text-xl">{nearbyPortal.icon}</span>

@@ -51,6 +51,16 @@ export const DialogModal: React.FC<DialogModalProps> = ({
   const [isTypingAI, setIsTypingAI] = useState(false);
   const [currentShopOpen, setCurrentShopOpen] = useState(false);
   const portraitRef = useRef<HTMLCanvasElement | null>(null);
+  const typeTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (typeTimerRef.current !== null) {
+        window.clearInterval(typeTimerRef.current);
+        typeTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Shop inventory mapping
   const SHOP_INVENTORY: Record<string, string[]> = {
@@ -106,18 +116,26 @@ export const DialogModal: React.FC<DialogModalProps> = ({
   }, [npc]);
 
   const animateText = (text: string) => {
+    if (typeTimerRef.current !== null) {
+      window.clearInterval(typeTimerRef.current);
+      typeTimerRef.current = null;
+    }
     setDisplayedText('');
     let i = 0;
-    const timer = setInterval(() => {
+    const timer = window.setInterval(() => {
       i += 2;
       setDisplayedText(text.slice(0, i));
       if (i % 6 === 0) {
         audio.noteSpeech(76 + ((npc.bi * 3) % 12));
       }
       if (i >= text.length) {
-        clearInterval(timer);
+        window.clearInterval(timer);
+        if (typeTimerRef.current === timer) {
+          typeTimerRef.current = null;
+        }
       }
     }, 20);
+    typeTimerRef.current = timer;
   };
 
   // Keyword fallback when offline or without Gemini API key
@@ -236,7 +254,7 @@ export const DialogModal: React.FC<DialogModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-30 flex items-end justify-center p-modal-safe sm:pb-6 pointer-events-auto bg-black/30 backdrop-blur-xs">
+    <div className="fixed inset-0 z-30 flex items-end justify-center p-modal-safe sm:pb-6 pointer-events-auto bg-[#160f24]/45">
       <div className="w-full max-w-2xl storybook-modal rounded-2xl sm:rounded-3xl p-3 sm:p-5 flex flex-col gap-2.5 sm:gap-3 max-h-[92dvh] overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-200">
         {/* Header: Portrait, Name & Role, Close */}
         <div className="flex items-center gap-3 border-b border-[#f0c7d8]/80 dark:border-[#5b3b6b]/80 pb-2 shrink-0">
@@ -346,7 +364,7 @@ export const DialogModal: React.FC<DialogModalProps> = ({
                   onTurnInQuest(activeQuest);
                   animateText(activeQuest.e);
                 }}
-                className="text-xs sm:text-sm font-black px-3 py-1.5 rounded-xl border-2 border-[#ff7aa8] bg-[#ff7aa8] text-white shadow-sm hover:scale-105 active:scale-95 animate-pulse"
+                className="text-xs sm:text-sm font-black px-3 py-1.5 rounded-xl border-2 border-[#ff7aa8] bg-[#ff7aa8] text-white shadow-sm hover:scale-105 active:scale-95"
               >
                 🎁 Turn in: {activeQuest.t}!
               </button>
@@ -358,7 +376,7 @@ export const DialogModal: React.FC<DialogModalProps> = ({
                 onClick={() => {
                   onSingDawnDuet();
                 }}
-                className="text-xs sm:text-sm font-black px-3.5 py-1.5 rounded-xl border-2 border-[#fff3a8] bg-linear-to-r from-[#ffd23f] via-[#ff9f43] to-[#ff7aa8] text-[#3b2a45] shadow-md hover:scale-105 active:scale-95 animate-pulse cursor-pointer"
+                className="text-xs sm:text-sm font-black px-3.5 py-1.5 rounded-xl border-2 border-[#fff3a8] bg-linear-to-r from-[#ffd23f] via-[#ff9f43] to-[#ff7aa8] text-[#3b2a45] shadow-md hover:scale-105 active:scale-95 cursor-pointer"
               >
                 🎶 Sing the Dawn Duet!
               </button>
