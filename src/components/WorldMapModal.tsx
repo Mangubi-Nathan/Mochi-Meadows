@@ -164,7 +164,7 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     ty: WORLD_ANCHORS.reef.atollSunkenRuins.ty,
     color: '#52d6c6',
     description: 'Ancient stone arches beneath Tidepool Atoll accessible at low tide, guarding lost sea pearls.',
-    residents: ['Tidbit'],
+    residents: ['Atollia'],
   },
   {
     id: 'lm-abyss-trench',
@@ -176,6 +176,7 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     ty: WORLD_ANCHORS.reef.starlitKelpTrench.ty,
     color: '#7bd88f',
     description: 'Towering emerald sea-kelp sway beside deep sapphire trenches where Moon Koi and Lantern Eels glide.',
+    residents: ['Kelpie'],
   },
   {
     id: 'lm-dock-whirlpool',
@@ -198,6 +199,103 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     ty: WORLD_ANCHORS.reef.sunkenPearlGrotto.ty,
     color: '#a8f7ff',
     description: 'Quiet mother-of-pearl sea arch between Sapphire Bluff and Maple Mist cradling ancient giant clams.',
+    residents: ['Coraline'],
+  },
+  {
+    id: 'lm-aurora-trench',
+    layer: 1,
+    name: 'Aurora Coral Trench',
+    subtitle: 'Northern Glacial Reef Sanctuary',
+    icon: '🧊',
+    tx: WORLD_ANCHORS.reef.auroraCoralTrench.tx,
+    ty: WORLD_ANCHORS.reef.auroraCoralTrench.ty,
+    color: '#2fe6b5',
+    description: 'Glowing emerald coral canyon under the far northern sea currents, anchored by a warm Bubble Sanctuary.',
+    residents: ['Nautilus'],
+  },
+  {
+    id: 'lm-whale-sanctuary',
+    layer: 1,
+    name: 'Northern Whale Sanctuary',
+    subtitle: 'Northwestern Deep Shelf',
+    icon: '🐋',
+    tx: WORLD_ANCHORS.reef.northernWhaleSanctuary.tx,
+    ty: WORLD_ANCHORS.reef.northernWhaleSanctuary.ty,
+    color: '#7ee8fa',
+    description: 'Broad sapphire kelp meadow west of Aurora Trench where luminous ocean songs drift undisturbed.',
+    residents: ['Baleen'],
+  },
+  {
+    id: 'lm-abyssal-garden',
+    layer: 1,
+    name: 'Western Abyssal Garden',
+    subtitle: 'Far Western Bubble Outpost',
+    icon: '🎐',
+    tx: WORLD_ANCHORS.reef.westernAbyssalGarden.tx,
+    ty: WORLD_ANCHORS.reef.westernAbyssalGarden.ty,
+    color: '#6ef2ff',
+    description: 'Marble sea-lantern colonnade and Bubble Sanctuary tucked west of Honeycomb Hills & Sapphire Bluff.',
+    residents: ['Lumina'],
+  },
+  {
+    id: 'lm-eastern-shipwreck',
+    layer: 1,
+    name: 'Eastern Shipwreck Cove',
+    subtitle: 'Far Eastern Treasure Shelf',
+    icon: '⚓',
+    tx: WORLD_ANCHORS.reef.easternShipwreckCove.tx,
+    ty: WORLD_ANCHORS.reef.easternShipwreckCove.ty,
+    color: '#ffcf70',
+    description: 'Ancient galleon ribs resting north of Dawn Spire surrounded by glittering pearl oysters.',
+    residents: ['Shelly'],
+  },
+  {
+    id: 'lm-cinder-vents',
+    layer: 1,
+    name: 'Cinder Thermal Vents',
+    subtitle: 'Southern Geothermal Sea Floor',
+    icon: '🌋',
+    tx: WORLD_ANCHORS.reef.cinderThermalVents.tx,
+    ty: WORLD_ANCHORS.reef.cinderThermalVents.ty,
+    color: '#ff8e42',
+    description: 'Warm bubbling sea-chimneys warming the southern ocean between Cinder Cradle and Starfall Shoals.',
+    residents: ['Fumar'],
+  },
+  {
+    id: 'lm-starfall-sea',
+    layer: 1,
+    name: 'Starfall Sunken Plaza',
+    subtitle: 'Southeastern Star-Coral Outpost',
+    icon: '🌟',
+    tx: WORLD_ANCHORS.reef.starfallSunkenPlaza.tx,
+    ty: WORLD_ANCHORS.reef.starfallSunkenPlaza.ty,
+    color: '#ff9ebb',
+    description: 'Sunken marble astrolabe and twin Bubble Sanctuaries blooming where shooting stars kiss the southern sea.',
+    residents: ['Astrea'],
+  },
+  {
+    id: 'lm-abyssal-glass',
+    layer: 1,
+    name: 'Abyssal Glass Arch',
+    subtitle: 'Southwestern Deep Horizon',
+    icon: '🐚',
+    tx: WORLD_ANCHORS.reef.abyssalGlassArch.tx,
+    ty: WORLD_ANCHORS.reef.abyssalGlassArch.ty,
+    color: '#b4f0ff',
+    description: 'Translucent sea-glass archway beyond Tidepool Atoll guarding deep-water treasures and fresh air domes.',
+    residents: ['Nacre'],
+  },
+  {
+    id: 'lm-heart-reef',
+    layer: 1,
+    name: 'Heart Reef Sanctuary',
+    subtitle: 'Central Open Sea Crossroads',
+    icon: '🫧',
+    tx: WORLD_ANCHORS.reef.heartReefVault.tx,
+    ty: WORLD_ANCHORS.reef.heartReefVault.ty,
+    color: '#4be3d6',
+    description: 'Luminous central sea cavern beneath Lantern Isle with fresh Bubble Sanctuaries, pearl beds, and open currents connecting all four sides of the ocean.',
+    residents: ['Maris'],
   },
 
   // Layer 2: Sky Kingdom landmarks
@@ -270,6 +368,7 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     ty: WORLD_ANCHORS.glowdeep.sporeGrotto.ty,
     color: '#45e3f5',
     description: 'Lantern-lit crystal gondola dock floating on liquid starlight currents beneath Tidepool Atoll.',
+    residents: ['Mycel'],
   },
   {
     id: 'lm-cinder-geode',
@@ -281,6 +380,7 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     ty: WORLD_ANCHORS.glowdeep.magmaGeode.ty,
     color: '#ff9f70',
     description: 'Warm amber amethyst veins beneath Cinder Cradle where underground springs boil peacefully.',
+    residents: ['Basalt'],
   },
   {
     id: 'lm-aurora-cavern',
@@ -292,6 +392,19 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     ty: WORLD_ANCHORS.glowdeep.prismIce.ty,
     color: '#b48cff',
     description: 'Refracting quartz pillars singing softly with crystal Cave Echoes below Aurora Reach.',
+    residents: ['Glowbell'],
+  },
+  {
+    id: 'lm-se-echo-cavern',
+    layer: 3,
+    name: 'SE Echo Cavern',
+    subtitle: 'Southeastern Acoustic Amphitheater',
+    icon: '🎵',
+    tx: WORLD_ANCHORS.glowdeep.seEchoCavern.tx,
+    ty: WORLD_ANCHORS.glowdeep.seEchoCavern.ty,
+    color: '#d299ff',
+    description: 'Tiered quartz amphitheater below Mirror Fens where resonant crystal pipes echo cavern songs.',
+    residents: ['Resona'],
   },
   {
     id: 'lm-crystal-conservatory',
@@ -303,6 +416,115 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     ty: WORLD_ANCHORS.glowdeep.crystalConservatory.ty,
     color: '#6bf5c9',
     description: 'Emerald-and-amethyst cavern gallery extending beneath the eastern sea toward Dawn Spire.',
+    residents: ['Facet'],
+  },
+  {
+    id: 'lm-deep-canal-hub',
+    layer: 3,
+    name: 'Deep Canal Basin',
+    subtitle: 'Northwestern Gondola Terminal',
+    icon: '⚓',
+    tx: WORLD_ANCHORS.glowdeep.deepCanalHub.tx,
+    ty: WORLD_ANCHORS.glowdeep.deepCanalHub.ty,
+    color: '#52f2e0',
+    description: 'Broad cyan canal hub joining the northwestern subterranean waterway with the outer ring canal.',
+    residents: ['Venn'],
+  },
+  {
+    id: 'lm-northern-root-vault',
+    layer: 3,
+    name: 'Northern Root Vault',
+    subtitle: 'Far Northern Taproot Chamber',
+    icon: '🌿',
+    tx: WORLD_ANCHORS.glowdeep.northernRootVault.tx,
+    ty: WORLD_ANCHORS.glowdeep.northernRootVault.ty,
+    color: '#ffd23f',
+    description: 'Ancient golden roots beneath Chime Canopy anchoring the northern perimeter ring canal.',
+    residents: ['Acorn'],
+  },
+  {
+    id: 'lm-nw-spore-basin',
+    layer: 3,
+    name: 'North-West Spore Basin',
+    subtitle: 'Outer Perimeter Mushroom Vault',
+    icon: '🍄',
+    tx: WORLD_ANCHORS.glowdeep.northWestSporeBasin.tx,
+    ty: WORLD_ANCHORS.glowdeep.northWestSporeBasin.ty,
+    color: '#64f5c1',
+    description: 'Vast far-northwestern glowcap cavern along the subterranean ring canal.',
+    residents: ['Sporella'],
+  },
+  {
+    id: 'lm-ne-prism-sanctum',
+    layer: 3,
+    name: 'North-East Prism Sanctum',
+    subtitle: 'Far Corner Quartz Vault',
+    icon: '✨',
+    tx: WORLD_ANCHORS.glowdeep.northEastPrismSanctum.tx,
+    ty: WORLD_ANCHORS.glowdeep.northEastPrismSanctum.ty,
+    color: '#c298ff',
+    description: 'Shimmering amethyst crystal hall at the northeastern boundary of Glowdeep.',
+    residents: ['Quartz'],
+  },
+  {
+    id: 'lm-western-cinder-well',
+    layer: 3,
+    name: 'Western Cinder Well',
+    subtitle: 'Outer Geothermal Wellhead',
+    icon: '🕯️',
+    tx: WORLD_ANCHORS.glowdeep.westernCinderWell.tx,
+    ty: WORLD_ANCHORS.glowdeep.westernCinderWell.ty,
+    color: '#ffae4d',
+    description: 'Steaming basalt geothermal well warming the far western subterranean canals beneath Sapphire Bluff.',
+    residents: ['Emberkin'],
+  },
+  {
+    id: 'lm-eastern-echo-spire',
+    layer: 3,
+    name: 'Eastern Echo Spire',
+    subtitle: 'Far Eastern Quartz Obelisk',
+    icon: '🔔',
+    tx: WORLD_ANCHORS.glowdeep.easternEchoSpire.tx,
+    ty: WORLD_ANCHORS.glowdeep.easternEchoSpire.ty,
+    color: '#9ee8ff',
+    description: 'Soaring quartz chime obelisk ringing beneath Dawn Spire along the eastern subterranean loop.',
+    residents: ['Chime'],
+  },
+  {
+    id: 'lm-sw-subterranean-bay',
+    layer: 3,
+    name: 'SW Subterranean Bay',
+    subtitle: 'Southwestern Canal Harbor',
+    icon: '⛵',
+    tx: WORLD_ANCHORS.glowdeep.southWestSubterraneanBay.tx,
+    ty: WORLD_ANCHORS.glowdeep.southWestSubterraneanBay.ty,
+    color: '#68c4e4',
+    description: 'Quiet lantern-lit bay mooring glowing skiffs at the southwestern corner of Glowdeep Caverns.',
+    residents: ['Brook'],
+  },
+  {
+    id: 'lm-ember-caldera',
+    layer: 3,
+    name: 'Ember Caldera Grotto',
+    subtitle: 'Southeastern Thermal Reservoir',
+    icon: '🔥',
+    tx: WORLD_ANCHORS.glowdeep.southEastEmberCaldera.tx,
+    ty: WORLD_ANCHORS.glowdeep.southEastEmberCaldera.ty,
+    color: '#ff9642',
+    description: 'Warm amber magma cavern feeding both Magma Geode Vault and the Southern Deep Gorge.',
+    residents: ['Caldera'],
+  },
+  {
+    id: 'lm-southern-gorge',
+    layer: 3,
+    name: 'Southern Deep Gorge',
+    subtitle: 'Far Southern Perimeter Reach',
+    icon: '🪨',
+    tx: WORLD_ANCHORS.glowdeep.southernDeepGorge.tx,
+    ty: WORLD_ANCHORS.glowdeep.southernDeepGorge.ty,
+    color: '#ff7aa8',
+    description: 'Echoing canyon along the southernmost subterranean loop beneath Cinder Cradle.',
+    residents: ['Gorge'],
   },
 
   // Layer 4: Moon Road landmarks
@@ -328,6 +550,7 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     ty: WORLD_ANCHORS.moonroad.twinStars.ty,
     color: '#b48cff',
     description: 'Crystal arch dedicated to Kevin & Kevin, shimmering along the northwestern silver ribbon road.',
+    residents: ['Gemini'],
   },
   {
     id: 'lm-unsung-shrine',
@@ -339,6 +562,7 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     ty: WORLD_ANCHORS.moonroad.unsungShrine.ty,
     color: '#ff7aa8',
     description: 'Where the 9th Unsung Verse waits between the notes of the Lullaby and the Reveille.',
+    residents: ['Cadence'],
   },
   {
     id: 'lm-edge-silence',
@@ -362,6 +586,127 @@ const PHASE_LANDMARKS: PhaseLandmark[] = [
     ty: WORLD_ANCHORS.moonroad.crescentBelvedere.ty,
     color: '#8fd5ff',
     description: 'Silver crescent observatory floating above the western sea along the path from West Crescent Landing.',
+    residents: ['Selene'],
+  },
+  {
+    id: 'lm-zenith-observatory',
+    layer: 4,
+    name: 'Zenith Observatory',
+    subtitle: 'Northern Celestial Rotunda',
+    icon: '🔭',
+    tx: WORLD_ANCHORS.moonroad.zenithAstralObservatory.tx,
+    ty: WORLD_ANCHORS.moonroad.zenithAstralObservatory.ty,
+    color: '#ffd23f',
+    description: 'Marble stargazing dome crowning the northern Moon Road orbital ring and nebula walkways.',
+    residents: ['Comet'],
+  },
+  {
+    id: 'lm-south-stair-landing',
+    layer: 4,
+    name: 'South Stair Landing',
+    subtitle: 'Southern Marble Ascent',
+    icon: '🪜',
+    tx: WORLD_ANCHORS.moonroad.southStairLanding.tx,
+    ty: WORLD_ANCHORS.moonroad.southStairLanding.ty,
+    color: '#ffd87a',
+    description: 'Grand ascending starlight stairs linking the southern orbital loop straight toward The Moon’s Tea House.',
+    residents: ['Solstice'],
+  },
+  {
+    id: 'lm-west-crescent-landing',
+    layer: 4,
+    name: 'West Crescent Landing',
+    subtitle: 'Southwestern Star-Skiff Dock',
+    icon: '⛵',
+    tx: WORLD_ANCHORS.moonroad.westCrescentLanding.tx,
+    ty: WORLD_ANCHORS.moonroad.westCrescentLanding.ty,
+    color: '#7de0ff',
+    description: 'Floating silver balcony with a moored starlight skiff suspended above Tidepool Atoll.',
+    residents: ['Mariner'],
+  },
+  {
+    id: 'lm-nw-comet-bridge',
+    layer: 4,
+    name: 'North-West Comet Bridge',
+    subtitle: 'Corner Constellation Terrace',
+    icon: '☄️',
+    tx: WORLD_ANCHORS.moonroad.northWestCometBridge.tx,
+    ty: WORLD_ANCHORS.moonroad.northWestCometBridge.ty,
+    color: '#d8b4fe',
+    description: 'Starlit orbital landing in the northwestern sky linking Twin Stars Gazebo to the outer star ring.',
+    residents: ['Halley'],
+  },
+  {
+    id: 'lm-ne-aurora-promenade',
+    layer: 4,
+    name: 'North-East Aurora Promenade',
+    subtitle: 'Eastern Comet Veranda',
+    icon: '🌌',
+    tx: WORLD_ANCHORS.moonroad.northEastAuroraPromenade.tx,
+    ty: WORLD_ANCHORS.moonroad.northEastAuroraPromenade.ty,
+    color: '#9ef4ff',
+    description: 'Shimmering ribbon terrace overlooking northern aurora nebulae on the way to Dusk’s watchtower.',
+    residents: ['Borealis'],
+  },
+  {
+    id: 'lm-western-starlight-wharf',
+    layer: 4,
+    name: 'Western Starlight Wharf',
+    subtitle: 'Far Western Cloudship Pier',
+    icon: '🛸',
+    tx: WORLD_ANCHORS.moonroad.westernStarlightWharf.tx,
+    ty: WORLD_ANCHORS.moonroad.westernStarlightWharf.ty,
+    color: '#b8dcff',
+    description: 'Outer sky-timber pier and tethered cloudship moored at the far western crescent boundary.',
+    residents: ['Cloudskipper'],
+  },
+  {
+    id: 'lm-twilight-bazaar',
+    layer: 4,
+    name: 'Twilight Bazaar',
+    subtitle: 'Southeastern Star-Market Pavilion',
+    icon: '🏮',
+    tx: WORLD_ANCHORS.moonroad.twilightBazaar.tx,
+    ty: WORLD_ANCHORS.moonroad.twilightBazaar.ty,
+    color: '#c298ff',
+    description: 'Lantern-strung celestial market awnings connecting Moon’s Tea House to Starfall Pier.',
+    residents: ['Vesper'],
+  },
+  {
+    id: 'lm-lullaby-bell-arch',
+    layer: 4,
+    name: 'Lullaby Bell Arch',
+    subtitle: 'Southwestern Chime Bridge',
+    icon: '🔔',
+    tx: WORLD_ANCHORS.moonroad.lullabyBellArch.tx,
+    ty: WORLD_ANCHORS.moonroad.lullabyBellArch.ty,
+    color: '#fde68a',
+    description: 'Resonant marble bell archway singing softly across the southwestern nebula cloud bridges.',
+    residents: ['Lyric'],
+  },
+  {
+    id: 'lm-sw-lullaby-isle',
+    layer: 4,
+    name: 'South-West Lullaby Isle',
+    subtitle: 'Chamomile Blossom Pergola',
+    icon: '🌸',
+    tx: WORLD_ANCHORS.moonroad.southWestLullabyIsle.tx,
+    ty: WORLD_ANCHORS.moonroad.southWestLullabyIsle.ty,
+    color: '#f6d8ff',
+    description: 'Fragrant celestial chamomile arbor blooming at the far southwestern orbital island.',
+    residents: ['Dreama'],
+  },
+  {
+    id: 'lm-se-starfall-pier',
+    layer: 4,
+    name: 'South-East Starfall Pier',
+    subtitle: 'Outer Orbital Dock',
+    icon: '🌠',
+    tx: WORLD_ANCHORS.moonroad.southEastStarfallPier.tx,
+    ty: WORLD_ANCHORS.moonroad.southEastStarfallPier.ty,
+    color: '#ff9ebb',
+    description: 'Distant star-timber pier extending into the far southeastern cosmos.',
+    residents: ['Meteor'],
   },
 ];
 
@@ -721,21 +1066,9 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
             bl = 92;
 
           if (b >= 2) {
-            const isCliffEdge =
-              x > 0 &&
-              y > 0 &&
-              x < N - 1 &&
-              y < N - 1 &&
-              (terrain[i - 1] < 2 || terrain[i + 1] < 2 || terrain[i - N] < 2 || terrain[i + N] < 2);
-            if (isCliffEdge) {
-              r = 45;
-              g = 96;
-              bl = 132;
-            } else {
-              r = 12 + Math.round(ridge * 12);
-              g = 26 + Math.round(ridge * 14);
-              bl = 46 + Math.round(ridge * 18);
-            }
+            r = 22 + Math.round(ridge * 22);
+            g = 94 + Math.round(ridge * 40);
+            bl = 152 + Math.round(ridge * 28);
           } else if (b === 1) {
             r = 38 + Math.round(ridge * 24);
             g = 158 + Math.round(ridge * 38);
@@ -1296,9 +1629,9 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         }
         if (b >= 2) {
           return {
-            title: 'Submerged Island Bedrock',
-            icon: '🪨',
-            description: 'Solid basalt rock beneath the surface islands, framing undersea reef shelves.',
+            title: 'Central Sunlit Sea Cavern',
+            icon: '🪸',
+            description: 'Open bioluminescent sea passages beneath the central islands—swim straight across the sea in any direction!',
           };
         }
         if (b === 1) {
@@ -1430,7 +1763,7 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         return {
           title: 'Chamomile Aurora Nebula',
           icon: '🌌',
-          description: 'Soft violet cosmic clouds infused with memories of the Moon’s slumber.',
+          description: 'Walkable starlit velvet cloud banks linking the Moon Road’s outer constellation piers.',
         };
       }
       return {
@@ -1661,6 +1994,14 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
           WORLD_ANCHORS.reef.driftwoodDiveLagoon,
           WORLD_ANCHORS.reef.coralConcertHall,
           WORLD_ANCHORS.reef.sunkenPearlGrotto,
+          WORLD_ANCHORS.reef.westernAbyssalGarden,
+          WORLD_ANCHORS.reef.northernWhaleSanctuary,
+          WORLD_ANCHORS.reef.auroraCoralTrench,
+          WORLD_ANCHORS.reef.easternShipwreckCove,
+          WORLD_ANCHORS.reef.starfallSunkenPlaza,
+          WORLD_ANCHORS.reef.cinderThermalVents,
+          WORLD_ANCHORS.reef.atollSunkenRuins,
+          WORLD_ANCHORS.reef.abyssalGlassArch,
           WORLD_ANCHORS.reef.atollSunkenRuins,
           WORLD_ANCHORS.reef.starlitKelpTrench,
           WORLD_ANCHORS.reef.driftwoodDiveLagoon,
@@ -1718,18 +2059,39 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
           WORLD_ANCHORS.glowdeep.seEchoCavern,
           WORLD_ANCHORS.glowdeep.deepCanalHub,
           WORLD_ANCHORS.glowdeep.crystalConservatory,
+          WORLD_ANCHORS.glowdeep.northernRootVault,
+          WORLD_ANCHORS.glowdeep.westernCinderWell,
+          WORLD_ANCHORS.glowdeep.easternEchoSpire,
+          WORLD_ANCHORS.glowdeep.southernDeepGorge,
         ].forEach((dest) => {
           ctx.beginPath();
           ctx.moveTo(toPx(rr.tx), toPx(rr.ty));
           ctx.lineTo(toPx(dest.tx), toPx(dest.ty));
           ctx.stroke();
         });
+        const outerRing = [
+          WORLD_ANCHORS.glowdeep.northernRootVault,
+          WORLD_ANCHORS.glowdeep.northEastPrismSanctum,
+          WORLD_ANCHORS.glowdeep.easternEchoSpire,
+          WORLD_ANCHORS.glowdeep.southEastEmberCaldera,
+          WORLD_ANCHORS.glowdeep.southernDeepGorge,
+          WORLD_ANCHORS.glowdeep.southWestSubterraneanBay,
+          WORLD_ANCHORS.glowdeep.westernCinderWell,
+          WORLD_ANCHORS.glowdeep.northWestSporeBasin,
+          WORLD_ANCHORS.glowdeep.northernRootVault,
+        ];
+        ctx.beginPath();
+        outerRing.forEach((pt, i) => {
+          if (i === 0) ctx.moveTo(toPx(pt.tx), toPx(pt.ty));
+          else ctx.lineTo(toPx(pt.tx), toPx(pt.ty));
+        });
+        ctx.stroke();
         ctx.restore();
       } else if (selectedLayer === 4) {
         ctx.save();
         const tPulse = 0.55 + Math.sin(Date.now() / 400) * 0.25;
         ctx.strokeStyle = `rgba(255, 226, 132, ${tPulse})`;
-        ctx.lineWidth = 2.8 * markerScale;
+        ctx.lineWidth = 2.6 * markerScale;
         ctx.beginPath();
         [
           WORLD_ANCHORS.moonroad.westCrescentLanding,
@@ -1744,10 +2106,37 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
         });
         ctx.stroke();
 
+        // Outer Constellation Orbital Loop + Cross Spokes
         ctx.beginPath();
-        ctx.moveTo(toPx(WORLD_ANCHORS.moonroad.teaHouse.tx), toPx(WORLD_ANCHORS.moonroad.teaHouse.ty));
-        ctx.lineTo(toPx(WORLD_ANCHORS.moonroad.southStairLanding.tx), toPx(WORLD_ANCHORS.moonroad.southStairLanding.ty));
+        [
+          WORLD_ANCHORS.moonroad.zenithAstralObservatory,
+          WORLD_ANCHORS.moonroad.northEastAuroraPromenade,
+          WORLD_ANCHORS.moonroad.edgeOfSilence,
+          WORLD_ANCHORS.moonroad.southEastStarfallPier,
+          WORLD_ANCHORS.moonroad.southStairLanding,
+          WORLD_ANCHORS.moonroad.southWestLullabyIsle,
+          WORLD_ANCHORS.moonroad.westernStarlightWharf,
+          WORLD_ANCHORS.moonroad.northWestCometBridge,
+          WORLD_ANCHORS.moonroad.zenithAstralObservatory,
+        ].forEach((pt, idx) => {
+          if (idx === 0) ctx.moveTo(toPx(pt.tx), toPx(pt.ty));
+          else ctx.lineTo(toPx(pt.tx), toPx(pt.ty));
+        });
         ctx.stroke();
+
+        [
+          [WORLD_ANCHORS.moonroad.teaHouse, WORLD_ANCHORS.moonroad.zenithAstralObservatory],
+          [WORLD_ANCHORS.moonroad.teaHouse, WORLD_ANCHORS.moonroad.southStairLanding],
+          [WORLD_ANCHORS.moonroad.teaHouse, WORLD_ANCHORS.moonroad.twilightBazaar],
+          [WORLD_ANCHORS.moonroad.teaHouse, WORLD_ANCHORS.moonroad.lullabyBellArch],
+          [WORLD_ANCHORS.moonroad.twilightBazaar, WORLD_ANCHORS.moonroad.southEastStarfallPier],
+          [WORLD_ANCHORS.moonroad.lullabyBellArch, WORLD_ANCHORS.moonroad.southWestLullabyIsle],
+        ].forEach(([a, b]) => {
+          ctx.beginPath();
+          ctx.moveTo(toPx(a.tx), toPx(a.ty));
+          ctx.lineTo(toPx(b.tx), toPx(b.ty));
+          ctx.stroke();
+        });
         ctx.restore();
       }
 

@@ -9,11 +9,12 @@ export interface DeviceProfile {
   isDesktop: boolean;
   isLandscapePhone: boolean;
   isCompactPhone: boolean;
+  isPortraitViewport: boolean;
   isLowEnd: boolean;
   isTouch: boolean;
   isIOS: boolean;
   isAndroid: boolean;
-  orientation: 'portrait' | 'landscape';
+  orientation: 'landscape';
   width: number;
   height: number;
   pixelRatio: number;
@@ -40,19 +41,23 @@ function computeProfile(): DeviceProfile {
     (navigator as any).msMaxTouchPoints > 0
   );
 
-  const orientation: 'portrait' | 'landscape' = width >= height ? 'landscape' : 'portrait';
-  const isLandscapePhone = orientation === 'landscape' && height <= 520 && (isTouch || width < 960);
+  // Game runs exclusively in landscape; track vertical viewports only so the Rotate-to-Landscape guard can pause & gate gameplay cleanly.
+  const isPortraitViewport = width < height;
+  const effW = Math.max(width, height);
+  const effH = Math.min(width, height);
+  const orientation = 'landscape' as const;
+  const isLandscapePhone = effH <= 540 && (isTouch || effW < 980);
 
   let screenType: ScreenType = 'desktop';
-  if (width < 640 || isLandscapePhone) {
+  if (effW < 640 || isLandscapePhone) {
     screenType = 'phone';
-  } else if (width <= 1080 || (isTouch && width <= 1280)) {
+  } else if (effW <= 1080 || (isTouch && effW <= 1280)) {
     screenType = 'tablet';
   } else {
     screenType = 'desktop';
   }
 
-  const isCompactPhone = (screenType === 'phone' && width < 395) || (isLandscapePhone && height <= 430);
+  const isCompactPhone = isLandscapePhone && effH <= 430;
   const hardwareCores = isClient && typeof navigator.hardwareConcurrency === 'number' ? navigator.hardwareConcurrency : 8;
   const deviceMemGb = isClient && typeof (navigator as any).deviceMemory === 'number' ? (navigator as any).deviceMemory : 8;
   const isLowEnd =
@@ -70,19 +75,16 @@ function computeProfile(): DeviceProfile {
       : Math.min(rawDpr, isLowEnd ? 1.35 : 1.65)
     : 1;
 
-  // Proportional world camera zoom so phones aren't cramped, tablets are balanced,
-  // and wide/4K desktop monitors don't make Mochi microscopic or stretch sprites.
+  // Proportional landscape camera zoom across phones, tablets, laptops & 4K monitors
   let viewScale = 1.0;
-  if (isLandscapePhone) {
-    viewScale = Math.max(0.76, Math.min(0.92, height / 465));
-  } else if (screenType === 'phone') {
-    viewScale = Math.max(0.78, Math.min(0.94, width / 440));
+  if (isLandscapePhone || screenType === 'phone') {
+    viewScale = Math.max(0.76, Math.min(0.92, effH / 465));
   } else if (screenType === 'tablet') {
-    viewScale = orientation === 'portrait' ? Math.max(0.88, Math.min(0.98, width / 780)) : 1.0;
-  } else if (width >= 1560 && height >= 840) {
-    viewScale = Math.min(1.24, Math.max(1.0, width / 1460));
-  } else if (height < 650) {
-    viewScale = Math.max(0.86, height / 680);
+    viewScale = effH < 660 ? Math.max(0.88, effH / 680) : 1.0;
+  } else if (effW >= 1560 && effH >= 840) {
+    viewScale = Math.min(1.24, Math.max(1.0, effW / 1460));
+  } else if (effH < 650) {
+    viewScale = Math.max(0.86, effH / 680);
   }
 
   return {
@@ -92,6 +94,7 @@ function computeProfile(): DeviceProfile {
     isDesktop: screenType === 'desktop',
     isLandscapePhone,
     isCompactPhone,
+    isPortraitViewport,
     isLowEnd,
     isTouch,
     isIOS,
@@ -113,13 +116,13 @@ export function useDeviceProfile(): DeviceProfile {
     const applyUpdate = (isOrientation = false) => {
       const next = computeProfile();
       setProfile((prev) => {
-        const sameOrientation = prev.orientation === next.orientation;
+        const sameViewportOrientation = prev.isPortraitViewport === next.isPortraitViewport;
         const dw = Math.abs(prev.width - next.width);
         const dh = Math.abs(prev.height - next.height);
-        // Ignore tiny iOS/Android URL bar hide-show vertical jitter when width & orientation are unchanged
+        // Ignore tiny iOS/Android URL bar hide-show vertical jitter when width & landscape state are unchanged
         if (
           !isOrientation &&
-          sameOrientation &&
+          sameViewportOrientation &&
           prev.screenType === next.screenType &&
           (prev.isTouch || next.isTouch) &&
           dw <= 2 &&
@@ -131,7 +134,7 @@ export function useDeviceProfile(): DeviceProfile {
         if (
           prev.width === next.width &&
           prev.height === next.height &&
-          prev.orientation === next.orientation &&
+          prev.isPortraitViewport === next.isPortraitViewport &&
           prev.screenType === next.screenType &&
           prev.isLowEnd === next.isLowEnd &&
           prev.isTouch === next.isTouch &&
@@ -157,11 +160,13 @@ export function useDeviceProfile(): DeviceProfile {
 
     window.addEventListener('resize', onResize, { passive: true });
     window.addEventListener('orientationchange', onOrientation, { passive: true });
+    window.screen?.orientation?.addEventListener?.('change', onOrientation);
     window.visualViewport?.addEventListener('resize', onResize, { passive: true });
     return () => {
       if (timerId !== null) window.clearTimeout(timerId);
       window.removeEventListener('resize', onResize);
       window.removeEventListener('orientationchange', onOrientation);
+      window.screen?.orientation?.removeEventListener?.('change', onOrientation);
       window.visualViewport?.removeEventListener('resize', onResize);
     };
   }, []);

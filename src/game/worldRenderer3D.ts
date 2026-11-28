@@ -6,6 +6,10 @@
  */
 
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import {
   N,
   T,
@@ -100,6 +104,26 @@ import {
   createWeatherCrystalGeometry,
   createLilyPadGeometry,
 } from './worldShaders3D';
+import {
+  evaluateReefFishPose,
+  ReefFishSampleOut,
+  collectVisibleSkyIslandAnchors,
+} from './ambientWildlife';
+
+const _fishPoseScratch: ReefFishSampleOut = {
+  tx: 0,
+  tz: 0,
+  vx: 0,
+  vz: 0,
+  yaw: 0,
+  pitch: 0,
+  roll: 0,
+  liftY: 0.45,
+  scaleMul: 1,
+  tailFreq: 11,
+  tailAmp: 0.42,
+  bodySwayAmp: 0.12,
+};
 
 export type CameraPreset3D =
   | 'cozy'
@@ -199,6 +223,18 @@ export interface World3DSyncState {
   cameraZoom: number;
   cameraPreset: CameraPreset3D;
   cameraShake?: { x: number; y: number };
+  fishing?: {
+    active: boolean;
+    mode: 'idle' | 'reeling' | 'celebrate';
+    ledgeTx: number;
+    ledgeTz: number;
+    waterTx: number;
+    waterTz: number;
+    facingYaw: number;
+    reelProgress: number;
+    caughtFishColor?: string;
+    celebrateElapsed?: number;
+  };
 }
 
 // Module-level reusable math scratch objects (zero-GC inside animation loop)
@@ -271,6 +307,8 @@ interface TerraceAnchor {
 let activeSurfaceTerraces: TerraceAnchor[] = [];
 let activeDiveTerraces: TerraceAnchor[] = [];
 let activeSkyTerraces: TerraceAnchor[] = [];
+let activeGlowdeepTerraces: TerraceAnchor[] = [];
+let activeMoonTerraces: TerraceAnchor[] = [];
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
@@ -361,7 +399,17 @@ function getBathymetryRelief(tx: number, tz: number, isShallow: boolean): number
   const dGrotto = Math.hypot(tx - rf.sunkenPearlGrotto.tx, tz - rf.sunkenPearlGrotto.ty);
   const grottoBowl = 1 - smoothstep01(2.0, 6.4, dGrotto);
 
-  // 5. Winding abyssal oceanic trenches between outer islands vs raised coral seamount banks
+  // 5. Outer Quadrant Ocean Basins & Shelves (aurora trench, whale sanctuary, abyssal garden, thermal vents, starfall plaza)
+  const dAuroraTrench = Math.hypot(tx - rf.auroraCoralTrench.tx, tz - rf.auroraCoralTrench.ty);
+  const auroraBowl = 1 - smoothstep01(2.2, 7.6, dAuroraTrench);
+  const dWestGarden = Math.hypot(tx - rf.westernAbyssalGarden.tx, tz - rf.westernAbyssalGarden.ty);
+  const westGardenBowl = 1 - smoothstep01(2.0, 7.0, dWestGarden);
+  const dStarfallSea = Math.hypot(tx - rf.starfallSunkenPlaza.tx, tz - rf.starfallSunkenPlaza.ty);
+  const starfallBowl = 1 - smoothstep01(2.2, 7.2, dStarfallSea);
+  const dVents = Math.hypot(tx - rf.cinderThermalVents.tx, tz - rf.cinderThermalVents.ty);
+  const ventsMound = smoothstep01(4.2, 7.5, dVents) * (1 - smoothstep01(7.5, 11.5, dVents));
+
+  // 6. Winding abyssal oceanic trenches between outer islands vs raised coral seamount banks
   const riftWave = Math.abs(
     Math.sin(tx * 0.036 + tz * 0.028 + (vn(tx * 0.025, tz * 0.025, 72) - 0.5) * 3.1)
   );
@@ -379,6 +427,8 @@ function getBathymetryRelief(tx: number, tz: number, isShallow: boolean): number
   depth -= coralBowl * 0.52;
   depth += coralRim * 0.22;
   depth -= grottoBowl * 0.48;
+  depth -= auroraBowl * 0.42 + westGardenBowl * 0.34 + starfallBowl * 0.36;
+  depth += ventsMound * 0.26;
   depth += (vn(tx * 0.19, tz * 0.19, 75) - 0.5) * 0.14;
   return Math.max(-2.18, Math.min(-0.22, depth));
 }
@@ -641,6 +691,17 @@ function sampleSkyBaseH(ix: number, iz: number, SB: Uint8Array): number {
   return 0.42;
 }
 
+function sampleMoonRoadBaseH(ix: number, iz: number): number {
+  const x = Math.max(0, Math.min(N - 1, ix));
+  const z = Math.max(0, Math.min(N - 1, iz));
+  const cell = getMoonRoadCell(x, z);
+  if (cell === 'silence') return 0.68;
+  if (cell === 'platform') return 0.46;
+  if (cell === 'road') return 0.34;
+  if (cell === 'nebula') return 0.22;
+  return -1.48;
+}
+
 export type WorldLayer3D = 'surface' | 'sky' | 'dive' | 'glowdeep' | 'moonroad' | 'house';
 
 export function getTerrainHeight3D(
@@ -698,7 +759,10 @@ export function getTerrainHeight3D(
     const bHere = B[cz * N + cx];
     let h = getBathymetryRelief(tx, tz, bHere === 1);
     if (bHere >= 2) {
-      h = Math.max(-0.18, h * 0.35 - 0.12);
+      // Smooth central sunlit sea-cavern floor so players swim cleanly straight across the middle
+      const dHeart = Math.hypot(tx - WORLD_ANCHORS.reef.heartReefVault.tx, tz - WORLD_ANCHORS.reef.heartReefVault.ty);
+      const heartBowl = 1 - smoothstep01(3.0, 9.5, dHeart);
+      h = h * 0.65 - 0.16 - heartBowl * 0.18;
     }
     if (activeDiveTerraces.length) {
       h = applyTerraceFlatten(h, tx, tz, activeDiveTerraces);
@@ -710,7 +774,10 @@ export function getTerrainHeight3D(
     const h10 = sampleGlowdeepBaseH(x0 + 1, z0);
     const h01 = sampleGlowdeepBaseH(x0, z0 + 1);
     const h11 = sampleGlowdeepBaseH(x0 + 1, z0 + 1);
-    const base = (h00 * (1 - ux) + h10 * ux) * (1 - uz) + (h01 * (1 - ux) + h11 * ux) * uz;
+    let base = (h00 * (1 - ux) + h10 * ux) * (1 - uz) + (h01 * (1 - ux) + h11 * ux) * uz;
+    if (activeGlowdeepTerraces.length) {
+      base = applyTerraceFlatten(base, tx, tz, activeGlowdeepTerraces);
+    }
     const gd = WORLD_ANCHORS.glowdeep;
     const dRoot = Math.hypot(tx - gd.rootedRest.tx, tz - gd.rootedRest.ty);
     const dCons = Math.hypot(tx - gd.crystalConservatory.tx, tz - gd.crystalConservatory.ty);
@@ -718,13 +785,16 @@ export function getTerrainHeight3D(
     return base + Math.sin(tx * 0.55) * Math.cos(tz * 0.52) * 0.04;
   }
 
-  const x = Math.max(0, Math.min(N - 1, Math.round(tx)));
-  const z = Math.max(0, Math.min(N - 1, Math.round(tz)));
-  const cell = getMoonRoadCell(x, z);
-  if (cell === 'silence') return 0.68;
-  if (cell === 'platform') return 0.46;
-  if (cell === 'road') return 0.34;
-  return -1.55;
+  // Smooth bilinear Moon Road elevation across platforms, silver bridges, silence watchtower & walkable nebulae
+  const m00 = sampleMoonRoadBaseH(x0, z0);
+  const m10 = sampleMoonRoadBaseH(x0 + 1, z0);
+  const m01 = sampleMoonRoadBaseH(x0, z0 + 1);
+  const m11 = sampleMoonRoadBaseH(x0 + 1, z0 + 1);
+  let moonH = (m00 * (1 - ux) + m10 * ux) * (1 - uz) + (m01 * (1 - ux) + m11 * ux) * uz;
+  if (activeMoonTerraces.length) {
+    moonH = applyTerraceFlatten(moonH, tx, tz, activeMoonTerraces);
+  }
+  return moonH;
 }
 
 function bIsDryForTerrace(tx: number, tz: number, B: Uint8Array): boolean {
@@ -748,7 +818,7 @@ function getActorGroundY3D(
   const h = getTerrainHeight3D(tx, tz, layer, B, SB, iceMap, lilyMap);
   if (layer === 'surface' && h < 0) return -0.2; // buoyant swimming depth in translucent water surface
   if (layer === 'sky' && h < 0) return 0.36; // flying on cloud wings
-  if (layer === 'moonroad' && h < 0) return 0.32;
+  if (layer === 'moonroad' && h < 0.15) return 0.24;
   return h;
 }
 
@@ -756,6 +826,259 @@ interface InstancedBatch {
   mesh: THREE.InstancedMesh;
   max: number;
   count: number;
+}
+
+const DOF_FULLSCREEN_VERT = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+// Separable 9-tap (5 bilinear fetch) Gaussian blur for silky miniature diorama bokeh without halo noise
+const DOF_GAUSSIAN_FRAG = /* glsl */ `
+  uniform sampler2D tInput;
+  uniform vec2 uTexelStep;
+  varying vec2 vUv;
+
+  void main() {
+    vec2 step1 = uTexelStep * 1.3846153846;
+    vec2 step2 = uTexelStep * 3.2307692308;
+
+    vec4 col = texture2D(tInput, vUv) * 0.2270270270;
+    col += texture2D(tInput, clamp(vUv + step1, vec2(0.0), vec2(1.0))) * 0.3162162162;
+    col += texture2D(tInput, clamp(vUv - step1, vec2(0.0), vec2(1.0))) * 0.3162162162;
+    col += texture2D(tInput, clamp(vUv + step2, vec2(0.0), vec2(1.0))) * 0.0702702703;
+    col += texture2D(tInput, clamp(vUv - step2, vec2(0.0), vec2(1.0))) * 0.0702702703;
+    gl_FragColor = col;
+  }
+`;
+
+const DOF_TILT_COMPOSITE_FRAG = /* glsl */ `
+  #include <packing>
+
+  uniform sampler2D tDiffuse;
+  uniform sampler2D tBlur;
+  uniform sampler2D tDepth;
+
+  uniform float uCamNear;
+  uniform float uCamFar;
+  uniform float uFocusDist;
+  uniform float uFocusBand;
+  uniform float uFarSpan;
+  uniform float uNearSafe;
+  uniform float uBlurStrength;
+  uniform float uTiltShiftStrength;
+  uniform float uMaxMix;
+
+  varying vec2 vUv;
+
+  void main() {
+    vec4 sharp = texture2D(tDiffuse, vUv);
+    vec4 blurred = texture2D(tBlur, vUv);
+
+    float fragCoordZ = texture2D(tDepth, vUv).x;
+    float viewZ = perspectiveDepthToViewZ(fragCoordZ, uCamNear, uCamFar);
+    float depthDist = fragCoordZ >= 0.9999 ? uCamFar : max(uCamNear, -viewZ);
+
+    // Subtle distance-based CoC keeping player & immediate village sharp, softly blurring extreme horizon
+    float farDelta = max(0.0, depthDist - (uFocusDist + uFocusBand));
+    float farCoC = smoothstep(0.0, max(1.0, uFarSpan), farDelta);
+
+    // Cozy diorama tilt-shift vertical gradient gated by depth so central subjects stay razor-sharp
+    float topBand = smoothstep(0.16, 0.48, max(0.0, vUv.y - 0.5));
+    float topDepthWeight = smoothstep(0.0, 9.0, max(0.0, depthDist - (uFocusDist - 1.5)));
+    float topTilt = topBand * topDepthWeight;
+
+    float botBand = smoothstep(0.24, 0.49, max(0.0, 0.5 - vUv.y));
+    float botDepthWeight = smoothstep(1.5, 8.5, max(0.0, (uFocusDist - uNearSafe) - depthDist));
+    float botTilt = botBand * botDepthWeight;
+
+    float tiltCoC = max(topTilt, botTilt) * uTiltShiftStrength;
+    float coc = clamp(max(farCoC, tiltCoC) * uBlurStrength, 0.0, uMaxMix);
+    coc = coc * coc * (3.0 - 2.0 * coc);
+
+    gl_FragColor = mix(sharp, blurred, coc);
+  }
+`;
+
+class TiltShiftGaussianDofPass extends Pass {
+  private blurRtA: THREE.WebGLRenderTarget;
+  private blurRtB: THREE.WebGLRenderTarget;
+  private blurMatH: THREE.ShaderMaterial;
+  private blurMatV: THREE.ShaderMaterial;
+  private compositeMat: THREE.ShaderMaterial;
+  private fsQuad: FullScreenQuad;
+  private blurWidth = 1;
+  private blurHeight = 1;
+  private blurRadius = 1.25;
+
+  constructor(width: number, height: number) {
+    super();
+    this.needsSwap = true;
+
+    this.blurWidth = Math.max(1, Math.floor(width * 0.5));
+    this.blurHeight = Math.max(1, Math.floor(height * 0.5));
+
+    const rtOpts: THREE.RenderTargetOptions = {
+      type: THREE.HalfFloatType,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      wrapS: THREE.ClampToEdgeWrapping,
+      wrapT: THREE.ClampToEdgeWrapping,
+      depthBuffer: false,
+      stencilBuffer: false,
+    };
+    this.blurRtA = new THREE.WebGLRenderTarget(this.blurWidth, this.blurHeight, rtOpts);
+    this.blurRtA.texture.name = 'DofBlurA';
+    this.blurRtB = new THREE.WebGLRenderTarget(this.blurWidth, this.blurHeight, rtOpts);
+    this.blurRtB.texture.name = 'DofBlurB';
+
+    this.blurMatH = new THREE.ShaderMaterial({
+      uniforms: {
+        tInput: { value: null },
+        uTexelStep: { value: new THREE.Vector2(this.blurRadius / this.blurWidth, 0) },
+      },
+      vertexShader: DOF_FULLSCREEN_VERT,
+      fragmentShader: DOF_GAUSSIAN_FRAG,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+
+    this.blurMatV = new THREE.ShaderMaterial({
+      uniforms: {
+        tInput: { value: null },
+        uTexelStep: { value: new THREE.Vector2(0, this.blurRadius / this.blurHeight) },
+      },
+      vertexShader: DOF_FULLSCREEN_VERT,
+      fragmentShader: DOF_GAUSSIAN_FRAG,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+
+    this.compositeMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tDiffuse: { value: null },
+        tBlur: { value: null },
+        tDepth: { value: null },
+        uCamNear: { value: 0.5 },
+        uCamFar: { value: 260 },
+        uFocusDist: { value: 19.5 },
+        uFocusBand: { value: 11.5 },
+        uFarSpan: { value: 28.0 },
+        uNearSafe: { value: 4.5 },
+        uBlurStrength: { value: 0.68 },
+        uTiltShiftStrength: { value: 0.65 },
+        uMaxMix: { value: 0.68 },
+      },
+      vertexShader: DOF_FULLSCREEN_VERT,
+      fragmentShader: DOF_TILT_COMPOSITE_FRAG,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+
+    this.fsQuad = new FullScreenQuad(this.compositeMat);
+  }
+
+  public updateParams(params: {
+    camNear: number;
+    camFar: number;
+    focusDist: number;
+    focusBand: number;
+    farSpan: number;
+    nearSafe: number;
+    blurStrength: number;
+    tiltShiftStrength: number;
+    maxMix: number;
+    blurRadius: number;
+  }): void {
+    const u = this.compositeMat.uniforms;
+    u.uCamNear.value = params.camNear;
+    u.uCamFar.value = params.camFar;
+    u.uFocusDist.value = params.focusDist;
+    u.uFocusBand.value = params.focusBand;
+    u.uFarSpan.value = params.farSpan;
+    u.uNearSafe.value = params.nearSafe;
+    u.uBlurStrength.value = params.blurStrength;
+    u.uTiltShiftStrength.value = params.tiltShiftStrength;
+    u.uMaxMix.value = params.maxMix;
+    if (this.blurRadius !== params.blurRadius) {
+      this.blurRadius = params.blurRadius;
+      this.blurMatH.uniforms.uTexelStep.value.set(this.blurRadius / this.blurWidth, 0);
+      this.blurMatV.uniforms.uTexelStep.value.set(0, this.blurRadius / this.blurHeight);
+    }
+  }
+
+  public override setSize(width: number, height: number): void {
+    const bw = Math.max(1, Math.floor(width * 0.5));
+    const bh = Math.max(1, Math.floor(height * 0.5));
+    if (bw !== this.blurWidth || bh !== this.blurHeight) {
+      this.blurWidth = bw;
+      this.blurHeight = bh;
+      this.blurRtA.setSize(bw, bh);
+      this.blurRtB.setSize(bw, bh);
+      this.blurMatH.uniforms.uTexelStep.value.set(this.blurRadius / bw, 0);
+      this.blurMatV.uniforms.uTexelStep.value.set(0, this.blurRadius / bh);
+    }
+  }
+
+  public resetTargets(): void {
+    this.blurRtA.dispose();
+    this.blurRtB.dispose();
+  }
+
+  public override render(
+    renderer: THREE.WebGLRenderer,
+    writeBuffer: THREE.WebGLRenderTarget,
+    readBuffer: THREE.WebGLRenderTarget
+  ): void {
+    const prevAutoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    try {
+      // Pass 1: Horizontal separable Gaussian blur at half resolution
+      this.blurMatH.uniforms.tInput.value = readBuffer.texture;
+      this.fsQuad.material = this.blurMatH;
+      renderer.setRenderTarget(this.blurRtA);
+      renderer.clear();
+      this.fsQuad.render(renderer);
+
+      // Pass 2: Vertical separable Gaussian blur into blurRtB
+      this.blurMatV.uniforms.tInput.value = this.blurRtA.texture;
+      this.fsQuad.material = this.blurMatV;
+      renderer.setRenderTarget(this.blurRtB);
+      renderer.clear();
+      this.fsQuad.render(renderer);
+
+      // Pass 3: Depth + tilt-shift Gaussian composite
+      this.compositeMat.uniforms.tDiffuse.value = readBuffer.texture;
+      this.compositeMat.uniforms.tBlur.value = this.blurRtB.texture;
+      this.compositeMat.uniforms.tDepth.value = readBuffer.depthTexture;
+      this.fsQuad.material = this.compositeMat;
+
+      if (this.renderToScreen) {
+        renderer.setRenderTarget(null);
+      } else {
+        renderer.setRenderTarget(writeBuffer);
+      }
+      if (this.clear) renderer.clear();
+      this.fsQuad.render(renderer);
+    } finally {
+      renderer.autoClear = prevAutoClear;
+    }
+  }
+
+  public override dispose(): void {
+    this.blurRtA.dispose();
+    this.blurRtB.dispose();
+    this.blurMatH.dispose();
+    this.blurMatV.dispose();
+    this.compositeMat.dispose();
+    this.fsQuad.dispose();
+  }
 }
 
 export class WorldRenderer3D {
@@ -769,6 +1092,10 @@ export class WorldRenderer3D {
 
   private pmrem: THREE.PMREMGenerator;
   private envRT: THREE.WebGLRenderTarget;
+  private composer: EffectComposer | null = null;
+  private renderPass: RenderPass | null = null;
+  private dofPass: TiltShiftGaussianDofPass | null = null;
+  private outputPass: OutputPass | null = null;
   private onContextLostCb?: () => void;
   private onContextRestoredCb?: () => void;
   private surfaceHeightCache = new Float32Array(52 * 52);
@@ -919,6 +1246,19 @@ export class WorldRenderer3D {
   private lastStepRippleTime = -10;
   private lastBoatRippleTime = -10;
 
+  // 3D Waterside Fishing Stage (Ledge Dock, Bobber, Catenary Line & Leaping Fish)
+  private fishingStageGroup!: THREE.Group;
+  private fishingLedgeGroup!: THREE.Group;
+  private fishingBobberGroup!: THREE.Group;
+  private fishingLine!: THREE.Line;
+  private fishingLinePositions!: Float32Array;
+  private caughtFishGroup!: THREE.Group;
+  private caughtFishTail!: THREE.Mesh;
+  private caughtFishBodyMat!: THREE.MeshStandardMaterial;
+  private caughtFishSparkles: THREE.Mesh[] = [];
+  private lastFishingRippleTime = -10;
+  private lastFishingSplashTime = -10;
+
   // Camera smooth state
   private camPos = new THREE.Vector3();
   private camTarget = new THREE.Vector3();
@@ -1017,6 +1357,8 @@ export class WorldRenderer3D {
         this.pmrem = new THREE.PMREMGenerator(this.renderer);
         this.envRT = buildEnvRT();
         this.scene.environment = this.envRT.texture;
+        this.dofPass?.resetTargets();
+        this.composer?.reset();
       } catch {}
       this.terrainStateKey = '';
       this.worldMapLayerKey = '';
@@ -1306,7 +1648,7 @@ export class WorldRenderer3D {
       treeAo.position.set(0, 0.03, 0);
       this.lanternTreeGroup.add(treeAo);
     }
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 10; i++) {
       const f = buildDetailedFountainWaystone(this.archPack, trackGeo);
       f.visible = false;
       this.landmarkGroup.add(f);
@@ -1357,7 +1699,7 @@ export class WorldRenderer3D {
       this.landmarkGroup.add(nb);
       this.noticeboardPool.push(nb);
     }
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 16; i++) {
       const d = buildDetailedBubbleDome(this.archPack, trackGeo, trackMat);
       d.visible = false;
       this.landmarkGroup.add(d);
@@ -1841,6 +2183,145 @@ export class WorldRenderer3D {
     this.waterRipplesMesh.count = 0;
     this.waterRipplesMesh.visible = false;
     this.scene.add(this.waterRipplesMesh);
+
+    // 3D Waterside Fishing Stage (pre-allocated once, toggled when fishing)
+    this.fishingStageGroup = new THREE.Group();
+    this.fishingStageGroup.visible = false;
+    this.scene.add(this.fishingStageGroup);
+
+    this.fishingLedgeGroup = new THREE.Group();
+    const plankMat = new THREE.MeshStandardMaterial({ color: 0xa46b3e, roughness: 0.72 });
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x6b4326, roughness: 0.78 });
+    const cushionMat = new THREE.MeshStandardMaterial({ color: 0xff8fb1, roughness: 0.56 });
+    const cushionTrimMat = new THREE.MeshStandardMaterial({ color: 0xfff5e4, roughness: 0.5 });
+    const lanternGlowMat = new THREE.MeshStandardMaterial({
+      color: 0xffdf7a,
+      emissive: 0xffb830,
+      emissiveIntensity: 0.95,
+      roughness: 0.25,
+    });
+    const plankGeo = new THREE.BoxGeometry(1.42, 0.14, 0.3);
+    const crossBeamGeo = new THREE.BoxGeometry(0.14, 0.12, 1.05);
+    const postGeo = new THREE.CylinderGeometry(0.085, 0.095, 1.45, 8);
+    const cushionGeo = new THREE.CylinderGeometry(0.38, 0.42, 0.09, 16);
+    const cushionPipingGeo = new THREE.TorusGeometry(0.39, 0.025, 6, 18);
+    cushionPipingGeo.rotateX(Math.PI / 2);
+    const bucketGeo = new THREE.CylinderGeometry(0.17, 0.13, 0.24, 12);
+    const lanternPostGeo = new THREE.CylinderGeometry(0.032, 0.038, 0.85, 8);
+    const lanternBodyGeo = new THREE.OctahedronGeometry(0.11, 0);
+    this.ownedGeos.push(
+      plankGeo,
+      crossBeamGeo,
+      postGeo,
+      cushionGeo,
+      cushionPipingGeo,
+      bucketGeo,
+      lanternPostGeo,
+      lanternBodyGeo
+    );
+    this.ownedMats.push(plankMat, postMat, cushionMat, cushionTrimMat, lanternGlowMat);
+
+    // 4 staggered cedar planks forming a waterside ledge overhanging +Z toward water
+    for (let p = 0; p < 4; p++) {
+      const plank = new THREE.Mesh(plankGeo, plankMat);
+      plank.position.set(p % 2 === 0 ? 0.02 : -0.02, 0.14, -0.34 + p * 0.27);
+      plank.castShadow = !isMobile && !this.isSoftwareGl;
+      plank.receiveShadow = !isMobile && !this.isSoftwareGl;
+      this.fishingLedgeGroup.add(plank);
+    }
+    for (const bx of [-0.52, 0.52]) {
+      const beam = new THREE.Mesh(crossBeamGeo, postMat);
+      beam.position.set(bx, 0.04, 0.05);
+      this.fishingLedgeGroup.add(beam);
+      for (const pz of [-0.36, 0.44]) {
+        const post = new THREE.Mesh(postGeo, postMat);
+        post.position.set(bx, -0.5, pz);
+        this.fishingLedgeGroup.add(post);
+      }
+    }
+    const cushion = new THREE.Mesh(cushionGeo, cushionMat);
+    cushion.position.set(0, 0.23, 0.14);
+    const piping = new THREE.Mesh(cushionPipingGeo, cushionTrimMat);
+    piping.position.set(0, 0.24, 0.14);
+    this.fishingLedgeGroup.add(cushion, piping);
+
+    const bucket = new THREE.Mesh(bucketGeo, postMat);
+    bucket.position.set(-0.52, 0.32, 0.08);
+    this.fishingLedgeGroup.add(bucket);
+
+    const lPost = new THREE.Mesh(lanternPostGeo, postMat);
+    lPost.position.set(0.56, 0.56, 0.26);
+    const lLantern = new THREE.Mesh(lanternBodyGeo, lanternGlowMat);
+    lLantern.position.set(0.56, 1.0, 0.32);
+    this.fishingLedgeGroup.add(lPost, lLantern);
+    this.fishingStageGroup.add(this.fishingLedgeGroup);
+
+    // 3D Floating Bobber
+    this.fishingBobberGroup = new THREE.Group();
+    const bobTopGeo = new THREE.SphereGeometry(0.11, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.55);
+    const bobBotGeo = new THREE.SphereGeometry(0.11, 14, 10, 0, Math.PI * 2, Math.PI * 0.5, Math.PI * 0.5);
+    const bobPinGeo = new THREE.CylinderGeometry(0.018, 0.022, 0.16, 8);
+    const bobRedMat = new THREE.MeshStandardMaterial({ color: 0xff5478, roughness: 0.32 });
+    const bobCreamMat = new THREE.MeshStandardMaterial({ color: 0xfff8eb, roughness: 0.4 });
+    this.ownedGeos.push(bobTopGeo, bobBotGeo, bobPinGeo);
+    this.ownedMats.push(bobRedMat, bobCreamMat);
+    const bobTop = new THREE.Mesh(bobTopGeo, bobRedMat);
+    const bobBot = new THREE.Mesh(bobBotGeo, bobCreamMat);
+    const bobPin = new THREE.Mesh(bobPinGeo, bobRedMat);
+    bobPin.position.y = 0.11;
+    this.fishingBobberGroup.add(bobTop, bobBot, bobPin);
+    this.fishingStageGroup.add(this.fishingBobberGroup);
+
+    // Pre-allocated 12-point Catenary Fishing Line
+    this.fishingLinePositions = new Float32Array(12 * 3);
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(this.fishingLinePositions, 3));
+    const lineBasicMat = new THREE.LineBasicMaterial({ color: 0xeaf8ff, transparent: true, opacity: 0.88 });
+    this.ownedGeos.push(lineGeo);
+    this.ownedMats.push(lineBasicMat);
+    this.fishingLine = new THREE.Line(lineGeo, lineBasicMat);
+    this.fishingLine.frustumCulled = false;
+    this.fishingStageGroup.add(this.fishingLine);
+
+    // Sculpted 3D Leaping Fish + Celebration Sparkles
+    this.caughtFishGroup = new THREE.Group();
+    this.caughtFishBodyMat = new THREE.MeshStandardMaterial({
+      color: 0xff9f43,
+      roughness: 0.24,
+      metalness: 0.12,
+      emissive: 0x442200,
+      emissiveIntensity: 0.18,
+    });
+    const fBodyGeo = new THREE.SphereGeometry(0.18, 16, 12);
+    fBodyGeo.scale(0.68, 0.88, 1.48);
+    const fTailGeo = new THREE.ConeGeometry(0.14, 0.22, 4);
+    fTailGeo.rotateX(Math.PI / 2);
+    const fDorsalGeo = new THREE.ConeGeometry(0.08, 0.16, 4);
+    const fEyeGeo = new THREE.SphereGeometry(0.036, 8, 8);
+    const fSparkGeo = new THREE.OctahedronGeometry(0.075, 0);
+    const fEyeMat = new THREE.MeshBasicMaterial({ color: 0x22162b });
+    const fSparkMat = new THREE.MeshBasicMaterial({ color: 0xffe46b });
+    this.ownedGeos.push(fBodyGeo, fTailGeo, fDorsalGeo, fEyeGeo, fSparkGeo);
+    this.ownedMats.push(this.caughtFishBodyMat, fEyeMat, fSparkMat);
+
+    const fBody = new THREE.Mesh(fBodyGeo, this.caughtFishBodyMat);
+    this.caughtFishTail = new THREE.Mesh(fTailGeo, this.caughtFishBodyMat);
+    this.caughtFishTail.position.set(0, 0, -0.28);
+    const fDorsal = new THREE.Mesh(fDorsalGeo, this.caughtFishBodyMat);
+    fDorsal.position.set(0, 0.17, -0.02);
+    fDorsal.rotation.x = -0.35;
+    const fEyeL = new THREE.Mesh(fEyeGeo, fEyeMat);
+    fEyeL.position.set(-0.09, 0.05, 0.15);
+    const fEyeR = new THREE.Mesh(fEyeGeo, fEyeMat);
+    fEyeR.position.set(0.09, 0.05, 0.15);
+    this.caughtFishGroup.add(fBody, this.caughtFishTail, fDorsal, fEyeL, fEyeR);
+    for (let s = 0; s < 6; s++) {
+      const sp = new THREE.Mesh(fSparkGeo, fSparkMat);
+      this.caughtFishGroup.add(sp);
+      this.caughtFishSparkles.push(sp);
+    }
+    this.caughtFishGroup.visible = false;
+    this.fishingStageGroup.add(this.caughtFishGroup);
     for (let i = 0; i < this.waterRipplesMax; i++) {
       this.stepRipples.push({
         active: false,
@@ -1852,6 +2333,35 @@ export class WorldRenderer3D {
         maxRadius: 1,
         colHex: 0xffffff,
       });
+    }
+
+    if (!this.isSoftwareGl) {
+      const pr = this.renderer.getPixelRatio();
+      const pw = Math.max(1, Math.round(w * pr));
+      const ph = Math.max(1, Math.round(h * pr));
+      const depthTex = new THREE.DepthTexture(pw, ph, THREE.UnsignedIntType);
+      depthTex.format = THREE.DepthFormat;
+      depthTex.minFilter = THREE.NearestFilter;
+      depthTex.magFilter = THREE.NearestFilter;
+
+      const composerRT = new THREE.WebGLRenderTarget(pw, ph, {
+        type: THREE.HalfFloatType,
+        depthBuffer: true,
+        depthTexture: depthTex,
+      });
+      composerRT.texture.name = 'DioramaComposer.rt1';
+
+      this.composer = new EffectComposer(this.renderer, composerRT);
+      this.composer.setPixelRatio(pr);
+      this.composer.setSize(w, h);
+
+      this.renderPass = new RenderPass(this.scene, this.camera);
+      this.dofPass = new TiltShiftGaussianDofPass(pw, ph);
+      this.outputPass = new OutputPass();
+
+      this.composer.addPass(this.renderPass);
+      this.composer.addPass(this.dofPass);
+      this.composer.addPass(this.outputPass);
     }
 
     this.renderer.compile(this.scene, this.camera);
@@ -1965,20 +2475,20 @@ export class WorldRenderer3D {
       true
     );
 
-    // 1b. Gnarled Flared-Root Forked Tree Trunks (Oak, Blossom, Sky Blossom, Pine)
+    // 1b. Gnarled Flared-Root Forked Tree Trunks (Oak, Blossom, Sky Blossom, Pine, Moon Star-Blossom)
     const treeTrunkGeo = createOrganicTreeTrunkGeometry();
     this.makeBatch(
       'treeTrunks',
       treeTrunkGeo,
       new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
-      520
+      760
     );
 
     // 2. Scalloped Multi-Lobe Foliage Canopy Clusters (Wind-Sway + Subsurface Glow Shader)
     const canopyGeo = createOrganicLeafClusterGeometry();
     const canopyMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72 });
     applyFoliageShader(canopyMat, this.shaderUniforms);
-    this.makeBatch('canopies', canopyGeo, canopyMat, 2400);
+    this.makeBatch('canopies', canopyGeo, canopyMat, 3100);
 
     // 2b. Fluted Evergreen Pine Bough Skirts (Wind-Sway Foliage Shader)
     const pineBoughGeo = createFlutedPineBoughGeometry();
@@ -1993,7 +2503,7 @@ export class WorldRenderer3D {
       'cones',
       coneGeo,
       new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.65 }),
-      720,
+      1500,
       false,
       true
     );
@@ -2003,7 +2513,7 @@ export class WorldRenderer3D {
     seaFloraGeo.translate(0, 0.45, 0);
     const seaFloraMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.54 });
     applyUnderwaterSwayShader(seaFloraMat, this.shaderUniforms);
-    this.makeBatch('seaFlora', seaFloraGeo, seaFloraMat, 540, false, true);
+    this.makeBatch('seaFlora', seaFloraGeo, seaFloraMat, 1100, false, true);
 
     // 4. Faceted Boulders, Scree & Coastal Pebbles
     const rockGeo = new THREE.DodecahedronGeometry(0.42, 0);
@@ -2011,7 +2521,7 @@ export class WorldRenderer3D {
       'rocks',
       rockGeo,
       new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82, flatShading: true }),
-      760,
+      820,
       false,
       true
     );
@@ -2022,7 +2532,7 @@ export class WorldRenderer3D {
       'boxes',
       boxGeo,
       new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.66 }),
-      520
+      900
     );
 
     // 6. Emissive Glow Orbs / Blossoms / Coral Buds
@@ -2036,7 +2546,7 @@ export class WorldRenderer3D {
         emissiveIntensity: 0.48,
         roughness: 0.32,
       }),
-      1100,
+      2400,
       false,
       false
     );
@@ -2052,7 +2562,7 @@ export class WorldRenderer3D {
         emissiveIntensity: 0.24,
         roughness: 0.44,
       }),
-      420,
+      1100,
       false,
       true
     );
@@ -2068,7 +2578,7 @@ export class WorldRenderer3D {
         emissiveIntensity: 0.14,
         roughness: 0.46,
       }),
-      680,
+      900,
       false,
       true
     );
@@ -2094,7 +2604,7 @@ export class WorldRenderer3D {
       side: THREE.DoubleSide,
     });
     applyCritterWingShader(critterMat, this.shaderUniforms);
-    this.makeBatch('critters', critterGeo, critterMat, 220, false, false);
+    this.makeBatch('critters', critterGeo, critterMat, 340, false, false);
 
     // 7. Collectibles (Spinning Star Gems, Pearls, Feathers, Moon Notes, Quest Items)
     const starGeo = new THREE.OctahedronGeometry(0.28, 0);
@@ -2142,7 +2652,7 @@ export class WorldRenderer3D {
         emissive: 0xffffff,
         emissiveIntensity: 0.12,
       }),
-      90,
+      360,
       false,
       false
     );
@@ -2159,7 +2669,7 @@ export class WorldRenderer3D {
         emissive: 0xffffff,
         emissiveIntensity: 0.16,
       }),
-      90,
+      360,
       false,
       false
     );
@@ -2237,6 +2747,36 @@ export class WorldRenderer3D {
     if (!batch || batch.count >= batch.max) return;
     _v3.set(px, py, pz);
     _euler.set(rx, ry, rz);
+    _q.setFromEuler(_euler);
+    _scale.set(sx, sy, sz);
+    _m4.compose(_v3, _q, _scale);
+    batch.mesh.setMatrixAt(batch.count, _m4);
+    if (typeof colorHex === 'number') _col.setHex(colorHex);
+    else _col.set(colorHex);
+    if (key !== 'propShadows') {
+      enrichVibrantColor(_col, 0.22, -0.03);
+    }
+    batch.mesh.setColorAt(batch.count, _col);
+    batch.count++;
+  }
+
+  private pushInstanceDirected(
+    key: string,
+    px: number,
+    py: number,
+    pz: number,
+    sx: number,
+    sy: number,
+    sz: number,
+    pitch: number,
+    yaw: number,
+    roll: number,
+    colorHex: string | number
+  ): void {
+    const batch = this.batches[key];
+    if (!batch || batch.count >= batch.max) return;
+    _v3.set(px, py, pz);
+    _euler.set(pitch, yaw, roll, 'YXZ');
     _q.setFromEuler(_euler);
     _scale.set(sx, sy, sz);
     _m4.compose(_v3, _q, _scale);
@@ -2443,15 +2983,22 @@ export class WorldRenderer3D {
           const z0 = Math.floor(sz);
           const fx = sx - x0;
           const fz = sz - z0;
-          const b00 = W.B[Math.max(0, Math.min(N - 1, z0)) * N + Math.max(0, Math.min(N - 1, x0))] === 1 ? 1 : 0;
-          const b10 = W.B[Math.max(0, Math.min(N - 1, z0)) * N + Math.max(0, Math.min(N - 1, x0 + 1))] === 1 ? 1 : 0;
-          const b01 = W.B[Math.max(0, Math.min(N - 1, z0 + 1)) * N + Math.max(0, Math.min(N - 1, x0))] === 1 ? 1 : 0;
-          const b11 = W.B[Math.max(0, Math.min(N - 1, z0 + 1)) * N + Math.max(0, Math.min(N - 1, x0 + 1))] === 1 ? 1 : 0;
-          const sandMix = (b00 * (1 - fx) + b10 * fx) * (1 - fz) + (b01 * (1 - fx) + b11 * fx) * fz;
-          _col.set('#0d4e7d').lerp(_col2.set('#ebd391'), sandMix);
+          const sampleB = (qx: number, qz: number) =>
+            W.B[Math.max(0, Math.min(N - 1, qz)) * N + Math.max(0, Math.min(N - 1, qx))];
+          const b00 = sampleB(x0, z0);
+          const b10 = sampleB(x0 + 1, z0);
+          const b01 = sampleB(x0, z0 + 1);
+          const b11 = sampleB(x0 + 1, z0 + 1);
+          const sandMix =
+            ((b00 === 1 ? 1 : 0) * (1 - fx) + (b10 === 1 ? 1 : 0) * fx) * (1 - fz) +
+            ((b01 === 1 ? 1 : 0) * (1 - fx) + (b11 === 1 ? 1 : 0) * fx) * fz;
+          const grottoMix =
+            ((b00 >= 2 ? 1 : 0) * (1 - fx) + (b10 >= 2 ? 1 : 0) * fx) * (1 - fz) +
+            ((b01 >= 2 ? 1 : 0) * (1 - fx) + (b11 >= 2 ? 1 : 0) * fx) * fz;
+          _col.set('#0d4e7d').lerp(_col2.set('#1f88a8'), grottoMix * 0.85).lerp(_col2.set('#ebd391'), sandMix);
           const nVar = (hash(ixFloor, izFloor, 29) - 0.5) * 0.045;
           _col.offsetHSL(0, 0, nVar);
-          biomeCode = sandMix;
+          biomeCode = Math.max(sandMix, grottoMix * 0.65);
         } else if (layer === 'glowdeep') {
           const cell = getGlowdeepCell(ixFloor, izFloor);
           if (cell === 'wall') {
@@ -2478,6 +3025,7 @@ export class WorldRenderer3D {
           if (cell === 'platform') _col.set('#fff0a8');
           else if (cell === 'road') _col.set('#d5c4ff');
           else if (cell === 'silence') _col.set('#39405e');
+          else if (cell === 'nebula') _col.set(hash(ixFloor, izFloor, 443) > 0.5 ? '#4c2c85' : '#583496');
           else _col.set('#140c33');
         } else {
           // Smooth bilinear color & biome blend across sub-tile vertices
@@ -3167,37 +3715,60 @@ export class WorldRenderer3D {
           const wx = x + 0.5;
           const wz = z + 0.5;
           const gy = getTerrainHeight3D(wx, wz, 'glowdeep', W.B, W.SB, W.iceMap);
-          if (cell === 'glowcap' && h1 < 0.58) {
-            const isMint = h2 > 0.42;
+          const nearCanal =
+            cell !== 'canal' &&
+            cell !== 'wall' &&
+            ((z < N - 1 && getGlowdeepCell(x, z + 1) === 'canal') ||
+              (z > 0 && getGlowdeepCell(x, z - 1) === 'canal') ||
+              (x < N - 1 && getGlowdeepCell(x + 1, z) === 'canal') ||
+              (x > 0 && getGlowdeepCell(x - 1, z) === 'canal'));
+
+          if (nearCanal && h1 < 0.095) {
+            // Timber & glowing cyan canal wharf lantern bollard
+            this.pushInstance('boxes', wx, gy + 0.38, wz, 0.14, 0.76, 0.14, 0, h2 * 3, 0, '#784c35');
+            this.pushInstance('glowSpheres', wx, gy + 0.84, wz, 0.34, 0.34, 0.34, 0, 0, 0, '#52f2e0');
+          } else if (cell === 'glowcap' && h1 < 0.62) {
+            const isMint = h2 > 0.38;
             const capCol = isMint ? '#5af7c2' : '#c47dff';
-            const stemH = 0.36 + h3 * 0.26;
+            const stemH = 0.36 + h3 * 0.3;
             this.pushInstance('trunks', wx, gy, wz, 0.48, stemH, 0.48, 0.06, 0, -0.05, '#e6e2ff');
-            this.pushInstance('toadstoolCaps', wx, gy + stemH - 0.01, wz, 0.88 + h2 * 0.25, 0.88 + h2 * 0.22, 0.88 + h2 * 0.25, 0, h1 * 4, 0, capCol);
-            if (h3 > 0.45) {
+            this.pushInstance('toadstoolCaps', wx, gy + stemH - 0.01, wz, 0.92 + h2 * 0.28, 0.9 + h2 * 0.24, 0.92 + h2 * 0.28, 0, h1 * 4, 0, capCol);
+            if (h3 > 0.42) {
               this.pushInstance('trunks', wx + 0.2, gy, wz + 0.14, 0.28, stemH * 0.58, 0.28, -0.1, 0, 0.15, '#e6e2ff');
               this.pushInstance('toadstoolCaps', wx + 0.22, gy + stemH * 0.52, wz + 0.14, 0.54, 0.54, 0.54, 0.08, h2 * 4, 0, isMint ? '#c47dff' : '#5af7c2');
             }
-          } else if (cell === 'roots' && h1 < 0.32) {
-            this.pushInstance('grassBlades', wx, gy - 0.02, wz, 0.9, 1.05, 0.9, 0, h2 * 6, 0, '#72f0b8');
-            if (h3 < 0.22) {
-              this.pushInstance('trunks', wx, gy, wz, 0.45, 0.55, 0.45, 0.25, h1 * 4, 0.2, '#7d4f32');
+          } else if (cell === 'roots' && h1 < 0.38) {
+            this.pushInstance('grassBlades', wx, gy - 0.02, wz, 0.95, 1.08, 0.95, 0, h2 * 6, 0, '#72f0b8');
+            if (h3 < 0.26) {
+              this.pushInstance('trunks', wx, gy, wz, 0.48, 0.62, 0.48, 0.24, h1 * 4, 0.18, '#7d4f32');
+              this.pushInstance('glowSpheres', wx + 0.12, gy + 0.54, wz + 0.08, 0.22, 0.22, 0.22, 0, 0, 0, '#ffd86b');
             }
-          } else if (cell === 'cinder' && h1 < 0.2) {
-            this.pushInstance('cones', wx, gy, wz, 0.26, 0.58 + h3 * 0.25, 0.26, 0.14, h2 * 4, -0.1, '#ff648c');
-            if (h2 > 0.55) {
-              this.pushInstance('glowSpheres', wx + 0.14, gy + 0.12, wz - 0.1, 0.28, 0.16, 0.28, 0, 0, 0, '#ff9860');
+          } else if (cell === 'cinder' && h1 < 0.28) {
+            this.pushInstance('cones', wx, gy, wz, 0.28, 0.65 + h3 * 0.28, 0.28, 0.14, h2 * 4, -0.1, h2 > 0.5 ? '#ff7b4d' : '#ff648c');
+            if (h2 > 0.48) {
+              this.pushInstance('glowSpheres', wx + 0.14, gy + 0.12, wz - 0.1, 0.32, 0.18, 0.32, 0, 0, 0, '#ff9860');
             }
-          } else if (cell === 'chamber' && h1 < 0.14) {
-            this.pushInstance('grassBlades', wx + (h2 - 0.5) * 0.4, gy - 0.02, wz + (h3 - 0.5) * 0.4, 0.85, 0.9, 0.85, 0, h2 * 6, 0, h3 > 0.5 ? '#50e8b8' : '#967dff');
+            if (h3 < 0.25) {
+              this.pushInstance('rocks', wx - 0.15, gy + 0.16, wz + 0.12, 0.65, 0.45, 0.6, h1, h2 * 4, 0, '#44263b');
+            }
+          } else if (cell === 'chamber') {
+            if (h1 < 0.16) {
+              this.pushInstance('grassBlades', wx + (h2 - 0.5) * 0.4, gy - 0.02, wz + (h3 - 0.5) * 0.4, 0.9, 0.95, 0.9, 0, h2 * 6, 0, h3 > 0.5 ? '#50e8b8' : '#967dff');
+            } else if (h1 < 0.22) {
+              this.pushInstance('cones', wx, gy, wz, 0.22, 0.56 + h3 * 0.3, 0.22, 0.1, h2 * 5, -0.08, h2 > 0.5 ? '#8f6bff' : '#52f2e0');
+            } else if (h1 < 0.255) {
+              this.pushInstance('trunks', wx, gy, wz, 0.3, 0.26, 0.3, 0, 0, 0, '#e6e2ff');
+              this.pushInstance('toadstoolCaps', wx, gy + 0.24, wz, 0.62, 0.62, 0.62, 0, h2 * 4, 0, h2 > 0.5 ? '#64f5c1' : '#c684ff');
+            }
           } else if (cell === 'wall') {
             const onEdge =
               (z < N - 1 && getGlowdeepCell(x, z + 1) !== 'wall') ||
               (x < N - 1 && getGlowdeepCell(x + 1, z) !== 'wall') ||
               (x > 0 && getGlowdeepCell(x - 1, z) !== 'wall');
-            if (onEdge && h1 < 0.48) {
+            if (onEdge && h1 < 0.54) {
               const cCol = h2 > 0.5 ? '#9b6bff' : '#58f2d4';
-              this.pushInstance('cones', wx, gy - 0.05, wz, 0.4, 0.95 + h3 * 0.45, 0.4, 0.12, h1 * 5, -0.1, cCol);
-              this.pushInstance('cones', wx + 0.18, gy - 0.08, wz + 0.14, 0.24, 0.62, 0.24, -0.22, h2 * 4, 0.25, cCol);
+              this.pushInstance('cones', wx, gy - 0.05, wz, 0.42, 1.0 + h3 * 0.48, 0.42, 0.12, h1 * 5, -0.1, cCol);
+              this.pushInstance('cones', wx + 0.18, gy - 0.08, wz + 0.14, 0.24, 0.66, 0.24, -0.22, h2 * 4, 0.25, cCol);
             }
           }
         }
@@ -3206,13 +3777,52 @@ export class WorldRenderer3D {
       for (let z = minZ; z <= maxZ; z++) {
         for (let x = minX; x <= maxX; x++) {
           const cell = getMoonRoadCell(x, z);
+          if (cell === 'void') continue;
           const h1 = hash(x, z, 741);
           const h2 = hash(x, z, 742);
-          if (cell === 'road' && h1 < 0.048) {
-            this.pushInstance('boxes', x + 0.5, 0.62, z + 0.5, 0.1, 0.56, 0.1, 0, 0, 0, '#e5d4ff');
-            this.pushInstance('glowSpheres', x + 0.5, 0.98, z + 0.5, 0.44, 0.44, 0.44, 0, 0, 0, '#ffd23f');
-          } else if ((cell === 'road' || cell === 'platform') && h2 < 0.09) {
-            this.pushInstance('cones', x + 0.5 + (h1 - 0.5) * 0.6, 0.34, z + 0.5 + (h2 - 0.5) * 0.6, 0.14, 0.38, 0.14, 0.12, h1 * 4, 0, '#c6a6ff');
+          const h3 = hash(x, z, 743);
+          const wx = x + 0.5;
+          const wz = z + 0.5;
+          const gy = getTerrainHeight3D(wx, wz, 'moonroad', W.B, W.SB, W.iceMap);
+
+          if (cell === 'road' && h1 < 0.055) {
+            this.pushInstance('boxes', wx, gy + 0.34, wz, 0.11, 0.64, 0.11, 0, 0, 0, '#e5d4ff');
+            this.pushInstance('glowSpheres', wx, gy + 0.76, wz, 0.42, 0.42, 0.42, 0, 0, 0, '#ffd23f');
+          } else if (cell === 'platform') {
+            const onEdge =
+              (z < N - 1 && getMoonRoadCell(x, z + 1) !== 'platform') ||
+              (x < N - 1 && getMoonRoadCell(x + 1, z) !== 'platform') ||
+              (x > 0 && getMoonRoadCell(x - 1, z) !== 'platform');
+            if (onEdge && h1 < 0.14) {
+              // Marble balustrade post & golden star-lantern finial around plazas
+              this.pushInstance('boxes', wx, gy + 0.28, wz, 0.16, 0.56, 0.16, 0, 0, 0, '#f3ecff');
+              this.pushInstance('glowSpheres', wx, gy + 0.66, wz, 0.32, 0.32, 0.32, 0, 0, 0, '#ffd23f');
+            } else if (onEdge && h1 < 0.21) {
+              // Silver-barked Moon-Blossom Tree framing constellation plazas
+              const sMul = 0.85 + h2 * 0.25;
+              this.pushInstance('treeTrunks', wx, gy, wz, sMul, sMul, sMul, 0, h3 * 6, 0, '#a696c4');
+              this.pushInstance('canopies', wx, gy + 1.15 * sMul, wz, 0.96 * sMul, 0.78 * sMul, 0.96 * sMul, 0, h1 * 4, 0, '#d6b4ff');
+              this.pushInstance('canopies', wx + 0.32 * sMul, gy + 1.28 * sMul, wz - 0.14 * sMul, 0.66 * sMul, 0.56 * sMul, 0.66 * sMul, 0, h2 * 4, 0, '#ffcae4');
+              this.pushInstance('glowSpheres', wx - 0.24 * sMul, gy + 1.22 * sMul, wz + 0.28 * sMul, 0.22, 0.22, 0.22, 0, 0, 0, '#ffe888');
+            } else if (h2 < 0.08) {
+              this.pushInstance('cones', wx + (h1 - 0.5) * 0.5, gy, wz + (h2 - 0.5) * 0.5, 0.15, 0.42, 0.15, 0.08, h1 * 4, 0, '#c6a6ff');
+            }
+          } else if (cell === 'road' && h2 < 0.085) {
+            this.pushInstance('cones', wx + (h1 - 0.5) * 0.55, gy, wz + (h2 - 0.5) * 0.55, 0.15, 0.4, 0.15, 0.1, h1 * 4, 0, '#c6a6ff');
+          } else if (cell === 'silence' && h1 < 0.1) {
+            this.pushInstance('cones', wx, gy, wz, 0.18, 0.62 + h2 * 0.35, 0.18, 0.06, h3 * 4, 0, '#7882a6');
+          } else if (cell === 'nebula') {
+            if (h1 < 0.016) {
+              // Scattered celestial blossom trees rooted in glowing aurora clouds
+              const sMul = 0.8 + h3 * 0.28;
+              this.pushInstance('treeTrunks', wx, gy, wz, sMul, sMul, sMul, 0, h2 * 6, 0, '#9684bd');
+              this.pushInstance('canopies', wx, gy + 1.12 * sMul, wz, 0.92 * sMul, 0.76 * sMul, 0.92 * sMul, 0, h1 * 5, 0, h2 > 0.5 ? '#c8a6ff' : '#f2b8e4');
+              this.pushInstance('glowSpheres', wx + 0.22 * sMul, gy + 1.24 * sMul, wz + 0.2 * sMul, 0.2, 0.2, 0.2, 0, 0, 0, '#ffd87a');
+            } else if (h1 < 0.058) {
+              this.pushInstance('flowers', wx + (h2 - 0.5) * 0.5, gy + 0.06, wz + (h1 - 0.5) * 0.5, 0.6, 0.6, 0.6, 0, h2 * 6, 0, h2 > 0.5 ? '#c49bff' : '#ffd87a');
+            } else if (h3 < 0.04) {
+              this.pushInstance('grassBlades', wx, gy - 0.02, wz, 0.85, 0.88, 0.85, 0, h2 * 6, 0, '#a67dff');
+            }
           }
         }
       }
@@ -3262,32 +3872,46 @@ export class WorldRenderer3D {
           addStarItem(qi.x, qi.y, isNectar ? '#ff8fb8' : '#7de0ff', 1.15);
         }
       }
-      // Surface shallow-water koi & coastal silverfish visible beneath crystal water
+      // Surface shallow-water koi & coastal silverfish schooling beneath crystal waters (reacts gently to waders)
       const shallowCols = ['#ff8559', '#ffd257', '#ff6fa3', '#73e8ff', '#fff0d6'];
-      for (let i = 0; i < 18; i++) {
+      const pTxSurf = W.player.x / T;
+      const pTzSurf = W.player.y / T;
+      for (let i = 0; i < 20; i++) {
         const anchorTx = Math.floor(centerTx / 8) * 8 + (hash(i, 1, 781) - 0.5) * 28;
         const anchorTz = Math.floor(centerTz / 8) * 8 + (hash(i, 2, 782) - 0.5) * 28;
         if (Math.abs(anchorTx - centerTx) > propRadius || Math.abs(anchorTz - centerTz) > propRadius) continue;
         const spd = 0.65 + hash(i, 3, 783) * 0.55;
         const ang = t * spd + i * 2.1;
         const rad = 1.15 + hash(i, 4, 784) * 1.4;
-        const px = anchorTx + Math.cos(ang) * rad;
-        const pz = anchorTz + Math.sin(ang * 1.25) * rad * 0.65;
+        let px = anchorTx + Math.cos(ang) * rad;
+        let pz = anchorTz + Math.sin(ang * 1.25) * rad * 0.65;
+        let vx = -Math.sin(ang) * rad;
+        let vz = 1.25 * Math.cos(ang * 1.25) * rad * 0.65;
+        const pdx = px - pTxSurf;
+        const pdz = pz - pTzSurf;
+        const pDist = Math.hypot(pdx, pdz);
+        let dartBoost = 0;
+        if (pDist < 3.2) {
+          dartBoost = (3.2 - pDist) / 3.2;
+          const safeD = Math.max(0.15, pDist);
+          px += (pdx / safeD) * dartBoost * 1.1;
+          pz += (pdz / safeD) * dartBoost * 1.1;
+          vx += (pdx / safeD) * dartBoost * 1.6;
+          vz += (pdz / safeD) * dartBoost * 1.6;
+        }
         const ix = Math.max(0, Math.min(N - 1, Math.floor(px)));
         const iz = Math.max(0, Math.min(N - 1, Math.floor(pz)));
         if (W.B[iz * N + ix] >= 2) continue;
         const bedY = getTerrainHeight3D(px, pz, 'surface', W.B, W.SB, W.iceMap);
         if (bedY > -0.14) continue;
-        const vx = -Math.sin(ang) * rad;
-        const vz = 1.25 * Math.cos(ang * 1.25) * rad * 0.65;
         const yaw = Math.atan2(vx, vz);
         const sc = 0.58 + (i % 3) * 0.14;
         const swimY = Math.max(bedY + 0.11, -0.22 + Math.sin(t * 1.8 + i) * 0.04);
-        const bodySway = Math.sin(t * 10 + i) * 0.12;
-        const tailWag = Math.sin(t * 12 + i) * 0.44;
+        const bodySway = Math.sin(t * (10 + dartBoost * 8) + i) * (0.12 + dartBoost * 0.06);
+        const tailWag = Math.sin(t * (12 + dartBoost * 9) + i) * (0.44 + dartBoost * 0.22);
         const fc = shallowCols[i % shallowCols.length];
-        this.pushInstance('fish', px, swimY, pz, sc, sc, sc, 0, yaw + bodySway, 0, fc);
-        this.pushInstance(
+        this.pushInstanceDirected('fish', px, swimY, pz, sc, sc, sc, 0, yaw + bodySway, Math.sin(ang) * 0.15, fc);
+        this.pushInstanceDirected(
           'fishTails',
           px - Math.sin(yaw + bodySway) * 0.3 * sc,
           swimY,
@@ -3297,7 +3921,7 @@ export class WorldRenderer3D {
           sc,
           0,
           yaw + tailWag,
-          0,
+          Math.sin(ang) * 0.15,
           fc
         );
       }
@@ -3305,39 +3929,63 @@ export class WorldRenderer3D {
       for (const p of W.pearls) {
         if (!p.got) addStarItem(p.x, p.y, '#fff4fe', 1.08);
       }
-      for (let i = 0; i < W.fish.length; i++) {
+      const lowMode = Boolean(W.lowQuality || this.isSoftwareGl);
+      const schoolSize = lowMode ? 2 : 3;
+      const pTx = W.player.x / T;
+      const pTz = W.player.y / T;
+      const hasDivePlayer = Boolean(W.player.dive && !W.player.house);
+
+      for (let i = 0; i < W.fish.length && fishBatch.count < fishBatch.max - schoolSize; i++) {
         const f = W.fish[i];
-        const fx2d = f.hx;
-        const fy2d = f.hy;
-        const tx = fx2d / T;
-        const tz = fy2d / T;
-        if (Math.abs(tx - centerTx) > propRadius || Math.abs(tz - centerTz) > propRadius) continue;
-        const speed = 0.9 / Math.max(0.5, f.s);
-        const ang = t * speed + f.ph;
-        const px = (fx2d + Math.cos(ang) * f.R) / T;
-        const pz = (fy2d + Math.sin(ang * 1.3) * f.R * 0.55) / T;
-        const vx = -Math.sin(ang);
-        const vz = 1.3 * Math.cos(ang * 1.3) * 0.55;
-        const yaw = Math.atan2(vx, vz);
-        const sc = 0.8 + f.s * 0.28;
-        const fishFloor = getTerrainHeight3D(px, pz, 'dive', W.B, W.SB, W.iceMap);
-        const swimY = fishFloor + 0.42 + (i % 3) * 0.24 + Math.sin(t * 2.2 + f.ph) * 0.12;
-        const bodySway = Math.sin(t * 9.5 + i) * 0.12;
-        const tailWag = Math.sin(t * 11 + i) * 0.45;
-        this.pushInstance('fish', px, swimY, pz, sc, sc, sc, 0, yaw + bodySway, 0, f.c);
-        this.pushInstance(
-          'fishTails',
-          px - Math.sin(yaw + bodySway) * 0.31 * sc,
-          swimY,
-          pz - Math.cos(yaw + bodySway) * 0.31 * sc,
-          sc,
-          sc,
-          sc,
-          0,
-          yaw + tailWag,
-          0,
-          f.c
-        );
+        const homeTx = f.hx / T;
+        const homeTz = f.hy / T;
+        if (Math.abs(homeTx - centerTx) > propRadius || Math.abs(homeTz - centerTz) > propRadius) continue;
+
+        for (let m = 0; m < schoolSize; m++) {
+          evaluateReefFishPose(f, i, m, t, W.UD, pTx, pTz, hasDivePlayer, _fishPoseScratch);
+          const px = _fishPoseScratch.tx;
+          const pz = _fishPoseScratch.tz;
+          const fishFloor = getTerrainHeight3D(px, pz, 'dive', W.B, W.SB, W.iceMap);
+          const vMag = Math.max(0.05, Math.hypot(_fishPoseScratch.vx, _fishPoseScratch.vz));
+          const aheadX = Math.max(0.5, Math.min(N - 0.5, px + (_fishPoseScratch.vx / vMag) * 0.48));
+          const aheadZ = Math.max(0.5, Math.min(N - 0.5, pz + (_fishPoseScratch.vz / vMag) * 0.48));
+          const floorAhead = getTerrainHeight3D(aheadX, aheadZ, 'dive', W.B, W.SB, W.iceMap);
+          const slopePitch = Math.max(-0.42, Math.min(0.42, -Math.atan2(floorAhead - fishFloor, 0.48) * 0.55));
+          const finalPitch = Math.max(-0.48, Math.min(0.48, _fishPoseScratch.pitch + slopePitch));
+
+          const swimY = fishFloor + _fishPoseScratch.liftY;
+          const sc = (0.78 + f.s * 0.26) * _fishPoseScratch.scaleMul;
+          const bodySway = Math.sin(t * (_fishPoseScratch.tailFreq * 0.85) + i + m * 0.6) * _fishPoseScratch.bodySwayAmp;
+          const tailWag = Math.sin(t * _fishPoseScratch.tailFreq + i + m * 0.6) * _fishPoseScratch.tailAmp;
+          const headYaw = _fishPoseScratch.yaw + bodySway;
+
+          this.pushInstanceDirected(
+            'fish',
+            px,
+            swimY,
+            pz,
+            sc,
+            sc,
+            sc,
+            finalPitch,
+            headYaw,
+            _fishPoseScratch.roll,
+            f.c
+          );
+          this.pushInstanceDirected(
+            'fishTails',
+            px - Math.sin(headYaw) * 0.31 * sc,
+            swimY + Math.sin(finalPitch) * 0.26 * sc,
+            pz - Math.cos(headYaw) * 0.31 * sc,
+            sc,
+            sc,
+            sc,
+            finalPitch,
+            _fishPoseScratch.yaw + tailWag,
+            _fishPoseScratch.roll,
+            f.c
+          );
+        }
       }
     } else if (layer === 'sky') {
       for (const f of W.feathers) {
@@ -3856,12 +4504,111 @@ export class WorldRenderer3D {
 
     const t = W.time;
     const lowMode = Boolean(W.lowQuality || this.isSoftwareGl);
-    const maxCritters = lowMode ? 38 : 104;
+    const maxCritters = lowMode ? 48 : 132;
     const bflyCols = ['#ff7aa8', '#ffb347', '#5ce1ff', '#ffe45e', '#d69eff'];
     const birdCols = ['#fff8ee', '#f5c07a', '#7cc6fe', '#e88fb4'];
-    const gridSpan = 34;
+    const skySwallowCols = ['#fff9ee', '#ffd27a', '#8fd5ff', '#ff9ec7', '#b6f7e2'];
+    const gridSpan = 38;
     const anchorX = Math.floor(focusX / 6) * 6;
     const anchorZ = Math.floor(focusZ / 6) * 6;
+
+    if (layer === 'sky') {
+      // Sky Kingdom Flocks: Swallows & Crest Birds genuinely circling floating cloud islands, spires & wind harps
+      const { anchors, count: anchorCount } = collectVisibleSkyIslandAnchors(W.SB, W.SD, focusX, focusZ, 34);
+      const birdsPerIsland = lowMode ? 3 : 5;
+      for (let aIdx = 0; aIdx < anchorCount && batch.count < batch.max; aIdx++) {
+        const anch = anchors[aIdx];
+        const flockCount =
+          anch.kind === 'castle'
+            ? lowMode
+              ? 5
+              : 9
+            : anch.kind === 'updraft' || anch.kind === 'market' || anch.kind === 'garden'
+            ? lowMode
+              ? 4
+              : 6
+            : birdsPerIsland;
+
+        // World-anchored neighboring island pull (occasionally birds arc toward the next cloud island)
+        const nextAnch = anchors[(aIdx + 1) % anchorCount];
+        const dirSign = aIdx % 2 === 0 ? 1 : -1;
+
+        for (let b = 0; b < flockCount && batch.count < batch.max; b++) {
+          const bSeed = anch.seed + b * 3.17;
+          const h1 = hash(aIdx, b, 991);
+          const h2 = hash(aIdx, b, 992);
+          const angularSpeed = (0.38 + h1 * 0.24) * (anch.kind === 'castle' ? 0.78 : 1.0) * dirSign;
+          const flockPhase = b * ((Math.PI * 2) / flockCount) + h2 * 0.45;
+          const ph = t * angularSpeed + flockPhase;
+
+          if (anch.kind === 'updraft') {
+            // Rising thermal helix around Sunrise Updraft Spire with smooth swoop-down reset
+            const thermalCycle = (t * 0.14 + b / flockCount + h1 * 0.3) % 1;
+            const spireR = anch.radius * (0.48 + 0.55 * Math.sin(thermalCycle * Math.PI));
+            const cx = anch.tx + Math.cos(ph * 1.35) * spireR;
+            const cz = anch.tz + Math.sin(ph * 1.35) * spireR;
+            const vx = -Math.sin(ph * 1.35) * spireR * angularSpeed * 1.35;
+            const vz = Math.cos(ph * 1.35) * spireR * angularSpeed * 1.35;
+            const yaw = Math.atan2(vx, vz);
+            const climbCurve = Math.sin(thermalCycle * Math.PI);
+            const gy = Math.max(0.2, getTerrainHeight3D(anch.tx, anch.tz, 'sky', W.B, W.SB, W.iceMap));
+            const cy = gy + 1.55 + climbCurve * 4.4 + Math.sin(t * 1.4 + b) * 0.22;
+            const vy = Math.cos(thermalCycle * Math.PI) * 1.3;
+            const horizSpd = Math.max(0.4, Math.hypot(vx, vz));
+            const pitch = Math.max(-0.42, Math.min(0.42, -Math.atan2(vy, horizSpd)));
+            const bankRoll = dirSign * (0.28 + h2 * 0.18);
+            const sc = 1.48 + h1 * 0.34;
+            this.pushInstanceDirected('critters', cx, cy, cz, sc, sc, sc, pitch, yaw, bankRoll, skySwallowCols[(aIdx + b) % skySwallowCols.length]);
+          } else {
+            // Sweeping island-perimeter & castle-turret orbits hugging cloud rims and rising over treetops
+            const islandStretch = 0.8 + 0.35 * Math.sin(bSeed);
+            const orbitR = anch.radius * (0.76 + (b % 3) * 0.2 + Math.sin(ph * 0.5 + b) * 0.1);
+            // Subtle island-hopping sweep on outer flock members when another island is nearby
+            const hopPull =
+              anchorCount > 1 && b === 0
+                ? Math.max(0, Math.sin(t * 0.28 + aIdx)) * 0.18
+                : 0;
+            const centerX = anch.tx + (nextAnch.tx - anch.tx) * hopPull;
+            const centerZ = anch.tz + (nextAnch.tz - anch.tz) * hopPull;
+
+            const cx = centerX + Math.cos(ph) * orbitR;
+            const cz = centerZ + Math.sin(ph) * orbitR * islandStretch;
+            const vx = -Math.sin(ph) * orbitR * angularSpeed;
+            const vz = Math.cos(ph) * orbitR * islandStretch * angularSpeed;
+            const yaw = Math.atan2(vx, vz);
+
+            const groundHere = Math.max(-0.2, getTerrainHeight3D(cx, cz, 'sky', W.B, W.SB, W.iceMap));
+            const rimLift = groundHere > 0.05 ? groundHere + 2.35 : 1.45;
+            const waveAltitude = Math.sin(ph * 2.0 + b) * 0.55 + Math.cos(t * 0.9 + bSeed) * 0.28;
+            const cy = rimLift + h2 * 1.85 + waveAltitude;
+            const vy = Math.cos(ph * 2.0 + b) * 0.55 * Math.abs(angularSpeed) * 2.0;
+            const horizSpd = Math.max(0.4, Math.hypot(vx, vz));
+            const pitch = Math.max(-0.36, Math.min(0.36, -Math.atan2(vy, horizSpd)));
+            const bankRoll = dirSign * (0.24 + 0.14 * Math.sin(ph + b));
+            const sc = (anch.kind === 'castle' ? 1.62 : 1.48) + h1 * 0.28;
+
+            this.pushInstanceDirected(
+              'critters',
+              cx,
+              cy,
+              cz,
+              sc,
+              sc,
+              sc,
+              pitch,
+              yaw,
+              bankRoll,
+              skySwallowCols[(aIdx + b) % skySwallowCols.length]
+            );
+          }
+        }
+      }
+
+      batch.mesh.count = batch.count;
+      batch.mesh.instanceMatrix.needsUpdate = true;
+      if (batch.mesh.instanceColor) batch.mesh.instanceColor.needsUpdate = true;
+      return;
+    }
 
     for (let i = 0; i < maxCritters && batch.count < batch.max; i++) {
       const h1 = hash(i, 1, 971);
@@ -3875,66 +4622,86 @@ export class WorldRenderer3D {
 
       if (layer === 'surface') {
         const isBird = i % 4 === 0;
-        const rad = isBird ? 4.8 + h3 * 4.2 : 1.2 + h3 * 1.35;
-        // Organic figure-eight flower/coast arc for pollinators, sweeping circles for flocks
-        const orbitMod = isBird ? 1.0 : 1.0 + Math.sin(ph * 0.35 + i) * 0.28;
-        const cx = baseX + Math.cos(ph) * rad * orbitMod;
-        const cz = baseZ + Math.sin(ph * (isBird ? 1.0 : 2.0)) * rad * 0.76;
-        const vx = -Math.sin(ph) * rad;
-        const vz = Math.cos(ph * (isBird ? 1.0 : 2.0)) * rad * 0.76 * (isBird ? 1.0 : 2.0);
+        const baseTileX = Math.max(1, Math.min(N - 2, Math.floor(baseX)));
+        const baseTileZ = Math.max(1, Math.min(N - 2, Math.floor(baseZ)));
+        const baseBiome = W.B[baseTileZ * N + baseTileX];
+        const isCoastalBird = isBird && baseBiome <= 2;
+
+        const rad = isBird ? (isCoastalBird ? 5.6 + h3 * 4.5 : 4.4 + h3 * 3.8) : 1.15 + h3 * 1.25;
+        const orbitDir = i % 8 === 0 ? -1 : 1;
+        const signedPh = ph * orbitDir;
+        const orbitMod = isBird ? 1.0 + Math.sin(ph * 0.25) * 0.14 : 1.0 + Math.sin(ph * 0.35 + i) * 0.28;
+        const cx = baseX + Math.cos(signedPh) * rad * orbitMod;
+        const cz = baseZ + Math.sin(signedPh * (isBird ? 1.0 : 2.0)) * rad * 0.78;
+        const vx = -Math.sin(signedPh) * rad * orbitDir;
+        const vz = Math.cos(signedPh * (isBird ? 1.0 : 2.0)) * rad * 0.78 * (isBird ? 1.0 : 2.0) * orbitDir;
         const yaw = Math.atan2(vx, vz);
-        const bankRoll = isBird ? Math.sin(ph * 1.2) * 0.32 : Math.cos(ph * 2.0) * 0.18;
-        const pitch = isBird ? Math.cos(t * 1.4 + i) * 0.14 : 0.12;
+        const bankRoll = isBird ? orbitDir * (0.24 + Math.sin(ph * 1.2) * 0.16) : Math.cos(ph * 2.0) * 0.18;
+        const pitch = isBird ? -Math.cos(t * 1.3 + i) * 0.16 : 0.12;
 
         const gy = getTerrainHeight3D(cx, cz, 'surface', W.B, W.SB, W.iceMap);
-        const dwellDip = isBird ? 0 : Math.max(0, Math.sin(t * 0.9 + i * 2.3)) * 0.24;
+        const localTileX = Math.max(1, Math.min(N - 2, Math.floor(cx)));
+        const localTileZ = Math.max(1, Math.min(N - 2, Math.floor(cz)));
+        const localDk = W.DK[localTileZ * N + localTileX];
+        const nearFlower = localDk === 5 || localDk === 6 || localDk === 8 || localDk === 11;
+        const dwellDip = isBird ? 0 : Math.max(0, Math.sin(t * 0.9 + i * 2.3)) * (nearFlower ? 0.36 : 0.22);
         const cy = isBird
-          ? Math.max(0.6, gy) + 3.6 + Math.sin(t * 1.3 + i) * 0.65
+          ? Math.max(0.6, gy) + (isCoastalBird ? 2.9 : 3.7) + Math.sin(t * 1.3 + i) * 0.62
           : gy < -0.02
           ? 0.24 + Math.sin(t * 4.1 + i * 1.7) * 0.12
-          : Math.max(0.05, gy) + 0.66 - dwellDip + Math.sin(t * 3.6 + i * 1.7) * 0.26;
-        const sc = isBird ? 1.65 : gy < -0.02 ? 0.96 : 0.88 + h3 * 0.34;
+          : Math.max(0.05, gy) + 0.66 - dwellDip + Math.sin(t * 3.6 + i * 1.7) * 0.24;
+        const sc = isBird ? 1.62 : gy < -0.02 ? 0.96 : 0.88 + h3 * 0.32;
         const col = isBird
-          ? birdCols[i % birdCols.length]
+          ? isCoastalBird
+            ? i % 8 === 0
+              ? '#fffdf8'
+              : '#d8f0ff'
+            : birdCols[i % birdCols.length]
           : gy < -0.02
           ? '#4fe8ff'
           : bflyCols[i % bflyCols.length];
 
-        this.pushInstance('critters', cx, cy, cz, sc, sc, sc, pitch, yaw, bankRoll, col);
+        this.pushInstanceDirected('critters', cx, cy, cz, sc, sc, sc, pitch, yaw, bankRoll, col);
       } else if (layer === 'dive') {
-        // Drifting glowing sea-skaters & pulsing moon jellyfish wings near reef / trench floor
-        const cx = baseX + Math.sin(ph * 0.55) * 1.6;
-        const cz = baseZ + Math.cos(ph * 0.48) * 1.6;
+        // Drifting glowing sea-skaters, manta-wisps & pulsing moon jellyfish near reef floor
+        const cx = baseX + Math.sin(ph * 0.55) * 1.9;
+        const cz = baseZ + Math.cos(ph * 0.48) * 1.9;
         const reefY = getTerrainHeight3D(cx, cz, 'dive', W.B, W.SB, W.iceMap);
-        const cy = reefY + 0.55 + ((t * 0.26 + h3 * 2.0) % 2.1);
-        const sc = 1.08 + h3 * 0.42;
-        this.pushInstance('critters', cx, cy, cz, sc, sc * 0.8, sc, 0.25, ph * 0.4, Math.sin(ph) * 0.14, i % 2 === 0 ? '#a8f6ff' : '#ff9ee8');
-      } else if (layer === 'sky') {
-        // Wide-wheeling cloud swallows
-        const rad = 3.8 + h3 * 4.2;
-        const cx = baseX + Math.cos(ph) * rad;
-        const cz = baseZ + Math.sin(ph) * rad;
-        const yaw = Math.atan2(-Math.sin(ph), Math.cos(ph));
-        const cy = 1.5 + h3 * 2.8 + Math.sin(t * 1.6 + i) * 0.55;
-        this.pushInstance('critters', cx, cy, cz, 1.5, 1.5, 1.5, Math.cos(t * 1.6 + i) * 0.14, yaw, Math.sin(ph) * 0.3, birdCols[i % birdCols.length]);
+        const cy = reefY + 0.6 + ((t * 0.28 + h3 * 2.2) % 2.4);
+        const sc = 1.05 + h3 * 0.48;
+        const diveCols = ['#a8f6ff', '#ff9ee8', '#64f5c1', '#ffd87a'];
+        this.pushInstanceDirected('critters', cx, cy, cz, sc, sc * 0.8, sc, 0.25, ph * 0.4, Math.sin(ph) * 0.14, diveCols[i % diveCols.length]);
       } else {
-        // Bioluminescent cave moths & starlight butterflies
-        const cx = baseX + Math.cos(ph) * 1.6;
-        const cz = baseZ + Math.sin(ph * 1.7) * 1.25;
-        const yaw = Math.atan2(-Math.sin(ph), 1.7 * Math.cos(ph * 1.7));
-        const cy = 0.8 + h3 * 1.6 + Math.sin(t * 2.8 + i) * 0.32;
+        // Bioluminescent cave moths & starlight celestial butterflies hovering smoothly above actual terrain
+        const cx = baseX + Math.cos(ph) * 1.85;
+        const cz = baseZ + Math.sin(ph * 1.65) * 1.45;
+        const yaw = Math.atan2(-Math.sin(ph), 1.65 * Math.cos(ph * 1.65));
+        const gy = Math.max(0.1, getTerrainHeight3D(cx, cz, layer, W.B, W.SB, W.iceMap));
+        const cy = gy + 0.72 + h3 * 1.65 + Math.sin(t * 2.8 + i) * 0.34;
+        const col =
+          layer === 'glowdeep'
+            ? i % 3 === 0
+              ? '#64f5c1'
+              : i % 3 === 1
+              ? '#d299ff'
+              : '#ffae4d'
+            : i % 3 === 0
+            ? '#ffe484'
+            : i % 3 === 1
+            ? '#c298ff'
+            : '#8fd5ff';
         this.pushInstance(
           'critters',
           cx,
           cy,
           cz,
-          1.0,
-          1.0,
-          1.0,
+          1.08 + h3 * 0.25,
+          1.08 + h3 * 0.25,
+          1.08 + h3 * 0.25,
           0.1,
           yaw,
-          Math.sin(ph * 1.4) * 0.16,
-          layer === 'glowdeep' ? (i % 2 === 0 ? '#64f5c1' : '#d299ff') : '#ffe484'
+          Math.sin(ph * 1.4) * 0.18,
+          col
         );
       }
     }
@@ -4043,6 +4810,10 @@ export class WorldRenderer3D {
     this.lastResizeDpr = safeDpr;
     this.renderer.setPixelRatio(safeDpr);
     this.renderer.setSize(w, h, false);
+    if (this.composer) {
+      this.composer.setPixelRatio(safeDpr);
+      this.composer.setSize(w, h);
+    }
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -4183,6 +4954,9 @@ export class WorldRenderer3D {
         });
       }
 
+      const nextGlow: TerraceAnchor[] = [];
+      const nextMoon: TerraceAnchor[] = [];
+
       for (let i = 0; i < this.customLandmarks.length; i++) {
         const lm = this.customLandmarks[i];
         const pos = this.resolvedLandmarkCoords[i];
@@ -4196,12 +4970,24 @@ export class WorldRenderer3D {
           nextDive.push({ tx: lx, tz: lz, baseH, innerR: 2.8, outerR: 6.2 });
         } else if (lm.layer === 'sky') {
           nextSky.push({ tx: lx, tz: lz, baseH: lm.id === 'sunrise_updraft_spire' ? 1.52 : 0.85, innerR: 3.2, outerR: 7.0 });
+        } else if (lm.layer === 'glowdeep') {
+          nextGlow.push({ tx: lx, tz: lz, baseH: 0.14, innerR: 2.8, outerR: 6.2 });
+        } else if (lm.layer === 'moonroad') {
+          nextMoon.push({
+            tx: lx,
+            tz: lz,
+            baseH: lm.id === 'edge_of_silence_tower' ? 0.68 : 0.46,
+            innerR: 2.8,
+            outerR: 6.2,
+          });
         }
       }
 
       activeSurfaceTerraces = nextSurface;
       activeDiveTerraces = nextDive;
       activeSkyTerraces = nextSky;
+      activeGlowdeepTerraces = nextGlow;
+      activeMoonTerraces = nextMoon;
       this.terrainStateKey = '';
       this.worldMapLayerKey = '';
       this.propRebuildKey = '';
@@ -4424,7 +5210,7 @@ export class WorldRenderer3D {
       const pos = this.resolvedLandmarkCoords[i];
       const lx = pos ? pos.tx : lm.tx;
       const lz = pos ? pos.tz : lm.tz;
-      const vis = Math.abs(lx + 0.5 - focusX) < 34 && Math.abs(lz + 0.5 - focusZ) < 34;
+      const vis = Math.abs(lx + 0.5 - focusX) < 42 && Math.abs(lz + 0.5 - focusZ) < 42;
       lm.group.visible = vis;
       if (vis) {
         const gy = getTerrainHeight3D(lx + 0.5, lz + 0.5, layer, W.B, W.SB, W.iceMap);
@@ -4561,7 +5347,9 @@ export class WorldRenderer3D {
     const dreamOpacity = W.activeSpellTimers.dreamwalkTimer > 0 ? 0.68 + Math.sin(t * 7) * 0.12 : 1.0;
 
     const isFirstPerson = !W.isTitleMode && camPresetActive === 'first_person';
-    this.playerRig.root.visible = !isFirstPerson;
+    const fishingActive = Boolean(W.fishing?.active && !W.isTitleMode && !isHouse);
+    this.playerRig.root.visible = !isFirstPerson || fishingActive;
+    this.fishingStageGroup.visible = fishingActive;
 
     if (W.isTitleMode && lanternTree) {
       // Showcase Hero Mochi beneath the Great Lantern Tree!
@@ -4583,6 +5371,124 @@ export class WorldRenderer3D {
       });
       this.companionRig.root.position.set(lx - 0.85, ly, lz + 0.2);
       updateCompanionRig(this.companionRig, W.companionId, t);
+    } else if (fishingActive && W.fishing) {
+      const fs = W.fishing;
+      const ledgeGroundY = getTerrainHeight3D(fs.ledgeTx, fs.ledgeTz, layer, W.B, W.SB, W.iceMap, W.lilyMap);
+      const waterSurfaceY = layer === 'glowdeep' ? -0.055 : Math.sin(t * 1.4) * 0.025;
+      this.fishingLedgeGroup.position.set(fs.ledgeTx, ledgeGroundY, fs.ledgeTz);
+      this.fishingLedgeGroup.rotation.y = fs.facingYaw;
+
+      this.playerSmoothYaw = fs.facingYaw;
+      this.playerRig.root.position.set(fs.ledgeTx, ledgeGroundY + 0.03, fs.ledgeTz);
+      const fishEmote =
+        fs.mode === 'celebrate' ? 'fish_celebrate' : fs.mode === 'reeling' ? 'fish_reel' : 'fish_idle';
+      updateMochiRig(this.playerRig, {
+        look: W.playerLook,
+        time: t,
+        isMoving: false,
+        isBlinking: fs.mode === 'celebrate' ? false : t % 4 < 0.12,
+        facingYaw: fs.facingYaw,
+        headYaw: 0,
+        scale: 0.92,
+        opacity: dreamOpacity,
+        dt,
+        moveSpeed: 0,
+        emoteAnim: fishEmote,
+        fishingProgress: fs.reelProgress,
+      });
+
+      this.playerRig.root.updateWorldMatrix(true, true);
+      if (this.playerRig.fishingRodTipMarker) {
+        this.playerRig.fishingRodTipMarker.getWorldPosition(_v3);
+      } else {
+        _v3.set(
+          fs.ledgeTx + Math.sin(fs.facingYaw) * 1.15,
+          ledgeGroundY + 1.05,
+          fs.ledgeTz + Math.cos(fs.facingYaw) * 1.15
+        );
+      }
+
+      const pullFrac = fs.mode === 'reeling' ? fs.reelProgress * 0.44 : 0;
+      const tugJitter = fs.mode === 'reeling' ? Math.sin(t * 14) * 0.11 : 0;
+      const perpX = Math.cos(fs.facingYaw);
+      const perpZ = -Math.sin(fs.facingYaw);
+      const bobX = THREE.MathUtils.lerp(fs.waterTx, fs.ledgeTx, pullFrac) + perpX * tugJitter;
+      const bobZ = THREE.MathUtils.lerp(fs.waterTz, fs.ledgeTz, pullFrac) + perpZ * tugJitter;
+      const bobY =
+        fs.mode === 'celebrate'
+          ? Math.max(waterSurfaceY + 0.35, _v3.y - 0.58)
+          : fs.mode === 'reeling'
+          ? waterSurfaceY - 0.035 + Math.sin(t * 16) * 0.045
+          : waterSurfaceY + Math.sin(t * 3.4) * 0.035;
+
+      this.fishingBobberGroup.visible = fs.mode !== 'celebrate';
+      this.fishingBobberGroup.position.set(bobX, bobY, bobZ);
+      this.fishingBobberGroup.rotation.set(
+        fs.mode === 'reeling' ? 0.38 : Math.sin(t * 2.8) * 0.12,
+        fs.facingYaw,
+        Math.cos(t * 3.1) * 0.1
+      );
+
+      // Update catenary fishing line between rod tip (_v3) and line target (_v3b)
+      if (fs.mode === 'celebrate') {
+        const celeb = fs.celebrateElapsed ?? 0.5;
+        const arcLift = Math.sin(Math.min(1, celeb / 0.9) * Math.PI * 0.5);
+        const fX = THREE.MathUtils.lerp(bobX, _v3.x, arcLift * 0.85);
+        const fZ = THREE.MathUtils.lerp(bobZ, _v3.z, arcLift * 0.85);
+        const fY = THREE.MathUtils.lerp(waterSurfaceY + 0.35, _v3.y - 0.38, arcLift) + Math.sin(t * 9) * 0.06;
+        _v3b.set(fX, fY + 0.14, fZ);
+        this.caughtFishGroup.visible = true;
+        this.caughtFishGroup.position.set(fX, fY, fZ);
+        this.caughtFishGroup.rotation.set(
+          Math.sin(t * 10) * 0.22 - 0.25,
+          fs.facingYaw + Math.PI * 0.5 + Math.sin(t * 5) * 0.35,
+          Math.sin(t * 12) * 0.16
+        );
+        this.caughtFishTail.rotation.y = Math.sin(t * 22) * 0.42;
+        this.caughtFishBodyMat.color.set(fs.caughtFishColor || '#ff9f43');
+        for (let s = 0; s < this.caughtFishSparkles.length; s++) {
+          const sp = this.caughtFishSparkles[s];
+          const ang = t * 4.2 + (s / this.caughtFishSparkles.length) * Math.PI * 2;
+          const rad = 0.34 + Math.sin(t * 6 + s) * 0.1;
+          sp.position.set(Math.cos(ang) * rad, Math.sin(t * 5 + s * 1.4) * 0.22, Math.sin(ang) * rad);
+          sp.rotation.set(t * 3, t * 4, s);
+          sp.scale.setScalar(0.75 + Math.sin(t * 8 + s) * 0.35);
+        }
+      } else {
+        this.caughtFishGroup.visible = false;
+        _v3b.set(bobX, bobY + 0.16, bobZ);
+      }
+
+      const lineSag = fs.mode === 'idle' ? 0.16 : 0.025;
+      for (let i = 0; i < 12; i++) {
+        const u = i / 11;
+        const idx3 = i * 3;
+        this.fishingLinePositions[idx3] = THREE.MathUtils.lerp(_v3.x, _v3b.x, u);
+        this.fishingLinePositions[idx3 + 1] =
+          THREE.MathUtils.lerp(_v3.y, _v3b.y, u) - 4 * u * (1 - u) * lineSag;
+        this.fishingLinePositions[idx3 + 2] = THREE.MathUtils.lerp(_v3.z, _v3b.z, u);
+      }
+      this.fishingLine.geometry.attributes.position.needsUpdate = true;
+
+      // Water splash & concentric ripples around the bobber
+      if (fs.mode === 'reeling') {
+        if (t - this.lastFishingSplashTime > 0.16) {
+          this.lastFishingSplashTime = t;
+          this.spawnStepRipple(bobX, waterSurfaceY + 0.04, bobZ, 0.72, 0.62, 0xe8fbff);
+        }
+      } else if (fs.mode === 'idle') {
+        if (t - this.lastFishingRippleTime > 1.15) {
+          this.lastFishingRippleTime = t;
+          this.spawnStepRipple(bobX, waterSurfaceY + 0.035, bobZ, 0.56, 1.05, 0xd8f8ff);
+        }
+      }
+
+      // Cozy companion cheering next to the ledge!
+      const compX = fs.ledgeTx - Math.cos(fs.facingYaw) * 0.95 - Math.sin(fs.facingYaw) * 0.35;
+      const compZ = fs.ledgeTz + Math.sin(fs.facingYaw) * 0.95 - Math.cos(fs.facingYaw) * 0.35;
+      const compY = getTerrainHeight3D(compX, compZ, layer, W.B, W.SB, W.iceMap, W.lilyMap);
+      this.companionRig.root.position.set(compX, Math.max(ledgeGroundY - 0.1, compY), compZ);
+      updateCompanionRig(this.companionRig, W.companionId, t, fs.facingYaw, fs.mode === 'celebrate');
     } else {
       this.playerRig.root.position.set(W.player.x / T, pY, W.player.y / T);
       if (!isFirstPerson) {
@@ -4614,27 +5520,29 @@ export class WorldRenderer3D {
         });
       }
 
-      const compTx = W.companionPos.x / T;
-      const compTz = W.companionPos.y / T;
-      const compY = getActorGroundY3D(W.companionPos.x, W.companionPos.y, layer, W.B, W.SB, W.iceMap, W.lilyMap);
-      this.companionRig.root.position.set(compTx, compY, compTz);
-      const cdx = this.hasLastComp ? compTx - this.lastCompX : 0;
-      const cdz = this.hasLastComp ? compTz - this.lastCompZ : 0;
-      const cDist = Math.hypot(cdx, cdz);
-      const isCompMoving = cDist > 0.012;
-      if (isCompMoving) {
-        const targetCompYaw = Math.atan2(cdx, cdz);
-        const diff = ((targetCompYaw - this.compSmoothYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-        this.compSmoothYaw += diff * Math.min(1, 12 * dt);
-      } else if (dLen > 0.01) {
-        const targetCompYaw = this.playerSmoothYaw;
-        const diff = ((targetCompYaw - this.compSmoothYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-        this.compSmoothYaw += diff * Math.min(1, 5 * dt);
+      if (!fishingActive) {
+        const compTx = W.companionPos.x / T;
+        const compTz = W.companionPos.y / T;
+        const compY = getActorGroundY3D(W.companionPos.x, W.companionPos.y, layer, W.B, W.SB, W.iceMap, W.lilyMap);
+        this.companionRig.root.position.set(compTx, compY, compTz);
+        const cdx = this.hasLastComp ? compTx - this.lastCompX : 0;
+        const cdz = this.hasLastComp ? compTz - this.lastCompZ : 0;
+        const cDist = Math.hypot(cdx, cdz);
+        const isCompMoving = cDist > 0.012;
+        if (isCompMoving) {
+          const targetCompYaw = Math.atan2(cdx, cdz);
+          const diff = ((targetCompYaw - this.compSmoothYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+          this.compSmoothYaw += diff * Math.min(1, 12 * dt);
+        } else if (dLen > 0.01) {
+          const targetCompYaw = this.playerSmoothYaw;
+          const diff = ((targetCompYaw - this.compSmoothYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+          this.compSmoothYaw += diff * Math.min(1, 5 * dt);
+        }
+        this.lastCompX = compTx;
+        this.lastCompZ = compTz;
+        this.hasLastComp = true;
+        updateCompanionRig(this.companionRig, W.companionId, t, this.compSmoothYaw, isCompMoving);
       }
-      this.lastCompX = compTx;
-      this.lastCompZ = compTz;
-      this.hasLastComp = true;
-      updateCompanionRig(this.companionRig, W.companionId, t, this.compSmoothYaw, isCompMoving);
     }
 
     // Active Player Light in dark realms / subtle warm clarity underwater + luminous companion lantern boost
@@ -5116,7 +6024,23 @@ export class WorldRenderer3D {
     let dampTargetLambda = 11;
 
     const isPlayerMoving = W.player.isMoving || Boolean(W.player.moveTarget);
-    if (camPresetActive === 'first_person') {
+    if (fishingActive && W.fishing) {
+      const fs = W.fishing;
+      const ledgeGroundY = getTerrainHeight3D(fs.ledgeTx, fs.ledgeTz, layer, W.B, W.SB, W.iceMap, W.lilyMap);
+      const isCeleb = fs.mode === 'celebrate';
+      const camDist = isCeleb ? 3.9 : 4.65;
+      const sideYaw = fs.facingYaw + 1.15;
+      desiredTargetX = THREE.MathUtils.lerp(fs.ledgeTx, fs.waterTx, isCeleb ? 0.24 : 0.38);
+      desiredTargetZ = THREE.MathUtils.lerp(fs.ledgeTz, fs.waterTz, isCeleb ? 0.24 : 0.38);
+      desiredTargetY = Math.max(0, ledgeGroundY) + (isCeleb ? 0.56 : 0.36);
+      desiredCamX = desiredTargetX + Math.sin(sideYaw) * camDist;
+      desiredCamZ = desiredTargetZ + Math.cos(sideYaw) * camDist;
+      desiredCamY = Math.max(0.25, ledgeGroundY) + (isCeleb ? 2.05 : 2.38);
+      targetFov = 44;
+      targetNear = 0.2;
+      dampPosLambda = 7.5;
+      dampTargetLambda = 8.5;
+    } else if (camPresetActive === 'first_person') {
       const headBob = isPlayerMoving ? Math.sin(t * 9.5) * 0.028 : Math.sin(t * 2.4) * 0.008;
       const eyeHeight = (W.player.swim && jumpZWorld < 0.08 ? 0.54 : 0.88) + headBob;
       const cosP = Math.cos(pitch);
@@ -5241,7 +6165,84 @@ export class WorldRenderer3D {
       _v3Dir.copy(this.camTarget).add(_v3).add(_v3b);
       this.camera.lookAt(_v3Dir);
     }
-    this.renderer.render(this.scene, this.camera);
+    if (this.composer && !this.isSoftwareGl) {
+      if (this.dofPass) {
+        const useDof = !W.lowQuality;
+        this.dofPass.enabled = useDof;
+        if (useDof) {
+          const focusDist = this.camPos.distanceTo(this.camTarget);
+          let focusBand = 11.5;
+          let farSpan = 28.0;
+          let nearSafe = 4.5;
+          let blurStrength = 0.68;
+          let tiltShiftStrength = 0.65;
+          let maxMix = 0.68;
+          let blurRadius = this.isMobileMode ? 1.05 : 1.25;
+
+          if (fishingActive) {
+            focusBand = 5.5;
+            farSpan = 16.0;
+            nearSafe = 2.6;
+            blurStrength = 0.56;
+            tiltShiftStrength = 0.18;
+            maxMix = 0.54;
+            blurRadius = 1.0;
+          } else if (isHouse) {
+            focusBand = 5.5;
+            farSpan = 12.0;
+            nearSafe = 2.8;
+            blurStrength = 0.34;
+            tiltShiftStrength = 0.25;
+            maxMix = 0.42;
+            blurRadius = 0.9;
+          } else if (camPresetActive === 'vista') {
+            focusBand = 14.0;
+            farSpan = 34.0;
+            nearSafe = 5.5;
+            blurStrength = 0.74;
+            tiltShiftStrength = 0.78;
+            maxMix = 0.74;
+          } else if (camPresetActive === 'close') {
+            focusBand = 8.5;
+            farSpan = 20.0;
+            nearSafe = 3.2;
+            blurStrength = 0.62;
+            tiltShiftStrength = 0.52;
+            maxMix = 0.62;
+          } else if (camPresetActive === 'third_forward' || camPresetActive === 'third_backward') {
+            focusBand = 16.0;
+            farSpan = 38.0;
+            nearSafe = 3.0;
+            blurStrength = 0.56;
+            tiltShiftStrength = 0.28;
+            maxMix = 0.58;
+          } else if (camPresetActive === 'first_person') {
+            focusBand = 22.0;
+            farSpan = 48.0;
+            nearSafe = 2.5;
+            blurStrength = 0.42;
+            tiltShiftStrength = 0.0;
+            maxMix = 0.45;
+          }
+
+          this.dofPass.updateParams({
+            camNear: this.camera.near,
+            camFar: this.camera.far,
+            focusDist,
+            focusBand,
+            farSpan,
+            nearSafe,
+            blurStrength,
+            tiltShiftStrength,
+            maxMix,
+            blurRadius,
+          });
+        }
+      }
+      this.composer.render(safeDt);
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 
   public projectWorldToScreen(
@@ -5302,6 +6303,15 @@ export class WorldRenderer3D {
     this.houseInterior?.dispose();
     this.houseInterior = null;
     disposeCompanionRig(this.companionRig);
+
+    this.renderPass?.dispose();
+    this.dofPass?.dispose();
+    this.outputPass?.dispose();
+    this.composer?.dispose();
+    this.renderPass = null;
+    this.dofPass = null;
+    this.outputPass = null;
+    this.composer = null;
 
     this.envRT.dispose();
     this.pmrem.dispose();

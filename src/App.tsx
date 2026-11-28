@@ -58,7 +58,7 @@ import { BottleModal } from './components/BottleModal';
 import { GazetteModal } from './components/GazetteModal';
 import { CutsceneOverlay } from './components/CutsceneOverlay';
 import { TitleScreen, SaveSlotSummary } from './components/TitleScreen';
-import { FishingMinigame } from './components/FishingMinigame';
+import { FishingMinigame, FishingLiveState } from './components/FishingMinigame';
 import { SongWeaverModal } from './components/SongWeaverModal';
 import { CottageModal } from './components/CottageModal';
 import { CutsceneSlide } from './game/cutscenes';
@@ -341,6 +341,41 @@ export default function App() {
   const deviceRef = useRef(device);
   deviceRef.current = device;
 
+  const tryLockLandscape = useCallback(async (allowFullscreen = false) => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (allowFullscreen && !document.fullscreenElement) {
+        const rootEl = document.documentElement as HTMLElement & {
+          webkitRequestFullscreen?: () => Promise<void> | void;
+        };
+        if (rootEl.requestFullscreen) {
+          await rootEl.requestFullscreen().catch(() => {});
+        } else if (rootEl.webkitRequestFullscreen) {
+          rootEl.webkitRequestFullscreen();
+        }
+      }
+      const scr = window.screen as Screen & {
+        orientation?: ScreenOrientation & { lock?: (orientation: string) => Promise<void> };
+        lockOrientation?: (orientation: string) => boolean;
+        mozLockOrientation?: (orientation: string) => boolean;
+        msLockOrientation?: (orientation: string) => boolean;
+      };
+      if (scr?.orientation?.lock) {
+        await scr.orientation.lock('landscape').catch(() => {});
+      } else if (scr?.lockOrientation) {
+        scr.lockOrientation('landscape');
+      } else if (scr?.mozLockOrientation) {
+        scr.mozLockOrientation('landscape');
+      } else if (scr?.msLockOrientation) {
+        scr.msLockOrientation('landscape');
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    void tryLockLandscape(false);
+  }, [tryLockLandscape]);
+
   // Save Slot State (persisted across reloads)
   const [currentSlot, setCurrentSlot] = useState<number>(() => {
     try {
@@ -506,6 +541,7 @@ export default function App() {
   const jumpFnRef = useRef<() => void>(() => {});
   const diveFnRef = useRef<() => void>(() => {});
   const canFishFnRef = useRef<() => boolean>(() => false);
+  const startFishingFnRef = useRef<() => void>(() => {});
   const cycleMusicFnRef = useRef<() => void>(() => {});
   const cycleCameraFnRef = useRef<() => void>(() => {});
   const saveGameFnRef = useRef<(showNotification?: boolean) => void>(() => {});
@@ -533,6 +569,19 @@ export default function App() {
     starter: string[];
     list: string[];
   } | null>(null);
+  const activeFishingSpotRef = useRef<{
+    ledgeTx: number;
+    ledgeTz: number;
+    waterTx: number;
+    waterTz: number;
+    facingYaw: number;
+    spotLabel: string;
+    isGlowdeep: boolean;
+  } | null>(null);
+  const fishingLiveStateRef = useRef<FishingLiveState>({
+    mode: 'idle',
+    reelProgress: 0,
+  });
   const minimapCacheRef = useRef<{ layer: string; season: SeasonId; canvas: HTMLCanvasElement } | null>(null);
 
   // Settings
@@ -1142,21 +1191,33 @@ export default function App() {
           b = dSt > 14.5 ? 2 : dSt < 5.5 && y < isl.starfallShoals.ty - 3 ? 8 : m > 0.52 ? 3 : 6;
         }
 
-        // Preserve key Undersea Reef landmark basins & Driftwood Dive Lagoon as water
-        if (Math.hypot(x - WORLD_ANCHORS.reef.atollSunkenRuins.tx, y - WORLD_ANCHORS.reef.atollSunkenRuins.ty) < 4.5) {
-          b = 1; // Atoll Sunken Ruins shallow turquoise cove
+        // Preserve key Undersea Reef landmark basins & outer quadrant sanctuaries as open ocean water
+        const rfA = WORLD_ANCHORS.reef;
+        if (Math.hypot(x - rfA.atollSunkenRuins.tx, y - rfA.atollSunkenRuins.ty) < 4.5) {
+          b = 1;
         }
-        if (Math.hypot(x - WORLD_ANCHORS.reef.coralConcertHall.tx, y - WORLD_ANCHORS.reef.coralConcertHall.ty) < 6.8) {
-          b = 0; // Coral Concert Hall basin
+        if (Math.hypot(x - rfA.coralConcertHall.tx, y - rfA.coralConcertHall.ty) < 6.8) {
+          b = 0;
         }
-        if (Math.hypot(x - WORLD_ANCHORS.reef.starlitKelpTrench.tx, y - WORLD_ANCHORS.reef.starlitKelpTrench.ty) < 6.8) {
-          b = 0; // Starlit Kelp Trench deep reef
+        if (Math.hypot(x - rfA.starlitKelpTrench.tx, y - rfA.starlitKelpTrench.ty) < 6.8) {
+          b = 0;
         }
-        if (Math.hypot(x - WORLD_ANCHORS.reef.driftwoodDiveLagoon.tx, y - WORLD_ANCHORS.reef.driftwoodDiveLagoon.ty) < 3.6) {
-          b = 1; // Driftwood Dive Lagoon off southern Driftwood Dock
+        if (Math.hypot(x - rfA.driftwoodDiveLagoon.tx, y - rfA.driftwoodDiveLagoon.ty) < 3.6) {
+          b = 1;
         }
-        if (Math.hypot(x - WORLD_ANCHORS.reef.sunkenPearlGrotto.tx, y - WORLD_ANCHORS.reef.sunkenPearlGrotto.ty) < 4.6) {
-          b = 1; // Sunken Pearl Grotto western cove
+        if (Math.hypot(x - rfA.sunkenPearlGrotto.tx, y - rfA.sunkenPearlGrotto.ty) < 5.5) {
+          b = 1;
+        }
+        if (
+          Math.hypot(x - rfA.auroraCoralTrench.tx, y - rfA.auroraCoralTrench.ty) < 8.5 ||
+          Math.hypot(x - rfA.northernWhaleSanctuary.tx, y - rfA.northernWhaleSanctuary.ty) < 7.5 ||
+          Math.hypot(x - rfA.westernAbyssalGarden.tx, y - rfA.westernAbyssalGarden.ty) < 8.5 ||
+          Math.hypot(x - rfA.easternShipwreckCove.tx, y - rfA.easternShipwreckCove.ty) < 7.5 ||
+          Math.hypot(x - rfA.cinderThermalVents.tx, y - rfA.cinderThermalVents.ty) < 8.5 ||
+          Math.hypot(x - rfA.starfallSunkenPlaza.tx, y - rfA.starfallSunkenPlaza.ty) < 8.5 ||
+          Math.hypot(x - rfA.abyssalGlassArch.tx, y - rfA.abyssalGlassArch.ty) < 7.5
+        ) {
+          b = 0;
         }
 
         W.B[y * N + x] = b;
@@ -1174,39 +1235,47 @@ export default function App() {
       for (let x = 1; x < N - 1; x++) {
         const i = y * N + x;
         const b = W.B[i];
-        if (b > 1) continue;
         const h = hash(x, y, 21);
-        W.UD[i] = b
-          ? h < 0.1
-            ? 1
-            : h < 0.18
+        if (b >= 2) {
+          W.UD[i] =
+            h < 0.085
+              ? 1
+              : h < 0.165
+              ? 2
+              : h < 0.195
+              ? 3
+              : h < 0.22
+              ? 4
+              : h < 0.232
+              ? 7
+              : 0;
+        } else {
+          W.UD[i] = b
+            ? h < 0.1
+              ? 1
+              : h < 0.18
+              ? 2
+              : h < 0.21
+              ? 3
+              : h < 0.24
+              ? 4
+              : 0
+            : h < 0.07
             ? 2
-            : h < 0.21
-            ? 3
-            : h < 0.24
+            : h < 0.13
+            ? 1
+            : h < 0.15
             ? 4
-            : 0
-          : h < 0.07
-          ? 2
-          : h < 0.13
-          ? 1
-          : h < 0.15
-          ? 4
-          : h < 0.17
-          ? 3
-          : 0;
+            : h < 0.17
+            ? 3
+            : 0;
+        }
 
-        if (!W.UD[i] && hash(x, y, 6) < (b ? 0.0054 : 0.0042)) {
+        if (!W.UD[i] && hash(x, y, 6) < (b ? 0.0052 : 0.0042)) {
           W.pearls.push({ x: x * T + T / 2, y: y * T + T / 2, got: 0 });
         }
 
-        if (
-          W.B[i - 1] < 2 &&
-          W.B[i + 1] < 2 &&
-          W.B[i - N] < 2 &&
-          W.B[i + N] < 2 &&
-          hash(x, y, 7) < 0.0044
-        ) {
+        if (hash(x, y, 7) < (b >= 2 ? 0.0038 : 0.0044)) {
           W.fish.push({
             hx: x * T + T / 2,
             hy: y * T + T / 2,
@@ -1231,9 +1300,7 @@ export default function App() {
           if (dist < 2.2) {
             W.UD[idx] = 0;
           } else if (dist >= radius - 0.6 && dist <= radius + 0.6 && (dx + dy) % 2 === 0) {
-            if (W.B[idx] < 2) {
-              W.UD[idx] = Math.abs(dx) === Math.abs(dy) ? altKind : ringKind;
-            }
+            W.UD[idx] = Math.abs(dx) === Math.abs(dy) ? altKind : ringKind;
           }
         }
       }
@@ -1242,7 +1309,46 @@ export default function App() {
     frameReefSite(WORLD_ANCHORS.reef.starlitKelpTrench.tx, WORLD_ANCHORS.reef.starlitKelpTrench.ty, 3.8, 1, 7);
     frameReefSite(WORLD_ANCHORS.reef.atollSunkenRuins.tx, WORLD_ANCHORS.reef.atollSunkenRuins.ty, 2.8, 3, 4);
     frameReefSite(WORLD_ANCHORS.reef.driftwoodDiveLagoon.tx, WORLD_ANCHORS.reef.driftwoodDiveLagoon.ty, 2.5, 4, 7);
-    frameReefSite(WORLD_ANCHORS.reef.sunkenPearlGrotto.tx, WORLD_ANCHORS.reef.sunkenPearlGrotto.ty, 3.4, 3, 7);
+    frameReefSite(WORLD_ANCHORS.reef.sunkenPearlGrotto.tx, WORLD_ANCHORS.reef.sunkenPearlGrotto.ty, 3.8, 3, 7);
+    frameReefSite(WORLD_ANCHORS.reef.auroraCoralTrench.tx, WORLD_ANCHORS.reef.auroraCoralTrench.ty, 4.4, 2, 7);
+    frameReefSite(WORLD_ANCHORS.reef.northernWhaleSanctuary.tx, WORLD_ANCHORS.reef.northernWhaleSanctuary.ty, 3.8, 1, 7);
+    frameReefSite(WORLD_ANCHORS.reef.westernAbyssalGarden.tx, WORLD_ANCHORS.reef.westernAbyssalGarden.ty, 4.4, 3, 7);
+    frameReefSite(WORLD_ANCHORS.reef.easternShipwreckCove.tx, WORLD_ANCHORS.reef.easternShipwreckCove.ty, 3.8, 4, 7);
+    frameReefSite(WORLD_ANCHORS.reef.cinderThermalVents.tx, WORLD_ANCHORS.reef.cinderThermalVents.ty, 4.2, 2, 7);
+    frameReefSite(WORLD_ANCHORS.reef.starfallSunkenPlaza.tx, WORLD_ANCHORS.reef.starfallSunkenPlaza.ty, 4.4, 3, 7);
+    frameReefSite(WORLD_ANCHORS.reef.abyssalGlassArch.tx, WORLD_ANCHORS.reef.abyssalGlassArch.ty, 3.8, 1, 7);
+    frameReefSite(WORLD_ANCHORS.reef.heartReefVault.tx, WORLD_ANCHORS.reef.heartReefVault.ty, 4.4, 2, 7);
+
+    // Dense themed tropical fish schools circling every Reef landmark so every sea destination feels alive
+    const seedReefSchool = (cx: number, cy: number, palette: string[], count = 5) => {
+      for (let f = 0; f < count; f++) {
+        const ang = (f / count) * Math.PI * 2 + hash(cx, cy + f, 29);
+        const rad = 2.6 + hash(cx + f, cy, 30) * 4.4;
+        const fx = Math.max(4, Math.min(N - 5, Math.round(cx + Math.cos(ang) * rad)));
+        const fy = Math.max(4, Math.min(N - 5, Math.round(cy + Math.sin(ang) * rad)));
+        if (W.B[fy * N + fx] < 2) {
+          W.fish.push({
+            hx: fx * T + T / 2,
+            hy: fy * T + T / 2,
+            s: 0.78 + hash(fx, fy, 31) * 0.65,
+            ph: hash(fx, fy, 32) * 6.28,
+            R: 16 + hash(fx, fy, 33) * 18,
+            c: palette[f % palette.length],
+          });
+        }
+      }
+    };
+    seedReefSchool(WORLD_ANCHORS.reef.coralConcertHall.tx, WORLD_ANCHORS.reef.coralConcertHall.ty, ['#ff7aa8', '#ffd23f', '#ff9f43'], 6);
+    seedReefSchool(WORLD_ANCHORS.reef.starlitKelpTrench.tx, WORLD_ANCHORS.reef.starlitKelpTrench.ty, ['#64f5c1', '#7de0ff', '#ffd23f'], 5);
+    seedReefSchool(WORLD_ANCHORS.reef.atollSunkenRuins.tx, WORLD_ANCHORS.reef.atollSunkenRuins.ty, ['#ffd23f', '#a8f7ff', '#ff9f43'], 5);
+    seedReefSchool(WORLD_ANCHORS.reef.sunkenPearlGrotto.tx, WORLD_ANCHORS.reef.sunkenPearlGrotto.ty, ['#a8f7ff', '#ffb8d9', '#fff4cc'], 5);
+    seedReefSchool(WORLD_ANCHORS.reef.auroraCoralTrench.tx, WORLD_ANCHORS.reef.auroraCoralTrench.ty, ['#2fe6b5', '#7de0ff', '#b69cff'], 5);
+    seedReefSchool(WORLD_ANCHORS.reef.northernWhaleSanctuary.tx, WORLD_ANCHORS.reef.northernWhaleSanctuary.ty, ['#7ee8fa', '#b69cff', '#ffd23f'], 6);
+    seedReefSchool(WORLD_ANCHORS.reef.westernAbyssalGarden.tx, WORLD_ANCHORS.reef.westernAbyssalGarden.ty, ['#6ef2ff', '#7de0ff', '#ff7aa8'], 5);
+    seedReefSchool(WORLD_ANCHORS.reef.easternShipwreckCove.tx, WORLD_ANCHORS.reef.easternShipwreckCove.ty, ['#ffd23f', '#ff9f43', '#7de0ff'], 6);
+    seedReefSchool(WORLD_ANCHORS.reef.cinderThermalVents.tx, WORLD_ANCHORS.reef.cinderThermalVents.ty, ['#ff8e42', '#ffd23f', '#ff7aa8'], 5);
+    seedReefSchool(WORLD_ANCHORS.reef.starfallSunkenPlaza.tx, WORLD_ANCHORS.reef.starfallSunkenPlaza.ty, ['#ff9ebb', '#ffd23f', '#b69cff'], 6);
+    seedReefSchool(WORLD_ANCHORS.reef.abyssalGlassArch.tx, WORLD_ANCHORS.reef.abyssalGlassArch.ty, ['#b4f0ff', '#64f5c1', '#7de0ff'], 5);
 
     // 3. Towns Generation (Every settlement from TOWNS_DATA_MM2 anchored to its map coordinates)
     const house = (a: Uint8Array, x: number, y: number, c: number, f: number) => {
@@ -1446,10 +1552,55 @@ export default function App() {
       }
     });
 
-    // Underwater Reef Towns (Coral Concert Hall + Pearl Reef + Sunken Pearl Grotto)
+    // Underwater Reef Towns & Outer Ocean Bubble Dome Outposts (Layer 1)
     const AR = WORLD_ANCHORS.reef;
+    const placeReefBubbleOutpost = (cx: number, cy: number, domeCount: 2 | 4 = 2) => {
+      for (let j = cy - 5; j <= cy + 5; j++) {
+        for (let i = cx - 7; i <= cx + 7; i++) {
+          if (i > 1 && j > 1 && i < N - 2 && j < N - 2) {
+            W.UD[j * N + i] = 0;
+          }
+        }
+      }
+      const domeOffsets: [number, number][] =
+        domeCount === 4
+          ? [[-6, -2], [3, -2], [-6, 3], [3, 3]]
+          : [[-5, -2], [2, -2]];
+      domeOffsets.forEach(([a, b]) => {
+        house(W.UD, cx + a, cy + b, 5, 6);
+      });
+      [[-3, 0], [3, 0], [0, -4], [0, 4], [-3, -4], [3, 4]].forEach(([a, b]) => {
+        const px = cx + a;
+        const py = cy + b;
+        if (px > 1 && py > 1 && px < N - 2 && py < N - 2 && W.UD[py * N + px] === 0) {
+          W.UD[py * N + px] = 7;
+        }
+      });
+    };
+
     W.towns.push({ n: 'Coral Concert Hall', x: AR.coralConcertHall.tx, y: AR.coralConcertHall.ty, w: 1, vis: 0, island: 'Sea' });
+    W.towns.push({ n: 'Atoll Sunken Ruins', x: AR.atollSunkenRuins.tx, y: AR.atollSunkenRuins.ty, w: 1, vis: 0, island: 'Sea' });
+    W.towns.push({ n: 'Starlit Kelp Trench', x: AR.starlitKelpTrench.tx, y: AR.starlitKelpTrench.ty, w: 1, vis: 0, island: 'Sea' });
     W.towns.push({ n: 'Sunken Pearl Grotto', x: AR.sunkenPearlGrotto.tx, y: AR.sunkenPearlGrotto.ty, w: 1, vis: 0, island: 'Sea' });
+    W.towns.push({ n: 'Aurora Coral Trench', x: AR.auroraCoralTrench.tx, y: AR.auroraCoralTrench.ty, w: 1, vis: 0, island: 'Sea' });
+    W.towns.push({ n: 'Northern Whale Sanctuary', x: AR.northernWhaleSanctuary.tx, y: AR.northernWhaleSanctuary.ty, w: 1, vis: 0, island: 'Sea' });
+    W.towns.push({ n: 'Western Abyssal Garden', x: AR.westernAbyssalGarden.tx, y: AR.westernAbyssalGarden.ty, w: 1, vis: 0, island: 'Sea' });
+    W.towns.push({ n: 'Eastern Shipwreck Cove', x: AR.easternShipwreckCove.tx, y: AR.easternShipwreckCove.ty, w: 1, vis: 0, island: 'Sea' });
+    W.towns.push({ n: 'Cinder Thermal Vents', x: AR.cinderThermalVents.tx, y: AR.cinderThermalVents.ty, w: 1, vis: 0, island: 'Sea' });
+    W.towns.push({ n: 'Starfall Sunken Plaza', x: AR.starfallSunkenPlaza.tx, y: AR.starfallSunkenPlaza.ty, w: 1, vis: 0, island: 'Sea' });
+    W.towns.push({ n: 'Abyssal Glass Arch', x: AR.abyssalGlassArch.tx, y: AR.abyssalGlassArch.ty, w: 1, vis: 0, island: 'Sea' });
+    W.towns.push({ n: 'Heart Reef Sanctuary', x: AR.heartReefVault.tx, y: AR.heartReefVault.ty, w: 1, vis: 0, island: 'Sea' });
+
+    placeReefBubbleOutpost(AR.sunkenPearlGrotto.tx, AR.sunkenPearlGrotto.ty, 2);
+    placeReefBubbleOutpost(AR.auroraCoralTrench.tx, AR.auroraCoralTrench.ty, 2);
+    placeReefBubbleOutpost(AR.westernAbyssalGarden.tx, AR.westernAbyssalGarden.ty, 2);
+    placeReefBubbleOutpost(AR.starfallSunkenPlaza.tx, AR.starfallSunkenPlaza.ty, 2);
+    placeReefBubbleOutpost(AR.cinderThermalVents.tx, AR.cinderThermalVents.ty, 2);
+    placeReefBubbleOutpost(AR.northernWhaleSanctuary.tx, AR.northernWhaleSanctuary.ty, 2);
+    placeReefBubbleOutpost(AR.easternShipwreckCove.tx, AR.easternShipwreckCove.ty, 2);
+    placeReefBubbleOutpost(AR.abyssalGlassArch.tx, AR.abyssalGlassArch.ty, 2);
+    placeReefBubbleOutpost(AR.heartReefVault.tx, AR.heartReefVault.ty, 2);
+
     const reefCandidates: [number, number][] = [];
     for (let y = 12; y < N - 12; y += 2) {
       for (let x = 12; x < N - 12; x += 2) {
@@ -1467,7 +1618,6 @@ export default function App() {
       }
     }
     if (reefCandidates.length) {
-      // Pick closest open reef site to Pearl Reef map coordinate
       let [px, py] = reefCandidates[0];
       let pBest = 1e9;
       for (const [cx, cy] of reefCandidates) {
@@ -1479,27 +1629,9 @@ export default function App() {
         }
       }
       W.towns.push({ n: 'Pearl Reef', x: px, y: py, w: 1, vis: 0, island: 'Sea' });
-      for (let j = py - 5; j <= py + 5; j++) {
-        for (let i = px - 7; i <= px + 7; i++) {
-          W.UD[j * N + i] = 0;
-        }
-      }
-      [
-        [-6, -2],
-        [3, -2],
-        [-6, 3],
-        [3, 3],
-      ].forEach(([a, b]) => house(W.UD, px + a, py + b, 5, 6));
-      [
-        [-3, 0],
-        [3, 0],
-        [0, -3],
-        [0, 3],
-        [-3, -4],
-        [3, 4],
-      ].forEach(([a, b]) => {
-        W.UD[(py + b) * N + px + a] = 7;
-      });
+      placeReefBubbleOutpost(px, py, 4);
+      frameReefSite(px, py, 4.2, 3, 7);
+      seedReefSchool(px, py, ['#fffaf0', '#ff94b8', '#a8f7ff'], 6);
     }
 
     // 4. Sky Kingdom Layer
@@ -1578,10 +1710,38 @@ export default function App() {
     W.towns.push({ n: 'Nimbus Market', x: AS.nimbusMarket.tx, y: AS.nimbusMarket.ty, w: 2, vis: 0, island: 'Sky' });
     W.towns.push({ n: 'Cirrus Castle', x: KX, y: KY, w: 2, vis: 0, island: 'Sky' });
     W.towns.push({ n: 'Aether Sky Garden', x: AS.aetherGarden.tx, y: AS.aetherGarden.ty, w: 2, vis: 0, island: 'Sky' });
-    W.towns.push({ n: 'Rooted Rest', x: WORLD_ANCHORS.glowdeep.rootedRest.tx, y: WORLD_ANCHORS.glowdeep.rootedRest.ty, w: 3, vis: 0, island: 'Glowdeep' });
-    W.towns.push({ n: 'Crystal Conservatory', x: WORLD_ANCHORS.glowdeep.crystalConservatory.tx, y: WORLD_ANCHORS.glowdeep.crystalConservatory.ty, w: 3, vis: 0, island: 'Glowdeep' });
-    W.towns.push({ n: 'Moon’s Tea House', x: WORLD_ANCHORS.moonroad.teaHouse.tx, y: WORLD_ANCHORS.moonroad.teaHouse.ty, w: 4, vis: 0, island: 'Moon Road' });
-    W.towns.push({ n: 'Crescent Belvedere', x: WORLD_ANCHORS.moonroad.crescentBelvedere.tx, y: WORLD_ANCHORS.moonroad.crescentBelvedere.ty, w: 4, vis: 0, island: 'Moon Road' });
+    const AG = WORLD_ANCHORS.glowdeep;
+    W.towns.push({ n: 'Rooted Rest', x: AG.rootedRest.tx, y: AG.rootedRest.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'Spore Grotto', x: AG.sporeGrotto.tx, y: AG.sporeGrotto.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'Crystal Conservatory', x: AG.crystalConservatory.tx, y: AG.crystalConservatory.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'Prism Ice Grotto', x: AG.prismIce.tx, y: AG.prismIce.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'Magma Geode Vault', x: AG.magmaGeode.tx, y: AG.magmaGeode.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'Deep Canal Basin', x: AG.deepCanalHub.tx, y: AG.deepCanalHub.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'SE Echo Cavern', x: AG.seEchoCavern.tx, y: AG.seEchoCavern.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'Northern Root Vault', x: AG.northernRootVault.tx, y: AG.northernRootVault.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'North-West Spore Basin', x: AG.northWestSporeBasin.tx, y: AG.northWestSporeBasin.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'North-East Prism Sanctum', x: AG.northEastPrismSanctum.tx, y: AG.northEastPrismSanctum.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'Western Cinder Well', x: AG.westernCinderWell.tx, y: AG.westernCinderWell.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'Eastern Echo Spire', x: AG.easternEchoSpire.tx, y: AG.easternEchoSpire.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'SW Subterranean Bay', x: AG.southWestSubterraneanBay.tx, y: AG.southWestSubterraneanBay.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'Ember Caldera Grotto', x: AG.southEastEmberCaldera.tx, y: AG.southEastEmberCaldera.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    W.towns.push({ n: 'Southern Deep Gorge', x: AG.southernDeepGorge.tx, y: AG.southernDeepGorge.ty, w: 3, vis: 0, island: 'Glowdeep' });
+    const AM = WORLD_ANCHORS.moonroad;
+    W.towns.push({ n: 'Moon’s Tea House', x: AM.teaHouse.tx, y: AM.teaHouse.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'Twin Stars Gazebo', x: AM.twinStars.tx, y: AM.twinStars.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'Shrine of the Unsung Verse', x: AM.unsungShrine.tx, y: AM.unsungShrine.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'Crescent Belvedere', x: AM.crescentBelvedere.tx, y: AM.crescentBelvedere.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'Zenith Observatory', x: AM.zenithAstralObservatory.tx, y: AM.zenithAstralObservatory.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'Twilight Bazaar', x: AM.twilightBazaar.tx, y: AM.twilightBazaar.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'Lullaby Bell Arch', x: AM.lullabyBellArch.tx, y: AM.lullabyBellArch.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'Edge of Silence', x: AM.edgeOfSilence.tx, y: AM.edgeOfSilence.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'South Stair Landing', x: AM.southStairLanding.tx, y: AM.southStairLanding.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'West Crescent Landing', x: AM.westCrescentLanding.tx, y: AM.westCrescentLanding.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'North-West Comet Bridge', x: AM.northWestCometBridge.tx, y: AM.northWestCometBridge.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'North-East Aurora Promenade', x: AM.northEastAuroraPromenade.tx, y: AM.northEastAuroraPromenade.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'Western Starlight Wharf', x: AM.westernStarlightWharf.tx, y: AM.westernStarlightWharf.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'South-West Lullaby Isle', x: AM.southWestLullabyIsle.tx, y: AM.southWestLullabyIsle.ty, w: 4, vis: 0, island: 'Moon Road' });
+    W.towns.push({ n: 'South-East Starfall Pier', x: AM.southEastStarfallPier.tx, y: AM.southEastStarfallPier.ty, w: 4, vis: 0, island: 'Moon Road' });
 
     // Rainbow Speed Rings (24 across the expansive sky zenith)
     for (let k = 0; k < 24; k++) {
@@ -1899,7 +2059,7 @@ export default function App() {
       for (let py = Math.max(2, wantY - 8); py <= Math.min(N - 3, wantY + 8); py++) {
         for (let px = Math.max(2, wantX - 8); px <= Math.min(N - 3, wantX + 8); px++) {
           const idx = py * N + px;
-          if (W.B[idx] < 2 && W.UD[idx] < 3) {
+          if (W.UD[idx] !== 5 && W.UD[idx] !== 6 && W.UD[idx] < 3) {
             const dist = Math.hypot(px - wantX, py - wantY);
             if (dist < bestDist) {
               bestDist = dist;
@@ -1933,7 +2093,7 @@ export default function App() {
       });
     });
 
-    // Town Residents (preserve all layer flags across all 5 realms)
+    // Town Residents (preserve all layer flags across all 5 realms & snap safely onto dry walkable tiles)
     TOWN_RESIDENTS.forEach((d) => {
       if (npcsList.some((n) => n.n === d.n)) return;
       const targetW = d.layer ?? 0;
@@ -1941,8 +2101,43 @@ export default function App() {
         W.towns.find((z) => z.n === d.at && z.w === targetW) ||
         W.towns.find((z) => z.n === d.at);
       if (town) {
-        const x = (town.x + (d.o ? d.o[0] : 0)) * T + T / 2;
-        const y = (town.y + (d.o ? d.o[1] : 0)) * T + T / 2;
+        let spawnTx = town.x + (d.o ? d.o[0] : 0);
+        let spawnTy = town.y + (d.o ? d.o[1] : 0);
+        const isSafeTile = (tx: number, ty: number) => {
+          if (tx < 2 || ty < 2 || tx >= N - 2 || ty >= N - 2) return false;
+          if (town.w === 3 || d.layer === 3) {
+            return isGlowdeepWalkable(tx, ty) && getGlowdeepCell(tx, ty) !== 'canal';
+          }
+          if (town.w === 4 || d.layer === 4) {
+            return isMoonRoadWalkable(tx, ty);
+          }
+          if (town.w === 1 || d.layer === 1) {
+            return W.UD[ty * N + tx] !== 5 && W.UD[ty * N + tx] !== 6;
+          }
+          return true;
+        };
+        if ((town.w === 1 || town.w === 3 || town.w === 4 || d.layer === 1 || d.layer === 3 || d.layer === 4) && !isSafeTile(spawnTx, spawnTy)) {
+          let bestTx = spawnTx;
+          let bestTy = spawnTy;
+          let bestScore = 1e9;
+          for (let py = Math.max(2, town.y - 7); py <= Math.min(N - 3, town.y + 7); py++) {
+            for (let px = Math.max(2, town.x - 7); px <= Math.min(N - 3, town.x + 7); px++) {
+              if (!isSafeTile(px, py)) continue;
+              const fromMonument = Math.hypot(px - town.x, py - town.y);
+              const fromWant = Math.hypot(px - spawnTx, py - spawnTy);
+              const score = fromWant + (fromMonument < 1.35 ? 6 : 0);
+              if (score < bestScore) {
+                bestScore = score;
+                bestTx = px;
+                bestTy = py;
+              }
+            }
+          }
+          spawnTx = bestTx;
+          spawnTy = bestTy;
+        }
+        const x = spawnTx * T + T / 2;
+        const y = spawnTy * T + T / 2;
         npcsList.push({
           ...d,
           sea: town.w === 1 || d.layer === 1,
@@ -1982,9 +2177,15 @@ export default function App() {
       moonroad?: boolean;
     }[] = [
       { name: 'Lumi', tx: WORLD_ANCHORS.glowdeep.lumiHome.tx, ty: WORLD_ANCHORS.glowdeep.lumiHome.ty, glowdeep: true },
+      { name: 'Glowbell', tx: WORLD_ANCHORS.glowdeep.prismIce.tx, ty: WORLD_ANCHORS.glowdeep.prismIce.ty + 2, glowdeep: true },
+      { name: 'Basalt', tx: WORLD_ANCHORS.glowdeep.magmaGeode.tx, ty: WORLD_ANCHORS.glowdeep.magmaGeode.ty + 2, glowdeep: true },
       { name: 'The Moon', tx: WORLD_ANCHORS.moonroad.teaHouse.tx, ty: WORLD_ANCHORS.moonroad.teaHouse.ty, moonroad: true },
       { name: 'Dusk', tx: WORLD_ANCHORS.moonroad.edgeOfSilence.tx, ty: WORLD_ANCHORS.moonroad.edgeOfSilence.ty, moonroad: true },
+      { name: 'Comet', tx: WORLD_ANCHORS.moonroad.zenithAstralObservatory.tx, ty: WORLD_ANCHORS.moonroad.zenithAstralObservatory.ty + 2, moonroad: true },
+      { name: 'Vesper', tx: WORLD_ANCHORS.moonroad.twilightBazaar.tx, ty: WORLD_ANCHORS.moonroad.twilightBazaar.ty + 2, moonroad: true },
       { name: 'Zephyr', tx: WORLD_ANCHORS.sky.aetherGarden.tx, ty: WORLD_ANCHORS.sky.aetherGarden.ty + 2, sky: true },
+      { name: 'Nautilus', tx: WORLD_ANCHORS.reef.auroraCoralTrench.tx, ty: WORLD_ANCHORS.reef.auroraCoralTrench.ty + 2, sea: true },
+      { name: 'Coraline', tx: WORLD_ANCHORS.reef.sunkenPearlGrotto.tx, ty: WORLD_ANCHORS.reef.sunkenPearlGrotto.ty + 2, sea: true },
     ];
 
     layerSpecificSpecs.forEach((spec, idx) => {
@@ -2140,35 +2341,40 @@ export default function App() {
     }
     W.questItems = qItems;
 
-    // Populate Glowdeep Bioluminescent Glowcap Spores
+    // Populate Glowdeep Bioluminescent Glowcap Spores across central & outer cavern vaults
     const spores: RealmCollectible[] = [];
     for (let y = 8; y < N - 8; y += 2) {
       for (let x = 8; x < N - 8; x += 2) {
         if (Math.hypot(x - GLOWDEEP_RETURN_TILE.x, y - GLOWDEEP_RETURN_TILE.y) < 3) continue;
         if (!isGlowdeepWalkable(x, y)) continue;
         const nearRootHall =
-          Math.hypot(x - WORLD_ANCHORS.glowdeep.rootedRest.tx, y - WORLD_ANCHORS.glowdeep.rootedRest.ty) < 28;
-        if ((nearRootHall && hash(x, y, 501) < 0.085) || hash(x, y, 502) < 0.014) {
+          Math.hypot(x - WORLD_ANCHORS.glowdeep.rootedRest.tx, y - WORLD_ANCHORS.glowdeep.rootedRest.ty) < 28 ||
+          Math.hypot(x - WORLD_ANCHORS.glowdeep.northernRootVault.tx, y - WORLD_ANCHORS.glowdeep.northernRootVault.ty) < 20 ||
+          Math.hypot(x - WORLD_ANCHORS.glowdeep.southEastEmberCaldera.tx, y - WORLD_ANCHORS.glowdeep.southEastEmberCaldera.ty) < 20 ||
+          Math.hypot(x - WORLD_ANCHORS.glowdeep.deepCanalHub.tx, y - WORLD_ANCHORS.glowdeep.deepCanalHub.ty) < 18;
+        if ((nearRootHall && hash(x, y, 501) < 0.082) || hash(x, y, 502) < 0.017) {
           spores.push({ x: x * T + T / 2, y: y * T + T / 2, got: 0 });
         }
       }
     }
     W.glowSpores = spores;
 
-    // Populate Moon Road Starlight Notes along Celestial Bridges & Platforms
+    // Populate Moon Road Starlight Notes along Celestial Bridges, Nebula Banks & Outer Waystations
     const notes: RealmCollectible[] = [];
-    for (let y = 16; y < N - 16; y += 2) {
-      for (let x = 16; x < N - 16; x += 2) {
+    for (let y = 10; y < N - 10; y += 2) {
+      for (let x = 10; x < N - 10; x += 2) {
         if (Math.hypot(x - MOONROAD_RETURN_TILE.x, y - MOONROAD_RETURN_TILE.y) < 3) continue;
         if (!isMoonRoadWalkable(x, y)) continue;
-        if (hash(x, y, 513) < 0.04) {
+        const cell = getMoonRoadCell(x, y);
+        const density = cell === 'nebula' ? 0.016 : 0.042;
+        if (hash(x, y, 513) < density) {
           notes.push({ x: x * T + T / 2, y: y * T + T / 2, got: 0 });
         }
       }
     }
     W.moonNotes = notes;
 
-    // 10 Roaming Hollow Creatures across Lantern Isle and outer archipelago islands (layer w: 0)
+    // 16 Roaming Hollow Creatures across Lantern Isle, outer archipelago, Sea, Glowdeep & Moon Road
     W.hollows = [
       { id: 'h-1', w: 0, name: 'Whisper', species: 'axolotl', x: (isl.lanternIsle.tx - 16) * T, y: (isl.lanternIsle.ty + 12) * T, soothed: false, bloomT: 0, color: '#b8c4d8', quote: 'I forgot the lyrics…' },
       { id: 'h-2', w: 0, name: 'Murmur', species: 'fox', x: (isl.lanternIsle.tx + 28) * T, y: (isl.lanternIsle.ty - 20) * T, soothed: false, bloomT: 0, color: '#fca5a5', quote: 'The Silence is so heavy…' },
@@ -2180,6 +2386,12 @@ export default function App() {
       { id: 'h-8', w: 0, name: 'Rustle', species: 'fox', x: (isl.mapleMist.tx - 4) * T, y: (isl.mapleMist.ty + 4) * T, soothed: false, bloomT: 0, color: '#fdba74', quote: 'Even falling leaves miss summer…' },
       { id: 'h-9', w: 0, name: 'Glimmer', species: 'bunny', x: (isl.starfallShoals.tx - 5) * T, y: (isl.starfallShoals.ty - 4) * T, soothed: false, bloomT: 0, color: '#ddd6fe', quote: 'A fallen star lost its beam…' },
       { id: 'h-10', w: 0, name: 'Chime', species: 'deer', x: (isl.chimeCanopy.tx + 5) * T, y: (isl.chimeCanopy.ty + 5) * T, soothed: false, bloomT: 0, color: '#bef264', quote: 'The high branches stopped ringing…' },
+      { id: 'h-11', w: 1, name: 'Ripplet', species: 'axolotl', x: (AR.northernWhaleSanctuary.tx + 2) * T, y: (AR.northernWhaleSanctuary.ty + 3) * T, soothed: false, bloomT: 0, color: '#7ee8fa', quote: 'The deep current forgot its whale-song…' },
+      { id: 'h-12', w: 1, name: 'Shellwhisper', species: 'otter', x: (AR.abyssalGlassArch.tx + 3) * T, y: (AR.abyssalGlassArch.ty - 2) * T, soothed: false, bloomT: 0, color: '#a8f7ff', quote: 'No pearl echoes reach this far south…' },
+      { id: 'h-13', w: 3, name: 'Glimmertuft', species: 'slime', x: (AG.northernRootVault.tx - 3) * T, y: (AG.northernRootVault.ty + 3) * T, soothed: false, bloomT: 0, color: '#64f5c1', quote: 'The old northern roots grew quiet…' },
+      { id: 'h-14', w: 3, name: 'Geode', species: 'dragon', x: (AG.southWestSubterraneanBay.tx + 2) * T, y: (AG.southWestSubterraneanBay.ty - 2) * T, soothed: false, bloomT: 0, color: '#f5a664', quote: 'Even crystals miss a warm chorus…' },
+      { id: 'h-15', w: 4, name: 'Starwisp', species: 'cat', x: (AM.northWestCometBridge.tx + 2) * T, y: (AM.northWestCometBridge.ty + 2) * T, soothed: false, bloomT: 0, color: '#d8b4fe', quote: 'A fallen comet lost its silver chord…' },
+      { id: 'h-16', w: 4, name: 'Nocturne', species: 'owl', x: (AM.southEastStarfallPier.tx - 2) * T, y: (AM.southEastStarfallPier.ty - 2) * T, soothed: false, bloomT: 0, color: '#fde68a', quote: 'The outer piers miss morning bells…' },
     ];
 
     // Snapshot pristine generated surface decor & base spawn coordinates before loading any slot save
@@ -2399,7 +2611,7 @@ export default function App() {
         }
       } else if (k === 'r' && !cutscene && modal === 'none') {
         if (canFishFnRef.current()) {
-          setActiveModal('fishing');
+          startFishingFnRef.current();
         }
       } else if (k === 'j' && !cutscene) {
         setActiveModal((prev) => (prev === 'journal' ? 'none' : 'journal'));
@@ -2630,6 +2842,11 @@ export default function App() {
 
     if (W.player.dive) {
       W.player.dive = false;
+      if (isSurfaceSolidDk(W.DK[tileY * N + tileX])) {
+        const safeSurface = findNearestSafeWorldPoint(0, W.player.x, W.player.y, false);
+        W.player.x = safeSurface.x;
+        W.player.y = safeSurface.y;
+      }
       audio.pop();
       triggerRealmFlash('#8cebff', 0.34);
       spawnWorldPopup(W.player.x, W.player.y - 22, '🌊 Surfaced!', '#b8f2ff');
@@ -2966,7 +3183,7 @@ export default function App() {
           return sd !== 1 && sd !== 9;
         }
         if (layer === 1) {
-          return W.B[idx] <= 1 && W.UD[idx] !== 5 && W.UD[idx] !== 6;
+          return W.UD[idx] !== 5 && W.UD[idx] !== 6;
         }
         if (requireDry && W.B[idx] < 2) return false;
         return !isSurfaceSolidDk(W.DK[idx]);
@@ -3468,21 +3685,115 @@ export default function App() {
   }, [enqueueMilestone]);
   checkAchFnRef.current = checkAchievements;
 
-  // Check if near water for fishing
-  const canFish = () => {
+  // Locate nearest shoreline ledge & water target for 3D fishing (sea, rivers, lakes, oases, Glowdeep canals)
+  const computeFishingSpot = useCallback(() => {
     const W = worldRef.current;
-    if (W.player.house || W.player.sky || W.player.dive || W.player.glowdeep || W.player.moonroad) return false;
-    const tx = (W.player.x / T) | 0;
-    const ty = (W.player.y / T) | 0;
-    if (W.B[ty * N + tx] < 2) return false;
-    for (let dy = -2; dy <= 2; dy++) {
+    if (W.player.house || W.player.sky || W.player.dive || W.player.moonroad) return null;
+    const isGlow = Boolean(W.player.glowdeep);
+    const ptx = W.player.x / T;
+    const ptz = W.player.y / T;
+    const cx = Math.floor(ptx);
+    const cz = Math.floor(ptz);
+
+    const isTileDry = (x: number, z: number) => {
+      if (x < 1 || z < 1 || x >= N - 1 || z >= N - 1) return false;
+      if (isGlow) {
+        const cell = getGlowdeepCell(x, z);
+        return cell !== 'canal' && cell !== 'wall';
+      }
+      const idx = z * N + x;
+      return W.B[idx] >= 2 || W.iceMap.has(idx) || W.lilyMap.has(idx);
+    };
+
+    const isTileWater = (x: number, z: number, allowFrozen = false) => {
+      if (x < 0 || z < 0 || x >= N || z >= N) return false;
+      if (isGlow) {
+        return getGlowdeepCell(x, z) === 'canal';
+      }
+      const idx = z * N + x;
+      if (W.B[idx] >= 2) return false;
+      if (!allowFrozen && (W.iceMap.has(idx) || W.lilyMap.has(idx))) return false;
+      return true;
+    };
+
+    let bestDryX = -1;
+    let bestDryZ = -1;
+    let bestWatX = -1;
+    let bestWatZ = -1;
+    let bestScore = Infinity;
+
+    for (let dz = -2; dz <= 2; dz++) {
       for (let dx = -2; dx <= 2; dx++) {
-        if (W.B[(ty + dy) * N + tx + dx] < 2) return true;
+        const tx = cx + dx;
+        const tz = cz + dz;
+        if (!isTileDry(tx, tz)) continue;
+        const playerDistSq = (tx + 0.5 - ptx) ** 2 + (tz + 0.5 - ptz) ** 2;
+        for (let wz = -1; wz <= 1; wz++) {
+          for (let wx = -1; wx <= 1; wx++) {
+            if (wx === 0 && wz === 0) continue;
+            const nwx = tx + wx;
+            const nwz = tz + wz;
+            if (!isTileWater(nwx, nwz, false)) continue;
+            const orthBonus = wx === 0 || wz === 0 ? 0 : 0.45;
+            const score = playerDistSq + orthBonus;
+            if (score < bestScore) {
+              bestScore = score;
+              bestDryX = tx;
+              bestDryZ = tz;
+              bestWatX = nwx;
+              bestWatZ = nwz;
+            }
+          }
+        }
       }
     }
-    return false;
-  };
+
+    if (bestDryX < 0 || bestWatX < 0) return null;
+
+    const vx = bestWatX + 0.5 - (bestDryX + 0.5);
+    const vz = bestWatZ + 0.5 - (bestDryZ + 0.5);
+    const vLen = Math.hypot(vx, vz) || 1;
+    const dirX = vx / vLen;
+    const dirZ = vz / vLen;
+
+    const ledgeTx = bestDryX + 0.5 + dirX * 0.34;
+    const ledgeTz = bestDryZ + 0.5 + dirZ * 0.34;
+
+    let waterTx = bestWatX + 0.5;
+    let waterTz = bestWatZ + 0.5;
+    for (const reach of [1.85, 1.45, 1.1, 0.78]) {
+      const candX = ledgeTx + dirX * reach;
+      const candZ = ledgeTz + dirZ * reach;
+      if (isTileWater(Math.floor(candX), Math.floor(candZ), true)) {
+        waterTx = candX;
+        waterTz = candZ;
+        break;
+      }
+    }
+
+    const facingYaw = Math.atan2(waterTx - ledgeTx, waterTz - ledgeTz);
+    const bVal = W.B[bestWatZ * N + bestWatX];
+    const spotLabel = isGlow
+      ? 'Glowdeep Crystal Canal'
+      : bVal === 0
+      ? 'Sea Shoreline Ledge'
+      : 'Waterside Ledge';
+
+    return { ledgeTx, ledgeTz, waterTx, waterTz, facingYaw, spotLabel, isGlowdeep: isGlow };
+  }, []);
+
+  const canFish = () => Boolean(computeFishingSpot());
   canFishFnRef.current = canFish;
+
+  const startFishingSession = useCallback(() => {
+    const spot = computeFishingSpot();
+    if (!spot) return;
+    audio.init();
+    activeFishingSpotRef.current = spot;
+    fishingLiveStateRef.current = { mode: 'idle', reelProgress: 0 };
+    setActiveModal('fishing');
+  }, [computeFishingSpot]);
+  startFishingFnRef.current = startFishingSession;
 
   // Magic Spell Casting (13 Spells + Combination Harmonies)
   const handleCastSpell = (idx: number) => {
@@ -3618,7 +3929,7 @@ export default function App() {
         if (W.player.moonroad) return !isMoonRoadWalkable(tx, ty);
         const idx = ty * N + tx;
         if (W.player.sky) return W.SD[idx] === 1 || W.SD[idx] === 9;
-        if (W.player.dive) return W.B[idx] > 1 || W.UD[idx] === 5 || W.UD[idx] === 6;
+        if (W.player.dive) return W.UD[idx] === 5 || W.UD[idx] === 6;
         const dk = W.DK[idx];
         return (
           dk === 2 ||
@@ -5469,40 +5780,18 @@ export default function App() {
         let px = Math.max(T * 2, Math.min((N - 2) * T, data.pos.x * coordScale));
         let py = Math.max(T * 2, Math.min((N - 2) * T, data.pos.y * coordScale));
 
-        if (coordScale !== 1 && !house) {
+        if (!house) {
+          const loadLayer: 0 | 1 | 2 | 3 | 4 = glowdeep ? 3 : moonroad ? 4 : sky ? 2 : dive ? 1 : 0;
           const tx = Math.max(2, Math.min(N - 3, (px / T) | 0));
           const ty = Math.max(2, Math.min(N - 3, (py / T) | 0));
-          if (!sky && !dive && !glowdeep && !moonroad && W.B[ty * N + tx] < 2) {
-            let bestD = 1e9;
-            let bestX = baseHomeSpawnRef.current.x;
-            let bestY = baseHomeSpawnRef.current.y;
-            for (let oy = -14; oy <= 14; oy++) {
-              for (let ox = -14; ox <= 14; ox++) {
-                const cx = tx + ox;
-                const cy = ty + oy;
-                if (cx < 2 || cy < 2 || cx >= N - 2 || cy >= N - 2) continue;
-                const idx = cy * N + cx;
-                if (W.B[idx] >= 2 && W.DK[idx] < 10) {
-                  const d = ox * ox + oy * oy;
-                  if (d < bestD) {
-                    bestD = d;
-                    bestX = cx * T + T / 2;
-                    bestY = cy * T + T / 2;
-                  }
-                }
-              }
-            }
-            px = bestX;
-            py = bestY;
-          } else if (dive && W.B[ty * N + tx] >= 2) {
-            px = WORLD_ANCHORS.reef.driftwoodDiveLagoon.tx * T + T / 2;
-            py = WORLD_ANCHORS.reef.driftwoodDiveLagoon.ty * T + T / 2;
-          } else if (glowdeep && !isGlowdeepWalkable(tx, ty)) {
-            px = GLOWDEEP_RETURN_TILE.x * T + T / 2;
-            py = (GLOWDEEP_RETURN_TILE.y + 3) * T + T / 2;
-          } else if (moonroad && !isMoonRoadWalkable(tx, ty)) {
-            px = WORLD_ANCHORS.moonroad.teaHouse.tx * T + T / 2;
-            py = (WORLD_ANCHORS.moonroad.teaHouse.ty + 2) * T + T / 2;
+          if (!sky && !dive && !glowdeep && !moonroad && coordScale !== 1 && W.B[ty * N + tx] < 2) {
+            const safeSurface = findNearestSafeWorldPoint(0, baseHomeSpawnRef.current.x, baseHomeSpawnRef.current.y, true);
+            px = safeSurface.x;
+            py = safeSurface.y;
+          } else {
+            const safeLoaded = findNearestSafeWorldPoint(loadLayer, px, py, loadLayer === 0 && W.B[ty * N + tx] >= 2);
+            px = safeLoaded.x;
+            py = safeLoaded.y;
           }
         }
         W.player.x = px;
@@ -5739,12 +6028,14 @@ export default function App() {
     applyResize(true);
     window.addEventListener('resize', onWindowResize, { passive: true });
     window.addEventListener('orientationchange', onOrientation, { passive: true });
+    window.screen?.orientation?.addEventListener?.('change', onOrientation);
     return () => {
       if (resizeTimer !== null) window.clearTimeout(resizeTimer);
       window.removeEventListener('resize', onWindowResize);
       window.removeEventListener('orientationchange', onOrientation);
+      window.screen?.orientation?.removeEventListener?.('change', onOrientation);
     };
-  }, [device.width, device.height, device.orientation, device.pixelRatio, settings.low, webglReady]);
+  }, [device.width, device.height, device.isPortraitViewport, device.pixelRatio, settings.low, webglReady]);
 
   // Main Canvas Game Loop (mounted once with live refs — zero loop teardowns on state changes)
   useEffect(() => {
@@ -5775,6 +6066,17 @@ export default function App() {
       const liveSeason = currentSeasonRef.current;
       W.season = liveSeason;
       const liveDevice = deviceRef.current;
+      if (liveDevice.isPortraitViewport) {
+        if (W.keys.size > 0) W.keys.clear();
+        W.touchJoystick.active = false;
+        W.player.moveTarget = null;
+        lastTime = now;
+        lastLoopWorkMs = 0;
+        slowFrameStreak = 0;
+        fastFrameStreak = 0;
+        animId = requestAnimationFrame(loop);
+        return;
+      }
       const isPhone = liveDevice.isPhone;
       const isTablet = liveDevice.isTablet;
       const r3d = renderer3DRef.current;
@@ -5975,7 +6277,7 @@ export default function App() {
         }
         if (lyr === 1) {
           const idx = ty * N + tx;
-          return W.B[idx] <= 1 && W.UD[idx] !== 5 && W.UD[idx] !== 6;
+          return W.UD[idx] !== 5 && W.UD[idx] !== 6;
         }
         const idx = ty * N + tx;
         return W.B[idx] >= 2 && !isSurfaceSolidDk(W.DK[idx]);
@@ -6185,7 +6487,7 @@ export default function App() {
       W.player.wasSwimming = isSwimming;
       W.player.swim = isSwimming;
 
-      const isRunning = (W.keys.has('shift') || touchSprint) && len > 0 && W.player.st > 0 && !W.player.dive;
+      const isRunning = (W.keys.has('shift') || touchSprint) && len > 0 && W.player.st > 0;
       W.player.isSprinting = isRunning;
 
       let baseSpeed = 158 * (liveUpgrades.boots ? 1.14 : 1);
@@ -6194,7 +6496,7 @@ export default function App() {
       } else if (onLilyPad) {
         baseSpeed *= 1.12;
       }
-      if (W.player.dive) baseSpeed = 130;
+      if (W.player.dive) baseSpeed = 144 * (liveUpgrades.boots ? 1.12 : 1);
       if (W.player.sky) baseSpeed = 198;
 
       // Surface Dunes / Frostbite Tundra terrain feel (Cozy Scarf grants smooth traction boost)
@@ -6411,7 +6713,7 @@ export default function App() {
           return sd === 1 || sd === 9;
         }
         if (W.player.dive) {
-          return W.B[idx] > 1 || W.UD[idx] === 5 || W.UD[idx] === 6;
+          return W.UD[idx] === 5 || W.UD[idx] === 6;
         }
         const dk = W.DK[idx];
         if (dk === 6 && W.player.z >= 13) return false;
@@ -6449,6 +6751,14 @@ export default function App() {
               break outerPush;
             }
           }
+        }
+        if (!W.player.house && isPosBlocked(W.player.x, W.player.y)) {
+          const curRescueLayer: 0 | 1 | 2 | 3 | 4 = W.player.glowdeep ? 3 : W.player.moonroad ? 4 : W.player.sky ? 2 : W.player.dive ? 1 : 0;
+          const rescued = findNearestSafeWorldPoint(curRescueLayer, W.player.x, W.player.y, false);
+          W.player.x = rescued.x;
+          W.player.y = rescued.y;
+          W.player.vx = 0;
+          W.player.vy = 0;
         }
       }
 
@@ -6740,15 +7050,62 @@ export default function App() {
         W.player.mp + ((liveUpgrades.crys ? 14 : 9) * weatherMods.manaRegenMultiplier + lanternManaBonus) * dt
       );
 
-      // Diving oxygen handling (Tide Song grants infinite underwater air, Chowder halves drain)
+      // Diving oxygen handling (Tide Song grants infinite underwater air, Bubble Domes & Reef Hubs refill O2)
       if (W.player.dive && W.tideTimer <= 0) {
-        const o2Drain = W.marketDiveTimer > 0 ? 3.2 : 7;
-        W.player.o2 = Math.max(0, W.player.o2 - o2Drain * dt);
-        if (W.player.o2 <= 0) {
-          W.player.dive = false;
-          triggerRealmFlash('#8cebff', 0.3);
-          spawnWorldPopup(W.player.x, W.player.y - 22, '🌊 Surfaced!', '#b8f2ff');
-          showToast('Out of air! Surfaced gently 🌊');
+        const ptx = Math.max(2, Math.min(N - 3, (W.player.x / T) | 0));
+        const pty = Math.max(2, Math.min(N - 3, (W.player.y / T) | 0));
+        let nearAirPocket = false;
+        scanBubble: for (let dy = -4; dy <= 4; dy++) {
+          for (let dx = -4; dx <= 4; dx++) {
+            const ud = W.UD[(pty + dy) * N + (ptx + dx)];
+            if (ud === 5 || ud === 6 || ud === 7) {
+              nearAirPocket = true;
+              break scanBubble;
+            }
+          }
+        }
+        if (!nearAirPocket) {
+          for (let i = 0; i < W.towns.length; i++) {
+            const tw = W.towns[i];
+            if (tw.w === 1 && Math.hypot(tw.x - W.player.x / T, tw.y - W.player.y / T) < 5.2) {
+              nearAirPocket = true;
+              break;
+            }
+          }
+        }
+        if (nearAirPocket) {
+          const prevO2 = W.player.o2;
+          W.player.o2 = Math.min(100, W.player.o2 + 38 * dt);
+          if (prevO2 < 96 && Math.random() < 4.5 * dt && W.particles.length < 180) {
+            spawnPooledParticle(W.particles, {
+              x: W.player.x + (Math.random() - 0.5) * 20,
+              y: W.player.y + 4,
+              vx: (Math.random() - 0.5) * 10,
+              vy: -36 - Math.random() * 18,
+              z: 8,
+              vz: 16,
+              size: 0.72,
+              shape: 'orb',
+              l: 0.52,
+              maxL: 0.52,
+              c: '#c8f8ff',
+            });
+          }
+          if (prevO2 < 65 && W.player.o2 >= 65) {
+            showToast('🫧 Refilling fresh air at the Bubble Sanctuary!');
+          }
+        } else {
+          const o2Drain = W.marketDiveTimer > 0 ? 3.0 : 6.2;
+          W.player.o2 = Math.max(0, W.player.o2 - o2Drain * dt);
+          if (W.player.o2 <= 0) {
+            W.player.dive = false;
+            const safeSurface = findNearestSafeWorldPoint(0, W.player.x, W.player.y, false);
+            W.player.x = safeSurface.x;
+            W.player.y = safeSurface.y;
+            triggerRealmFlash('#8cebff', 0.3);
+            spawnWorldPopup(W.player.x, W.player.y - 22, '🌊 Surfaced!', '#b8f2ff');
+            showToast('Out of air! Surfaced gently 🌊');
+          }
         }
       } else {
         W.player.o2 = Math.min(100, W.player.o2 + 40 * dt);
@@ -7459,6 +7816,24 @@ export default function App() {
               } else {
                 sync.cameraShake.x = W.screenShake.offsetX;
                 sync.cameraShake.y = W.screenShake.offsetY;
+              }
+              const fSpot = activeModalRef.current === 'fishing' ? activeFishingSpotRef.current : null;
+              if (fSpot) {
+                const fls = fishingLiveStateRef.current;
+                sync.fishing = {
+                  active: true,
+                  mode: fls.mode,
+                  ledgeTx: fSpot.ledgeTx,
+                  ledgeTz: fSpot.ledgeTz,
+                  waterTx: fSpot.waterTx,
+                  waterTz: fSpot.waterTz,
+                  facingYaw: fSpot.facingYaw,
+                  reelProgress: fls.reelProgress,
+                  caughtFishColor: fls.caughtFishColor,
+                  celebrateElapsed: fls.celebrateElapsed,
+                };
+              } else {
+                sync.fishing = undefined;
               }
             }
             r3d.render(sync, dt);
@@ -9041,10 +9416,11 @@ export default function App() {
                       } else if (W.player.dive) {
                         const b = W.B[idx];
                         const ud = W.UD[idx];
-                        if (ud === 2) cCtx.fillStyle = '#ff7aa8';
+                        if (ud === 5 || ud === 6 || ud === 7) cCtx.fillStyle = '#7bf5ea';
+                        else if (ud === 2) cCtx.fillStyle = '#ff7aa8';
                         else if (ud === 1) cCtx.fillStyle = '#2e9e75';
                         else if (b === 1) cCtx.fillStyle = '#2a9fb5';
-                        else if (b >= 2) cCtx.fillStyle = '#112238';
+                        else if (b >= 2) cCtx.fillStyle = '#1b6d9e';
                         else continue;
                         cCtx.fillRect(mx, my, cellPx, cellPx);
                       } else if (W.player.glowdeep) {
@@ -9063,9 +9439,15 @@ export default function App() {
                         cCtx.fillRect(mx, my, cellPx, cellPx);
                       } else if (W.player.moonroad) {
                         const cell = getMoonRoadCell(tx, ty);
-                        if (cell === 'void' || cell === 'nebula') continue;
+                        if (cell === 'void') continue;
                         cCtx.fillStyle =
-                          cell === 'platform' ? '#ffd23f' : cell === 'silence' ? '#4a5275' : '#dfd4ff';
+                          cell === 'platform'
+                            ? '#ffd23f'
+                            : cell === 'silence'
+                            ? '#4a5275'
+                            : cell === 'nebula'
+                            ? '#432578'
+                            : '#dfd4ff';
                         cCtx.fillRect(mx, my, cellPx, cellPx);
                       } else {
                         const b = W.B[idx];
@@ -9722,10 +10104,14 @@ export default function App() {
           onDeleteSlot={handleDeleteSlot}
           onContinue={() => {
             audio.init();
+            void tryLockLandscape(false);
             snapCamera();
             setGameState('playing');
           }}
-          onNewGame={(preserveEmptySlotLook) => handleStartNewGame(Boolean(preserveEmptySlotLook))}
+          onNewGame={(preserveEmptySlotLook) => {
+            void tryLockLandscape(false);
+            handleStartNewGame(Boolean(preserveEmptySlotLook));
+          }}
           onCustomize={() => setActiveModal('wardrobe')}
           onOpenSettings={() => {
             setPauseInitialTab('settings');
@@ -9772,7 +10158,7 @@ export default function App() {
           isGlowdeep={playerPos.glowdeep}
           isMoonRoad={playerPos.moonroad}
           canDive={(playerPos.dive || playerPos.swim) && !playerPos.sky && !playerPos.glowdeep && !playerPos.moonroad && !playerPos.house}
-          canFish={canFish()}
+          canFish={activeModal !== 'fishing' && canFish()}
           nearNpc={Boolean(activeNpc)}
           nearbyTownAction={nearbyTownAction}
           onTownInteract={() => {
@@ -9808,7 +10194,7 @@ export default function App() {
               setActiveModal('dialog');
             }
           }}
-          onFish={() => setActiveModal('fishing')}
+          onFish={startFishingSession}
           onToggleMusic={cycleMusic}
           onOpenMap={() => setActiveModal('map')}
           onOpenJournal={() => {
@@ -9844,7 +10230,7 @@ export default function App() {
       )}
 
       {/* On-Screen Touch Controls (Virtual Joystick & Action Cluster for Phone/Tablet) */}
-      {gameState === 'playing' && device.isTouch && activeModal === 'none' && !activeCutscene && (
+      {gameState === 'playing' && device.isTouch && !device.isPortraitViewport && activeModal === 'none' && !activeCutscene && (
         <TouchControls
           isPhone={device.isPhone}
           isTablet={device.isTablet}
@@ -9890,7 +10276,7 @@ export default function App() {
             }
           }}
           onDive={handleDiveToggle}
-          onFish={() => setActiveModal('fishing')}
+          onFish={startFishingSession}
           onCastSpell={(idx) => {
             setSelectedSpellIdx(idx);
             handleCastSpell(idx);
@@ -9900,7 +10286,7 @@ export default function App() {
       )}
 
       {/* 3D Mochi House Interior Room Navigator & Quick Controls */}
-      {gameState === 'playing' && playerPos.house && activeModal === 'none' && !activeCutscene && (
+      {gameState === 'playing' && playerPos.house && !device.isPortraitViewport && activeModal === 'none' && !activeCutscene && (
         <div
           className={`fixed left-1/2 -translate-x-1/2 z-30 pointer-events-auto flex flex-col items-center gap-1.5 max-w-[94vw] ${
             device.isTouch ? 'top-2 pt-safe' : 'bottom-[max(4.75rem,calc(env(safe-area-inset-bottom,0px)+4.75rem))]'
@@ -10510,10 +10896,16 @@ export default function App() {
         />
       )}
 
-      {/* Fishing Minigame Modal */}
+      {/* 3D Shoreline Fishing Dock HUD */}
       {activeModal === 'fishing' && (
         <FishingMinigame
           hasSturdyRod={Boolean(upgrades.rod)}
+          is3D={is3DActive}
+          isGlowdeep={Boolean(activeFishingSpotRef.current?.isGlowdeep || playerPos.glowdeep)}
+          spotLabel={activeFishingSpotRef.current?.spotLabel || 'Waterside Ledge'}
+          onSyncFishingState={(nextState) => {
+            fishingLiveStateRef.current = nextState;
+          }}
           onCatchFish={(fishName, coinsEarned) => {
             setFishLog((prev) => {
               const next = { ...prev, [fishName]: (prev[fishName] || 0) + 1 };
@@ -10523,8 +10915,34 @@ export default function App() {
             setCoins((c) => c + Math.round(coinsEarned * (upgrades.clover ? 1.5 : 1)));
             setTotalCoins((c) => c + coinsEarned);
             checkAchFnRef.current();
+            // Spawn celebratory splash & star sparkles in 3D world
+            const W = worldRef.current;
+            const spot = activeFishingSpotRef.current;
+            const px = (spot ? spot.ledgeTx : W.player.x / T) * T;
+            const py = (spot ? spot.ledgeTz : W.player.y / T) * T;
+            for (let p = 0; p < 18 && W.particles.length < 240; p++) {
+              const ang = (p / 18) * Math.PI * 2;
+              const spd = 35 + Math.random() * 55;
+              W.particles.push({
+                x: px,
+                y: py,
+                vx: Math.cos(ang) * spd,
+                vy: Math.sin(ang) * spd,
+                z: 18,
+                vz: 50 + Math.random() * 65,
+                c: p % 2 === 0 ? '#ffd23f' : '#8fd5ff',
+                l: 0.95,
+                maxL: 0.95,
+                shape: p % 3 === 0 ? 'heart' : 'spark',
+                size: 1.05,
+              });
+            }
           }}
-          onClose={() => setActiveModal('none')}
+          onClose={() => {
+            fishingLiveStateRef.current = { mode: 'idle', reelProgress: 0 };
+            activeFishingSpotRef.current = null;
+            setActiveModal('none');
+          }}
         />
       )}
 
@@ -10696,6 +11114,86 @@ export default function App() {
           }}
           onFinish={finishActiveCutscene}
         />
+      )}
+
+      {/* Landscape-Only Guard Overlay (replaces retired portrait mode cleanly) */}
+      {device.isPortraitViewport && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Landscape mode required"
+          className="fixed inset-0 z-[120] pointer-events-auto flex items-center justify-center p-6 bg-linear-to-b from-[#231838]/98 via-[#2e2048]/98 to-[#1c142e]/98 text-[#fff9ec] select-none"
+        >
+          <div className="w-full max-w-sm rounded-3xl storybook-modal p-6 flex flex-col items-center text-center gap-4 shadow-2xl">
+            <div className="relative w-24 h-24 rounded-2xl storybook-well flex items-center justify-center">
+              <svg
+                viewBox="0 0 96 96"
+                className="w-16 h-16 text-[var(--ac)]"
+                fill="none"
+                aria-hidden="true"
+              >
+                <rect
+                  x="28"
+                  y="14"
+                  width="40"
+                  height="68"
+                  rx="8"
+                  stroke="currentColor"
+                  strokeWidth="3.5"
+                  strokeDasharray="5 4"
+                  opacity="0.38"
+                />
+                <g className="origin-center animate-[pulse_2.2s_ease-in-out_infinite]">
+                  <rect
+                    x="14"
+                    y="28"
+                    width="68"
+                    height="40"
+                    rx="8"
+                    fill="currentColor"
+                    fillOpacity="0.16"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <circle cx="74" cy="48" r="2.6" fill="currentColor" />
+                  <path
+                    d="M36 45 L43 38 L52 47 L60 40"
+                    stroke="#ffd23f"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </g>
+              </svg>
+              <span className="absolute -top-2 -right-2 text-xl">✨</span>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <div className="text-[11px] font-black uppercase tracking-[0.2em] text-[#ff7aa8] dark:text-[#ffd23f]">
+                Widescreen Adventure
+              </div>
+              <h2 className="font-display text-2xl font-black text-[var(--fg)] leading-tight">
+                Rotate to Landscape
+              </h2>
+              <p className="text-xs sm:text-sm font-bold text-[var(--fg)]/80 leading-relaxed">
+                {device.isTouch
+                  ? 'Mochi Meadows 2 plays exclusively in landscape mode. Turn your device sideways to continue your journey!'
+                  : 'Mochi Meadows 2 plays exclusively in landscape mode. Widen your browser window horizontally to continue!'}
+              </p>
+            </div>
+
+            {device.isTouch && (
+              <button
+                type="button"
+                onClick={() => void tryLockLandscape(true)}
+                className="w-full py-3 px-4 rounded-2xl bg-linear-to-r from-[#ff7aa8] to-[#f46496] hover:brightness-105 active:scale-95 text-white font-black text-sm shadow-lg transition-all cursor-pointer flex items-center justify-center gap-2"
+              >
+                <span>🔄</span>
+                <span>Lock Landscape & Fullscreen</span>
+              </button>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

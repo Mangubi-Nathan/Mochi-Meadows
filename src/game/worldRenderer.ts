@@ -26,6 +26,26 @@ import {
   getMoonRoadCell,
 } from './realmCells';
 import { WORLD_ANCHORS } from './worldAnchors';
+import {
+  evaluateReefFishPose,
+  ReefFishSampleOut,
+  collectVisibleSkyIslandAnchors,
+} from './ambientWildlife';
+
+const _fish2DPoseScratch: ReefFishSampleOut = {
+  tx: 0,
+  tz: 0,
+  vx: 0,
+  vz: 0,
+  yaw: 0,
+  pitch: 0,
+  roll: 0,
+  liftY: 0.45,
+  scaleMul: 1,
+  tailFreq: 11,
+  tailAmp: 0.42,
+  bodySwayAmp: 0.12,
+};
 
 export interface RealmCollectible {
   x: number;
@@ -2649,6 +2669,71 @@ export function collectSkyPropDrawables(
     });
   }
 
+  // Animated Sky Kingdom Birds circling cloud islands, spires & blossom canopies
+  const skyFocusX = (startX + endX) * 0.5;
+  const skyFocusZ = (startY + endY) * 0.5;
+  const { anchors: skyAnchors, count: skyAnchorCount } = collectVisibleSkyIslandAnchors(
+    W.SB,
+    W.SD,
+    skyFocusX,
+    skyFocusZ,
+    Math.max(18, Math.ceil((endX - startX) * 0.65) + 6)
+  );
+  const swallowCols = ['#fff8ee', '#ffd27a', '#8fd5ff', '#ff9ec7'];
+  for (let aIdx = 0; aIdx < skyAnchorCount; aIdx++) {
+    const anch = skyAnchors[aIdx];
+    const flockCount = anch.kind === 'castle' ? 6 : 4;
+    const dirSign = aIdx % 2 === 0 ? 1 : -1;
+    for (let b = 0; b < flockCount; b++) {
+      const h1 = hash(aIdx, b, 991);
+      const ang = t * (0.42 + h1 * 0.24) * dirSign + (b * Math.PI * 2) / flockCount;
+      const orbitR = anch.radius * T * (0.72 + (b % 2) * 0.24);
+      const bx = anch.tx * T + Math.cos(ang) * orbitR;
+      const by = anch.tz * T + Math.sin(ang) * orbitR * 0.78;
+      if (bx < startX * T - 60 || bx > (endX + 1) * T + 60 || by < startY * T - 60 || by > (endY + 1) * T + 60) {
+        continue;
+      }
+      const vx = -Math.sin(ang) * dirSign;
+      const vy = Math.cos(ang) * 0.78 * dirSign;
+      const heading = Math.atan2(vy, vx);
+      const altitude = 34 + (b % 3) * 10 + Math.sin(t * 1.8 + b + anch.seed) * 7;
+      const flap = Math.sin(t * 7.8 + b * 2.1 + aIdx) * 4.2;
+      const col = swallowCols[(aIdx + b) % swallowCols.length];
+      items.push({
+        sortY: by + 22,
+        draw: () => {
+          // Soft cloud shadow directly below bird
+          ctx.fillStyle = 'rgba(70, 90, 140, 0.14)';
+          ctx.beginPath();
+          ctx.ellipse(bx, by + 6, 6.5, 2.8, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.save();
+          ctx.translate(bx, by - altitude);
+          ctx.rotate(heading);
+          ctx.strokeStyle = OUTLINE;
+          ctx.lineWidth = 2.6;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.beginPath();
+          ctx.moveTo(-8, -5 - flap);
+          ctx.quadraticCurveTo(-2, -1, 6, 0);
+          ctx.quadraticCurveTo(-2, 1, -8, 5 + flap);
+          ctx.stroke();
+
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(-8, -5 - flap);
+          ctx.quadraticCurveTo(-2, -1, 6, 0);
+          ctx.quadraticCurveTo(-2, 1, -8, 5 + flap);
+          ctx.stroke();
+          ctx.restore();
+        },
+      });
+    }
+  }
+
   return items;
 }
 
@@ -2795,45 +2880,50 @@ export function collectReefPropDrawables(
     }
   }
 
-  // Swimming ambient fish schools added to Y-sorted queue
-  const viewLeft = startX * T - 40;
-  const viewRight = (endX + 1) * T + 40;
-  const viewTop = startY * T - 40;
-  const viewBottom = (endY + 1) * T + 40;
-  for (const f of W.fish) {
+  // Swimming ambient reef fish schools interacting with kelp, corals, anemones & bubble domes
+  const viewLeft = startX * T - 60;
+  const viewRight = (endX + 1) * T + 60;
+  const viewTop = startY * T - 60;
+  const viewBottom = (endY + 1) * T + 60;
+  for (let i = 0; i < W.fish.length; i++) {
+    const f = W.fish[i];
     if (f.hx < viewLeft || f.hx > viewRight || f.hy < viewTop || f.hy > viewBottom) continue;
-    const ang = t * (0.9 / Math.max(0.5, f.s)) + f.ph;
-    const fx = f.hx + Math.cos(ang) * f.R;
-    const fy = f.hy + Math.sin(ang * 1.3) * (f.R * 0.55);
-    const dir = -Math.sin(ang) >= 0 ? 1 : -1;
-    items.push({
-      sortY: fy,
-      draw: () => {
-        ctx.save();
-        ctx.translate(fx, fy);
-        ctx.scale(dir * (0.65 + f.s * 0.25), 0.65 + f.s * 0.25);
-        const tailWag = Math.sin(t * 10 + f.ph) * 2.5;
-        ctx.fillStyle = f.c;
-        ctx.beginPath();
-        ctx.moveTo(-7, 0);
-        ctx.lineTo(-14, -5 + tailWag);
-        ctx.lineTo(-14, 5 + tailWag);
-        ctx.closePath();
-        ctx.fill();
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 9, 5, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(4.5, -1.2, 1.8, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#1e293b';
-        ctx.beginPath();
-        ctx.arc(5.1, -1.2, 0.9, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      },
-    });
+    for (let m = 0; m < 2; m++) {
+      evaluateReefFishPose(f, i, m, t, W.UD, 0, 0, false, _fish2DPoseScratch);
+      const fx = _fish2DPoseScratch.tx * T;
+      const fy = _fish2DPoseScratch.tz * T - (_fish2DPoseScratch.liftY - 0.5) * 14;
+      const dir = _fish2DPoseScratch.vx >= 0 ? 1 : -1;
+      const fishScale = (0.65 + f.s * 0.24) * _fish2DPoseScratch.scaleMul;
+      const tailWag = Math.sin(t * _fish2DPoseScratch.tailFreq + f.ph + m) * 2.8;
+      items.push({
+        sortY: _fish2DPoseScratch.tz * T,
+        draw: () => {
+          ctx.save();
+          ctx.translate(fx, fy);
+          ctx.scale(dir * fishScale, fishScale);
+          ctx.rotate(_fish2DPoseScratch.pitch * 0.45);
+          ctx.fillStyle = f.c;
+          ctx.beginPath();
+          ctx.moveTo(-7, 0);
+          ctx.lineTo(-14, -5 + tailWag);
+          ctx.lineTo(-14, 5 + tailWag);
+          ctx.closePath();
+          ctx.fill();
+          ctx.beginPath();
+          ctx.ellipse(0, 0, 9, 5, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(4.5, -1.2, 1.8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#1e293b';
+          ctx.beginPath();
+          ctx.arc(5.1, -1.2, 0.9, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        },
+      });
+    }
   }
 
   // Undersea Reef Landmarks: Coral Concert Hall, Atoll Sunken Ruins, Starlit Kelp Trench, Driftwood Dive Lagoon, Sunken Pearl Grotto
@@ -2842,10 +2932,19 @@ export function collectReefPropDrawables(
 
   const {
     coralConcertHall,
+    pearlReef,
     atollSunkenRuins,
     starlitKelpTrench,
     driftwoodDiveLagoon,
     sunkenPearlGrotto,
+    auroraCoralTrench,
+    northernWhaleSanctuary,
+    westernAbyssalGarden,
+    easternShipwreckCove,
+    cinderThermalVents,
+    starfallSunkenPlaza,
+    abyssalGlassArch,
+    heartReefVault,
   } = WORLD_ANCHORS.reef;
 
   if (inRangeReef(coralConcertHall.tx, coralConcertHall.ty)) {
@@ -2958,6 +3057,219 @@ export function collectReefPropDrawables(
         ctx.fillStyle = '#fffaf0';
         ctx.beginPath();
         ctx.arc(cx, cy - 2 + Math.sin(t * 2.2) * 2, 6.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      },
+    });
+  }
+  if (inRangeReef(auroraCoralTrench.tx, auroraCoralTrench.ty)) {
+    const cx = auroraCoralTrench.tx * T + T / 2;
+    const cy = auroraCoralTrench.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '47, 230, 181', cx, cy - 10, 54, 0.65);
+        ctx.strokeStyle = '#2fe6b5';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(cx, cy + 2, 24, Math.PI, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#a8f7ff';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 8 + Math.sin(t * 2.3) * 2.5, 6.5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeReef(northernWhaleSanctuary.tx, northernWhaleSanctuary.ty)) {
+    const cx = northernWhaleSanctuary.tx * T + T / 2;
+    const cy = northernWhaleSanctuary.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '126, 232, 250', cx, cy - 12, 58, 0.65);
+        ctx.fillStyle = '#1b4772';
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 7, 30, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#f8f5ec';
+        ctx.lineWidth = 3.2;
+        [-14, 0, 14].forEach((ox) => {
+          ctx.beginPath();
+          ctx.arc(cx + ox, cy + 3, 18, Math.PI * 1.05, -Math.PI * 0.05);
+          ctx.stroke();
+        });
+        ctx.fillStyle = '#7ee8fa';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 8 + Math.sin(t * 2) * 2, 6, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeReef(westernAbyssalGarden.tx, westernAbyssalGarden.ty)) {
+    const cx = westernAbyssalGarden.tx * T + T / 2;
+    const cy = westernAbyssalGarden.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '120, 235, 255', cx, cy - 10, 52, 0.6);
+        ctx.fillStyle = '#eef8ff';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 5, 28, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillRect(cx - 16, cy - 24, 5, 28);
+        ctx.fillRect(cx + 11, cy - 24, 5, 28);
+        ctx.fillStyle = '#6ef2ff';
+        ctx.beginPath();
+        ctx.arc(cx - 13.5, cy - 26, 4, 0, Math.PI * 2);
+        ctx.arc(cx + 13.5, cy - 26, 4, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeReef(easternShipwreckCove.tx, easternShipwreckCove.ty)) {
+    const cx = easternShipwreckCove.tx * T + T / 2;
+    const cy = easternShipwreckCove.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 207, 112', cx, cy - 8, 56, 0.56);
+        ctx.fillStyle = '#7a4c32';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(cx - 28, cy + 2);
+        ctx.quadraticCurveTo(cx, cy + 18, cx + 28, cy - 2);
+        ctx.lineTo(cx + 22, cy - 12);
+        ctx.lineTo(cx - 22, cy - 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = '#5c3824';
+        ctx.lineWidth = 3.5;
+        ctx.beginPath();
+        ctx.moveTo(cx - 2, cy - 8);
+        ctx.lineTo(cx + 4, cy - 38);
+        ctx.stroke();
+        ctx.fillStyle = '#ffd23f';
+        ctx.fillRect(cx + 10, cy + 2, 12, 8);
+        ctx.strokeRect(cx + 10, cy + 2, 12, 8);
+      },
+    });
+  }
+  if (inRangeReef(cinderThermalVents.tx, cinderThermalVents.ty)) {
+    const cx = cinderThermalVents.tx * T + T / 2;
+    const cy = cinderThermalVents.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 130, 66', cx, cy - 10, 52, 0.68);
+        ctx.fillStyle = '#362e42';
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - 26);
+        ctx.lineTo(cx + 16, cy + 8);
+        ctx.lineTo(cx - 16, cy + 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#ff8e42';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 26, 6 + Math.sin(t * 3) * 1.4, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeReef(starfallSunkenPlaza.tx, starfallSunkenPlaza.ty)) {
+    const cx = starfallSunkenPlaza.tx * T + T / 2;
+    const cy = starfallSunkenPlaza.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 160, 210', cx, cy - 12, 54, 0.64);
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 12, 16, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#ff7aa8';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 12, 6, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeReef(heartReefVault.tx, heartReefVault.ty)) {
+    const cx = heartReefVault.tx * T + T / 2;
+    const cy = heartReefVault.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '75, 227, 214', cx, cy - 10, 62, 0.68);
+        ctx.fillStyle = '#e8f9ff';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 5, 30, 13, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 4, 20, Math.PI, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#4be3d6';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 8 + Math.sin(t * 2.2) * 2.2, 7.5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeReef(abyssalGlassArch.tx, abyssalGlassArch.ty)) {
+    const cx = abyssalGlassArch.tx * T + T / 2;
+    const cy = abyssalGlassArch.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '180, 240, 255', cx, cy - 12, 54, 0.66);
+        ctx.strokeStyle = '#a8f7ff';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(cx, cy + 4, 22, Math.PI, 0);
+        ctx.stroke();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(cx, cy + 4, 16, Math.PI, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#7de0ff';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 10 + Math.sin(t * 2.1) * 2, 5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  const pearlTown = W.towns?.find((tw) => tw.w === 1 && tw.n === 'Pearl Reef');
+  const prTx = pearlTown ? pearlTown.x : pearlReef.tx;
+  const prTy = pearlTown ? pearlTown.y : pearlReef.ty;
+  if (inRangeReef(prTx, prTy)) {
+    const cx = prTx * T + T / 2;
+    const cy = prTy * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 220, 248', cx, cy - 10, 56, 0.66);
+        ctx.fillStyle = '#fff0f8';
+        ctx.strokeStyle = '#ff94b8';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 5, 26, 11, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#fffaf0';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 10 + Math.sin(t * 2.4) * 2.5, 8.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
       },
@@ -3153,11 +3465,65 @@ export function collectGlowdeepPropDrawables(
           },
         });
       }
+
+      if (
+        (cell === 'chamber' || cell === 'roots' || cell === 'cinder') &&
+        h1 < 0.14 &&
+        x > bounds.minX &&
+        x < bounds.maxX &&
+        (getGlowdeepCell(x + 1, y) === 'canal' || getGlowdeepCell(x - 1, y) === 'canal')
+      ) {
+        items.push({
+          sortY: y * T + T * 0.78,
+          draw: () => {
+            drawGlowHalo(ctx, '82, 242, 224', cx, cy - 12, 20, 0.52);
+            ctx.fillStyle = '#6f4830';
+            ctx.fillRect(cx - 2, cy - 9, 4, 14);
+            ctx.fillStyle = '#52f2e0';
+            ctx.beginPath();
+            ctx.arc(cx, cy - 11, 3.8, 0, Math.PI * 2);
+            ctx.fill();
+          },
+        });
+      } else if (cell === 'cinder' && h1 < 0.16) {
+        items.push({
+          sortY: y * T + T * 0.8,
+          draw: () => {
+            drawGlowHalo(ctx, '255, 148, 72', cx, cy - 4, 22, 0.45);
+            ctx.fillStyle = '#ff9642';
+            ctx.strokeStyle = '#ffd27a';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - 13);
+            ctx.lineTo(cx + 5, cy + 3);
+            ctx.lineTo(cx - 5, cy + 3);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+          },
+        });
+      }
     }
   }
 
-  // Nana Mochi's Soup Cauldron at Rooted Rest
-  const { rootedRest, sporeGrotto, magmaGeode, prismIce, crystalConservatory } = WORLD_ANCHORS.glowdeep;
+  // Nana Mochi's Soup Cauldron & All Glowdeep Cavern Hubs
+  const {
+    rootedRest,
+    sporeGrotto,
+    magmaGeode,
+    prismIce,
+    crystalConservatory,
+    northernRootVault,
+    deepCanalHub,
+    seEchoCavern,
+    northWestSporeBasin,
+    northEastPrismSanctum,
+    westernCinderWell,
+    easternEchoSpire,
+    southWestSubterraneanBay,
+    southEastEmberCaldera,
+    southernDeepGorge,
+  } = WORLD_ANCHORS.glowdeep;
   const cauldronX = rootedRest.tx * T + T / 2;
   const cauldronY = rootedRest.ty * T + T / 2;
   items.push({
@@ -3210,7 +3576,7 @@ export function collectGlowdeepPropDrawables(
     },
   });
 
-  // Additional Glowdeep Landmarks: Spore Grotto Pier, Magma Geode Vault, Prism Ice Grotto, Crystal Conservatory
+  // All Outer Glowdeep Vaults, Docks & Subterranean Monuments
   const inRangeGlow = (tx: number, ty: number) =>
     tx >= bounds.minX - 4 && tx <= bounds.maxX + 4 && ty >= bounds.minY - 4 && ty <= bounds.maxY + 4;
 
@@ -3308,6 +3674,224 @@ export function collectGlowdeepPropDrawables(
       },
     });
   }
+  if (inRangeGlow(northernRootVault.tx, northernRootVault.ty)) {
+    const cx = northernRootVault.tx * T + T / 2;
+    const cy = northernRootVault.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 212, 92', cx, cy - 10, 56, 0.66);
+        ctx.strokeStyle = '#c88c48';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(cx, cy + 4, 22, Math.PI, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 8, 6.5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeGlow(deepCanalHub.tx, deepCanalHub.ty)) {
+    const cx = deepCanalHub.tx * T + T / 2;
+    const cy = deepCanalHub.ty * T + T / 2;
+    items.push({
+      sortY: cy + 12,
+      draw: () => {
+        drawGlowHalo(ctx, '82, 242, 224', cx, cy, 48, 0.62);
+        ctx.fillStyle = '#8d5b42';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.fillRect(cx - 24, cy - 10, 48, 16);
+        ctx.strokeRect(cx - 24, cy - 10, 48, 16);
+        const bob = Math.sin(t * 2.2) * 2.5;
+        ctx.fillStyle = '#52f2e0';
+        ctx.beginPath();
+        ctx.ellipse(cx + 8, cy + 12 + bob, 20, 6.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#52f2e0';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 18, 5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeGlow(seEchoCavern.tx, seEchoCavern.ty)) {
+    const cx = seEchoCavern.tx * T + T / 2;
+    const cy = seEchoCavern.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '210, 153, 255', cx, cy - 10, 56, 0.66);
+        ctx.strokeStyle = '#d299ff';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 4, 28, 11, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        [-10, 0, 10].forEach((ox, idx) => {
+          const h = 20 + (1 - Math.abs(idx - 1)) * 10;
+          ctx.fillStyle = '#b48cff';
+          ctx.strokeStyle = OUTLINE;
+          ctx.lineWidth = 1.2;
+          ctx.fillRect(cx + ox - 3, cy - h, 6, h + 2);
+          ctx.strokeRect(cx + ox - 3, cy - h, 6, h + 2);
+        });
+      },
+    });
+  }
+  if (inRangeGlow(northWestSporeBasin.tx, northWestSporeBasin.ty)) {
+    const cx = northWestSporeBasin.tx * T + T / 2;
+    const cy = northWestSporeBasin.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '100, 245, 193', cx, cy - 18, 60, 0.72);
+        ctx.fillStyle = '#e7e4ff';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.fillRect(cx - 5, cy - 22, 10, 28);
+        ctx.strokeRect(cx - 5, cy - 22, 10, 28);
+        ctx.fillStyle = '#64f5c1';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 22, 24, Math.PI, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      },
+    });
+  }
+  if (inRangeGlow(northEastPrismSanctum.tx, northEastPrismSanctum.ty)) {
+    const cx = northEastPrismSanctum.tx * T + T / 2;
+    const cy = northEastPrismSanctum.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '194, 152, 255', cx, cy - 14, 58, 0.7);
+        [[-16, '#9ef4ff'], [0, '#c298ff'], [16, '#9ef4ff']].forEach(([ox, col], idx) => {
+          ctx.fillStyle = col as string;
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(cx + (ox as number), cy - 30 - (idx === 1 ? 8 : 0));
+          ctx.lineTo(cx + (ox as number) + 7, cy + 4);
+          ctx.lineTo(cx + (ox as number) - 7, cy + 4);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        });
+      },
+    });
+  }
+  if (inRangeGlow(westernCinderWell.tx, westernCinderWell.ty)) {
+    const cx = westernCinderWell.tx * T + T / 2;
+    const cy = westernCinderWell.ty * T + T / 2;
+    items.push({
+      sortY: cy + 12,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 174, 77', cx, cy - 4, 52, 0.72);
+        ctx.fillStyle = '#362e42';
+        ctx.strokeStyle = '#ffae4d';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 2, 22, 11, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#ff9642';
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 1, 14, 6.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeGlow(easternEchoSpire.tx, easternEchoSpire.ty)) {
+    const cx = easternEchoSpire.tx * T + T / 2;
+    const cy = easternEchoSpire.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '158, 232, 255', cx, cy - 22, 58, 0.7);
+        ctx.fillStyle = '#7bd5ff';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - 44);
+        ctx.lineTo(cx + 12, cy + 6);
+        ctx.lineTo(cx - 12, cy + 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        const bob = Math.sin(t * 2.4) * 3;
+        ctx.fillStyle = '#c89bff';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 50 + bob, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeGlow(southWestSubterraneanBay.tx, southWestSubterraneanBay.ty)) {
+    const cx = southWestSubterraneanBay.tx * T + T / 2;
+    const cy = southWestSubterraneanBay.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '104, 196, 228', cx, cy, 48, 0.62);
+        ctx.fillStyle = '#8d5b42';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.fillRect(cx - 24, cy - 10, 48, 16);
+        ctx.strokeRect(cx - 24, cy - 10, 48, 16);
+        const bob = Math.sin(t * 2.1) * 2.5;
+        ctx.fillStyle = '#64f5c1';
+        ctx.beginPath();
+        ctx.ellipse(cx + 8, cy + 12 + bob, 20, 6.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      },
+    });
+  }
+  if (inRangeGlow(southEastEmberCaldera.tx, southEastEmberCaldera.ty)) {
+    const cx = southEastEmberCaldera.tx * T + T / 2;
+    const cy = southEastEmberCaldera.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 148, 66', cx, cy - 6, 58, 0.76);
+        ctx.fillStyle = '#472234';
+        ctx.strokeStyle = '#ff9642';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 4, 28, 13, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#ff9e44';
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 3, 18, 7.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeGlow(southernDeepGorge.tx, southernDeepGorge.ty)) {
+    const cx = southernDeepGorge.tx * T + T / 2;
+    const cy = southernDeepGorge.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 122, 168', cx, cy - 10, 52, 0.64);
+        ctx.strokeStyle = '#ff7aa8';
+        ctx.lineWidth = 3.5;
+        ctx.beginPath();
+        ctx.arc(cx, cy + 6, 22, Math.PI, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#ffae4d';
+        ctx.beginPath();
+        ctx.arc(cx - 18, cy - 10, 4.5, 0, Math.PI * 2);
+        ctx.arc(cx + 18, cy - 10, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
 
   return items;
 }
@@ -3371,9 +3955,15 @@ export function renderMoonRoadTerrain(
         ctx.lineWidth = 1;
         ctx.strokeRect(sx + 2, sy + 2, T - 4, T - 4);
       } else if (cell === 'nebula') {
-        const pulse = 0.2 + 0.08 * Math.sin(t * 1.6 + x * 0.3);
-        ctx.fillStyle = `rgba(92, 52, 165, ${pulse.toFixed(2)})`;
+        const pulse = 0.65 + 0.14 * Math.sin(t * 1.4 + x * 0.25);
+        ctx.fillStyle = `rgba(74, 42, 136, ${pulse.toFixed(2)})`;
         ctx.fillRect(sx, sy, T + 1, T + 1);
+        if (h1 < 0.28) {
+          ctx.fillStyle = 'rgba(218, 190, 255, 0.36)';
+          ctx.beginPath();
+          ctx.arc(sx + T / 2, sy + T / 2, 2.4, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
   }
@@ -3397,13 +3987,14 @@ export function collectMoonRoadPropDrawables(
   if (!bounds.valid) return items;
   const t = W.time;
 
-  // Starlight roadside lanterns every ~7 tiles on road/platform edges
+  // Starlight roadside lanterns & silver-barked Moon-Blossom trees on platform edges
   for (let y = bounds.minY; y <= bounds.maxY; y++) {
     for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const cell = getMoonRoadCell(x, y);
-      if (cell === 'road' && hash(x, y, 741) < 0.045) {
-        const cx = x * T + T / 2;
-        const cy = y * T + T / 2;
+      const h1 = hash(x, y, 741);
+      const cx = x * T + T / 2;
+      const cy = y * T + T / 2;
+      if (cell === 'road' && h1 < 0.045) {
         items.push({
           sortY: cy + 6,
           draw: () => {
@@ -3421,12 +4012,41 @@ export function collectMoonRoadPropDrawables(
             ctx.stroke();
           },
         });
+      } else if (cell === 'platform' && hash(x, y, 742) < 0.04 && (x % 3 === 0 || y % 3 === 0)) {
+        items.push({
+          sortY: cy + 8,
+          draw: () => {
+            drawGlowHalo(ctx, '235, 195, 255', cx, cy - 16, 26, 0.48);
+            ctx.fillStyle = '#d7dff0';
+            ctx.fillRect(cx - 2, cy - 10, 4, 15);
+            ctx.fillStyle = hash(x, y, 743) > 0.5 ? '#f5b8e8' : '#d2b8ff';
+            ctx.beginPath();
+            ctx.arc(cx, cy - 15, 10, 0, Math.PI * 2);
+            ctx.fill();
+          },
+        });
       }
     }
   }
 
-  // The Moon's Tea House Canopy
-  const { teaHouse, twinStars, unsungShrine, edgeOfSilence, crescentBelvedere } = WORLD_ANCHORS.moonroad;
+  // All 15 Moon Road Pavilions & Waystations
+  const {
+    teaHouse,
+    twinStars,
+    unsungShrine,
+    edgeOfSilence,
+    crescentBelvedere,
+    zenithAstralObservatory,
+    twilightBazaar,
+    lullabyBellArch,
+    southStairLanding,
+    westCrescentLanding,
+    northWestCometBridge,
+    northEastAuroraPromenade,
+    westernStarlightWharf,
+    southWestLullabyIsle,
+    southEastStarfallPier,
+  } = WORLD_ANCHORS.moonroad;
   const teaX = teaHouse.tx * T + T / 2;
   const teaY = teaHouse.ty * T + T / 2;
   items.push({
@@ -3606,6 +4226,217 @@ export function collectMoonRoadPropDrawables(
         ctx.fillStyle = '#8fd5ff';
         ctx.beginPath();
         ctx.arc(cx, cy - 18 + Math.sin(t * 2) * 2, 5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeMoon(zenithAstralObservatory.tx, zenithAstralObservatory.ty)) {
+    const cx = zenithAstralObservatory.tx * T + T / 2;
+    const cy = zenithAstralObservatory.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 210, 63', cx, cy - 18, 58, 0.68);
+        ctx.fillStyle = '#ede8ff';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 6, 30, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#6b47b8';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 10, 20, Math.PI, 0);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 34 + Math.sin(t * 2) * 2, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeMoon(twilightBazaar.tx, twilightBazaar.ty)) {
+    const cx = twilightBazaar.tx * T + T / 2;
+    const cy = twilightBazaar.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '180, 130, 255', cx, cy - 12, 54, 0.62);
+        ctx.fillStyle = '#a86bff';
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 1.6;
+        ctx.fillRect(cx - 26, cy - 20, 20, 14);
+        ctx.strokeRect(cx - 26, cy - 20, 20, 14);
+        ctx.fillRect(cx + 6, cy - 20, 20, 14);
+        ctx.strokeRect(cx + 6, cy - 20, 20, 14);
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 12, 5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeMoon(lullabyBellArch.tx, lullabyBellArch.ty)) {
+    const cx = lullabyBellArch.tx * T + T / 2;
+    const cy = lullabyBellArch.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 224, 130', cx, cy - 14, 50, 0.64);
+        ctx.strokeStyle = '#f5f2ff';
+        ctx.lineWidth = 3.2;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 6, 18, Math.PI, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.arc(cx + Math.sin(t * 2.1) * 3, cy - 14, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeMoon(southStairLanding.tx, southStairLanding.ty)) {
+    const cx = southStairLanding.tx * T + T / 2;
+    const cy = southStairLanding.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 216, 122', cx, cy - 12, 54, 0.66);
+        ctx.fillStyle = '#f8f2ff';
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 1.6;
+        for (let s = 0; s < 3; s++) {
+          ctx.fillRect(cx - 22 + s * 4, cy + 4 - s * 7, 44 - s * 8, 6);
+          ctx.strokeRect(cx - 22 + s * 4, cy + 4 - s * 7, 44 - s * 8, 6);
+        }
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 2.8;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 18, 14, Math.PI, 0);
+        ctx.stroke();
+      },
+    });
+  }
+  if (inRangeMoon(westCrescentLanding.tx, westCrescentLanding.ty)) {
+    const cx = westCrescentLanding.tx * T + T / 2;
+    const cy = westCrescentLanding.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '125, 224, 255', cx, cy - 10, 52, 0.64);
+        ctx.fillStyle = '#ede8ff';
+        ctx.strokeStyle = OUTLINE;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 4, 26, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        const bob = Math.sin(t * 2) * 2.5;
+        ctx.fillStyle = '#8fd5ff';
+        ctx.beginPath();
+        ctx.ellipse(cx + 12, cy + 8 + bob, 14, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeMoon(northWestCometBridge.tx, northWestCometBridge.ty)) {
+    const cx = northWestCometBridge.tx * T + T / 2;
+    const cy = northWestCometBridge.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '216, 180, 254', cx, cy - 14, 56, 0.68);
+        ctx.fillStyle = '#d8b4fe';
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(cx - 20, cy - 26, 6, 30);
+        ctx.fillRect(cx + 14, cy - 26, 6, 30);
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.arc(cx + Math.sin(t * 2.5) * 4, cy - 28, 6, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeMoon(northEastAuroraPromenade.tx, northEastAuroraPromenade.ty)) {
+    const cx = northEastAuroraPromenade.tx * T + T / 2;
+    const cy = northEastAuroraPromenade.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '158, 244, 255', cx, cy - 16, 56, 0.68);
+        ctx.fillStyle = '#fbf8ff';
+        ctx.fillRect(cx - 22, cy - 24, 5, 28);
+        ctx.fillRect(cx + 17, cy - 24, 5, 28);
+        ctx.strokeStyle = '#64f5c1';
+        ctx.lineWidth = 3.2;
+        ctx.beginPath();
+        ctx.moveTo(cx - 24, cy - 28 + Math.sin(t * 2) * 3);
+        ctx.quadraticCurveTo(cx, cy - 38, cx + 24, cy - 28 - Math.sin(t * 2) * 3);
+        ctx.stroke();
+      },
+    });
+  }
+  if (inRangeMoon(westernStarlightWharf.tx, westernStarlightWharf.ty)) {
+    const cx = westernStarlightWharf.tx * T + T / 2;
+    const cy = westernStarlightWharf.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '184, 220, 255', cx, cy - 10, 52, 0.62);
+        ctx.fillStyle = '#8b689f';
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 1.4;
+        ctx.fillRect(cx - 24, cy - 8, 48, 14);
+        ctx.strokeRect(cx - 24, cy - 8, 48, 14);
+        const bob = Math.sin(t * 1.9) * 3;
+        ctx.fillStyle = '#fff5da';
+        ctx.beginPath();
+        ctx.arc(cx + 12, cy - 22 + bob, 9, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeMoon(southWestLullabyIsle.tx, southWestLullabyIsle.ty)) {
+    const cx = southWestLullabyIsle.tx * T + T / 2;
+    const cy = southWestLullabyIsle.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '246, 216, 255', cx, cy - 12, 54, 0.66);
+        ctx.strokeStyle = '#e7d8ff';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(cx - 18, cy - 24, 36, 28);
+        ctx.fillStyle = '#ff9ebb';
+        ctx.beginPath();
+        ctx.arc(cx - 12, cy - 24, 6, 0, Math.PI * 2);
+        ctx.arc(cx, cy - 26, 7, 0, Math.PI * 2);
+        ctx.arc(cx + 12, cy - 24, 6, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    });
+  }
+  if (inRangeMoon(southEastStarfallPier.tx, southEastStarfallPier.ty)) {
+    const cx = southEastStarfallPier.tx * T + T / 2;
+    const cy = southEastStarfallPier.ty * T + T / 2;
+    items.push({
+      sortY: cy + 14,
+      draw: () => {
+        drawGlowHalo(ctx, '255, 158, 187', cx, cy - 14, 56, 0.66);
+        ctx.fillStyle = '#6c528c';
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(cx - 24, cy - 6, 48, 14);
+        ctx.strokeRect(cx - 24, cy - 6, 48, 14);
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 18, 12, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#ff9ebb';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 18, 4.5, 0, Math.PI * 2);
         ctx.fill();
       },
     });

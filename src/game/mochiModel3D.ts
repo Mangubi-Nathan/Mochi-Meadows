@@ -30,7 +30,8 @@ export interface MochiActorOptions {
   dt?: number; // Frame delta in seconds (derived from time if omitted)
   moveSpeed?: number; // Normalized horizontal speed (~0 idle, ~1 walk, ~1.5 sprint)
   weatherBehavior?: 'dancing' | 'sheltering' | 'stargazing' | 'shivering' | 'idle';
-  emoteAnim?: 'idle' | 'walk' | 'wave' | 'twirl' | 'dance' | 'cheer';
+  emoteAnim?: 'idle' | 'walk' | 'wave' | 'twirl' | 'dance' | 'cheer' | 'fish_idle' | 'fish_reel' | 'fish_celebrate';
+  fishingProgress?: number;
   cloudWings?: boolean;
   thermalWings?: boolean;
 }
@@ -118,6 +119,10 @@ const STATIC_MAT = {
   cloud: new THREE.MeshStandardMaterial({ color: 0xc8ccd9, roughness: 0.75 }),
   noseDark: new THREE.MeshStandardMaterial({ color: 0x2a1d32, roughness: 0.22, metalness: 0.08 }),
   whisker: new THREE.MeshStandardMaterial({ color: 0x3b2a45, roughness: 0.5 }),
+  rodCork: new THREE.MeshStandardMaterial({ color: 0xd9a773, roughness: 0.72 }),
+  rodWood: new THREE.MeshStandardMaterial({ color: 0x7b4b2a, roughness: 0.52 }),
+  rodTip: new THREE.MeshStandardMaterial({ color: 0xf7e7c4, roughness: 0.36 }),
+  rodBrass: new THREE.MeshStandardMaterial({ color: 0xf4c44e, roughness: 0.28, metalness: 0.55 }),
   eyeWhite: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.18 }),
   eyeGloss: new THREE.MeshStandardMaterial({ color: 0x22162b, roughness: 0.12 }),
   eyeDark: new THREE.MeshBasicMaterial({ color: 0x3b2a45 }),
@@ -943,12 +948,25 @@ const GEO = {
   compButtonDisc: new THREE.CylinderGeometry(0.11, 0.11, 0.032, 20),
   compNeckRing: new THREE.TorusGeometry(0.24, 0.055, 10, 22),
   compFinBlade: new THREE.ConeGeometry(0.085, 0.24, 8),
+  rodGrip: new THREE.CylinderGeometry(0.032, 0.036, 0.28, 10),
+  rodShaftBase: new THREE.CylinderGeometry(0.018, 0.025, 0.64, 8),
+  rodShaftMid: new THREE.CylinderGeometry(0.013, 0.018, 0.58, 8),
+  rodShaftTip: new THREE.CylinderGeometry(0.007, 0.013, 0.54, 8),
+  rodReelBody: new THREE.CylinderGeometry(0.055, 0.055, 0.055, 12),
+  rodReelCrank: new THREE.BoxGeometry(0.016, 0.085, 0.016),
+  rodReelKnob: new THREE.SphereGeometry(0.02, 8, 6),
+  rodGuide: new THREE.TorusGeometry(0.022, 0.005, 6, 12),
 };
 
 GEO.shadow.rotateX(-Math.PI / 2);
 GEO.ring.rotateX(-Math.PI / 2);
 GEO.compRippleTorus.rotateX(Math.PI / 2);
 GEO.compButtonDisc.rotateX(Math.PI / 2);
+GEO.rodGrip.rotateX(Math.PI / 2);
+GEO.rodShaftBase.rotateX(Math.PI / 2);
+GEO.rodShaftMid.rotateX(Math.PI / 2);
+GEO.rodShaftTip.rotateX(Math.PI / 2);
+GEO.rodReelBody.rotateZ(Math.PI / 2);
 
 export interface MochiRig {
   root: THREE.Group;
@@ -1014,6 +1032,12 @@ export interface MochiRig {
   flightWingL?: THREE.Group;
   flightWingR?: THREE.Group;
   flightWingMat?: THREE.MeshStandardMaterial;
+  fishingRodGroup?: THREE.Group;
+  fishingRodBasePivot?: THREE.Group;
+  fishingRodMidPivot?: THREE.Group;
+  fishingRodTipPivot?: THREE.Group;
+  fishingRodTipMarker?: THREE.Object3D;
+  fishingReelHandle?: THREE.Group;
   frogLids?: THREE.Mesh[];
   torsoBaseScale: [number, number, number];
   bellyBaseScale: [number, number, number];
@@ -1276,6 +1300,70 @@ export function createMochiRig(): MochiRig {
   }
   bodyPivot.add(flightWingsGroup);
 
+  // Segmented 3D Fishing Rod (hidden unless fishing pose active)
+  const fishingRodGroup = new THREE.Group();
+  fishingRodGroup.position.set(0.11, 0.34, 0.27);
+  fishingRodGroup.visible = false;
+  const fishingRodBasePivot = new THREE.Group();
+  fishingRodGroup.add(fishingRodBasePivot);
+
+  const gripMesh = new THREE.Mesh(GEO.rodGrip, STATIC_MAT.rodCork);
+  gripMesh.position.set(0, 0, 0.04);
+  fishingRodBasePivot.add(gripMesh);
+
+  const reelBody = new THREE.Mesh(GEO.rodReelBody, STATIC_MAT.rodBrass);
+  reelBody.position.set(0.036, 0.035, 0.14);
+  fishingRodBasePivot.add(reelBody);
+
+  const fishingReelHandle = new THREE.Group();
+  fishingReelHandle.position.set(0.068, 0.035, 0.14);
+  const crankArm = new THREE.Mesh(GEO.rodReelCrank, STATIC_MAT.rodBrass);
+  crankArm.position.set(0, 0.036, 0);
+  const crankKnob = new THREE.Mesh(GEO.rodReelKnob, STATIC_MAT.rodWood);
+  crankKnob.position.set(0.015, 0.072, 0);
+  fishingReelHandle.add(crankArm, crankKnob);
+  fishingRodBasePivot.add(fishingReelHandle);
+
+  const baseShaft = new THREE.Mesh(GEO.rodShaftBase, STATIC_MAT.rodWood);
+  baseShaft.position.set(0, 0, 0.48);
+  fishingRodBasePivot.add(baseShaft);
+
+  const guide1 = new THREE.Mesh(GEO.rodGuide, STATIC_MAT.rodBrass);
+  guide1.position.set(0, -0.02, 0.78);
+  fishingRodBasePivot.add(guide1);
+
+  const fishingRodMidPivot = new THREE.Group();
+  fishingRodMidPivot.position.set(0, 0, 0.8);
+  fishingRodBasePivot.add(fishingRodMidPivot);
+
+  const midShaft = new THREE.Mesh(GEO.rodShaftMid, STATIC_MAT.rodWood);
+  midShaft.position.set(0, 0, 0.29);
+  fishingRodMidPivot.add(midShaft);
+
+  const guide2 = new THREE.Mesh(GEO.rodGuide, STATIC_MAT.rodBrass);
+  guide2.position.set(0, -0.016, 0.56);
+  guide2.scale.setScalar(0.8);
+  fishingRodMidPivot.add(guide2);
+
+  const fishingRodTipPivot = new THREE.Group();
+  fishingRodTipPivot.position.set(0, 0, 0.58);
+  fishingRodMidPivot.add(fishingRodTipPivot);
+
+  const tipShaft = new THREE.Mesh(GEO.rodShaftTip, STATIC_MAT.rodTip);
+  tipShaft.position.set(0, 0, 0.27);
+  fishingRodTipPivot.add(tipShaft);
+
+  const tipEyelet = new THREE.Mesh(GEO.rodGuide, STATIC_MAT.rodBrass);
+  tipEyelet.position.set(0, -0.012, 0.54);
+  tipEyelet.scale.setScalar(0.62);
+  fishingRodTipPivot.add(tipEyelet);
+
+  const fishingRodTipMarker = new THREE.Object3D();
+  fishingRodTipMarker.position.set(0, -0.015, 0.545);
+  fishingRodTipPivot.add(fishingRodTipMarker);
+
+  bodyPivot.add(fishingRodGroup);
+
   return {
     root,
     bodyPivot,
@@ -1355,6 +1443,12 @@ export function createMochiRig(): MochiRig {
     flightWingL,
     flightWingR,
     flightWingMat,
+    fishingRodGroup,
+    fishingRodBasePivot,
+    fishingRodMidPivot,
+    fishingRodTipPivot,
+    fishingRodTipMarker,
+    fishingReelHandle,
     frogLids: undefined,
     torsoBaseScale: [1.06, 0.92, 0.96],
     bellyBaseScale: [0.95, 0.86, 0.72],
@@ -3909,20 +4003,31 @@ export function updateMochiRig(rig: MochiRig, opts: MochiActorOptions): void {
   else if (look.size === 'plump') sizeMul *= 1.14;
   rig.root.scale.setScalar(sizeMul);
 
-  // Air / Swim / Weather / Emote / Land Pose & Expressive Animation
-  const isAirborne = jumpZ > 0.03;
+  const isFishingIdle = emoteAnim === 'fish_idle';
+  const isFishingReel = emoteAnim === 'fish_reel';
+  const isFishingCelebrate = emoteAnim === 'fish_celebrate';
+  const isFishingMode = isFishingIdle || isFishingReel || isFishingCelebrate;
+  const fishProg = THREE.MathUtils.clamp(opts.fishingProgress ?? 0, 0, 1);
+
+  const isAirborne = !isFishingMode && jumpZ > 0.03;
   const swimFreq = isSprinting ? 14.5 : 9.2;
   const swimBob = Math.sin(time * (isMoving ? swimFreq * 0.5 : 3.2) + bobOffset) * 0.045;
-  const isDancing = !isAirborne && !isSwimming && (weatherBehavior === 'dancing' || emoteAnim === 'dance');
-  const isTwirling = !isAirborne && !isSwimming && emoteAnim === 'twirl';
-  const isCheering = !isAirborne && !isSwimming && emoteAnim === 'cheer';
-  const isWaving = isGreeting || emoteAnim === 'wave';
-  const isStargazing = !isAirborne && !isSwimming && weatherBehavior === 'stargazing';
-  const isShivering = !isAirborne && !isSwimming && weatherBehavior === 'shivering';
-  const isSheltering = !isAirborne && !isSwimming && weatherBehavior === 'sheltering';
+  const isDancing = !isFishingMode && !isAirborne && !isSwimming && (weatherBehavior === 'dancing' || emoteAnim === 'dance');
+  const isTwirling = !isFishingMode && !isAirborne && !isSwimming && emoteAnim === 'twirl';
+  const isCheering = !isFishingMode && !isAirborne && !isSwimming && emoteAnim === 'cheer';
+  const isWaving = !isFishingMode && (isGreeting || emoteAnim === 'wave');
+  const isStargazing = !isFishingMode && !isAirborne && !isSwimming && weatherBehavior === 'stargazing';
+  const isShivering = !isFishingMode && !isAirborne && !isSwimming && weatherBehavior === 'shivering';
+  const isSheltering = !isFishingMode && !isAirborne && !isSwimming && weatherBehavior === 'sheltering';
 
   let hop = 0;
-  if (isAirborne) {
+  if (isFishingCelebrate) {
+    hop = 0.22 + Math.abs(Math.sin(time * 7.8)) * 0.24;
+  } else if (isFishingReel) {
+    hop = 0.19 + Math.abs(Math.sin(time * 5.2)) * 0.025;
+  } else if (isFishingIdle) {
+    hop = 0.175 + Math.sin(time * 2.2) * 0.012;
+  } else if (isAirborne) {
     hop = 0;
   } else if (isSwimming) {
     hop = swimBob;
@@ -3939,7 +4044,13 @@ export function updateMochiRig(rig: MochiRig, opts: MochiActorOptions): void {
   }
 
   const airStretch = isAirborne ? THREE.MathUtils.clamp(jumpVy * 0.032, -0.1, 0.16) : 0;
-  const squash = isAirborne
+  const squash = isFishingCelebrate
+    ? Math.sin(time * 15.6) * 0.065
+    : isFishingReel
+    ? Math.sin(time * 10.4) * 0.035
+    : isFishingIdle
+    ? Math.sin(time * 2.2) * 0.018
+    : isAirborne
     ? -airStretch
     : isSwimming
     ? Math.sin(time * (isMoving ? swimFreq : 3.2) + bobOffset) * 0.035
@@ -3956,11 +4067,71 @@ export function updateMochiRig(rig: MochiRig, opts: MochiActorOptions): void {
   rig.bodyPivot.scale.set(1 + squash, 1 - squash, 1 + squash);
   rig.bodyPivot.rotation.y =
     facingYaw +
-    (isTwirling ? time * 4.2 : isDancing && !isMoving ? Math.sin(time * 3.4 + bobOffset) * 0.28 : 0);
+    (isFishingCelebrate
+      ? Math.sin(time * 6.5) * 0.24
+      : isTwirling
+      ? time * 4.2
+      : isDancing && !isMoving
+      ? Math.sin(time * 3.4 + bobOffset) * 0.28
+      : 0);
   rig.headGroup.rotation.y =
-    headYaw + (!isMoving && !isWaving && !isTwirling ? Math.sin(time * 1.45 + bobOffset) * 0.14 : 0);
+    headYaw +
+    (isFishingIdle
+      ? Math.sin(time * 0.95) * 0.11
+      : isFishingReel
+      ? Math.sin(time * 5.2) * 0.06
+      : isFishingCelebrate
+      ? Math.sin(time * 6.5) * 0.14
+      : !isMoving && !isWaving && !isTwirling
+      ? Math.sin(time * 1.45 + bobOffset) * 0.14
+      : 0);
 
-  if (isAirborne) {
+  if (isFishingMode) {
+    if (isFishingCelebrate) {
+      const cheer = Math.sin(time * 9.5);
+      rig.bodyPivot.rotation.x = -0.06;
+      rig.bodyPivot.rotation.z = Math.sin(time * 6.5) * 0.08;
+      rig.headGroup.rotation.x = -0.14 + Math.sin(time * 7.8) * 0.05;
+      rig.headGroup.rotation.z = Math.sin(time * 6.5) * 0.11;
+      rig.leftFoot.position.set(-0.14, 0.09 + Math.max(0, cheer) * 0.04, 0.06);
+      rig.rightFoot.position.set(0.14, 0.09 + Math.max(0, -cheer) * 0.04, 0.06);
+      rig.leftFoot.rotation.set(0, 0, 0);
+      rig.rightFoot.rotation.set(0, 0, 0);
+      rig.leftArm.rotation.set(-0.38, 0, 1.62 + cheer * 0.32);
+      rig.rightArm.rotation.set(-0.38, 0, -1.62 - cheer * 0.32);
+    } else if (isFishingReel) {
+      const crank = time * 14.5;
+      const tugPump = Math.sin(time * 5.4);
+      rig.bodyPivot.rotation.x = -0.22 + tugPump * 0.075;
+      rig.bodyPivot.rotation.z = Math.sin(time * 5.4) * 0.055;
+      rig.headGroup.rotation.x = 0.09 - tugPump * 0.05;
+      rig.headGroup.rotation.z = Math.sin(time * 5.4) * 0.04;
+      rig.leftFoot.position.set(-0.15, -0.02 + Math.sin(time * 8) * 0.025, 0.31);
+      rig.rightFoot.position.set(0.15, -0.02 - Math.sin(time * 8) * 0.025, 0.31);
+      rig.leftFoot.rotation.set(0.68 + Math.sin(time * 8) * 0.14, 0, 0);
+      rig.rightFoot.rotation.set(0.68 - Math.sin(time * 8) * 0.14, 0, 0);
+      rig.leftArm.rotation.set(-0.98 + tugPump * 0.12, 0.28, 0.12);
+      rig.rightArm.rotation.set(
+        -0.94 + Math.sin(crank) * 0.26,
+        -0.25 + Math.cos(crank) * 0.18,
+        -0.2 + Math.cos(crank) * 0.14
+      );
+    } else {
+      const dangleL = Math.sin(time * 2.1) * 0.14;
+      const dangleR = Math.sin(time * 2.1 + 1.8) * 0.14;
+      rig.bodyPivot.rotation.x = 0.05 + Math.sin(time * 1.9) * 0.02;
+      rig.bodyPivot.rotation.z = Math.sin(time * 1.3) * 0.025;
+      rig.headGroup.rotation.x = -0.05 + Math.sin(time * 1.5) * 0.03;
+      rig.headGroup.rotation.z = Math.sin(time * 1.1) * 0.04;
+      rig.leftFoot.position.set(-0.15, -0.03, 0.32);
+      rig.rightFoot.position.set(0.15, -0.03, 0.32);
+      rig.leftFoot.rotation.set(0.58 + dangleL, 0, 0);
+      rig.rightFoot.rotation.set(0.58 + dangleR, 0, 0);
+      const calmHold = Math.sin(time * 2.1) * 0.04;
+      rig.leftArm.rotation.set(-0.76 + calmHold, 0.24, 0.18);
+      rig.rightArm.rotation.set(-0.76 + calmHold, -0.24, -0.18);
+    }
+  } else if (isAirborne) {
     rig.bodyPivot.rotation.x = isSwimming
       ? THREE.MathUtils.clamp(-jumpVy * 0.075, -0.45, 0.52)
       : THREE.MathUtils.clamp(-jumpVy * 0.032, -0.18, 0.18);
@@ -3969,6 +4140,8 @@ export function updateMochiRig(rig: MochiRig, opts: MochiActorOptions): void {
     rig.headGroup.rotation.z = 0;
     rig.leftFoot.position.set(-0.14, 0.19, -0.05);
     rig.rightFoot.position.set(0.14, 0.16, 0.07);
+    rig.leftFoot.rotation.set(0, 0, 0);
+    rig.rightFoot.rotation.set(0, 0, 0);
     rig.leftArm.rotation.set(-0.55, 0, -0.62);
     rig.rightArm.rotation.set(-0.55, 0, 0.62);
   } else if (isSwimming) {
@@ -3981,6 +4154,8 @@ export function updateMochiRig(rig: MochiRig, opts: MochiActorOptions): void {
     const kick = isMoving ? Math.sin(time * swimFreq * 1.45) * 0.09 : Math.sin(time * 4.2 + bobOffset) * 0.03;
     rig.leftFoot.position.set(-0.14, 0.14 + kick, -0.14);
     rig.rightFoot.position.set(0.14, 0.14 - kick, -0.14);
+    rig.leftFoot.rotation.set(0, 0, 0);
+    rig.rightFoot.rotation.set(0, 0, 0);
 
     if (isMoving) {
       rig.leftArm.rotation.set(-0.55 + paddle * 1.1, 0, -0.46);
@@ -4007,6 +4182,8 @@ export function updateMochiRig(rig: MochiRig, opts: MochiActorOptions): void {
 
     rig.leftFoot.position.set(-0.14, 0.1 + Math.max(0, stride) * 0.075, 0.04 + stride * 0.11);
     rig.rightFoot.position.set(0.14, 0.1 + Math.max(0, -stride) * 0.075, 0.04 - stride * 0.11);
+    rig.leftFoot.rotation.set(0, 0, 0);
+    rig.rightFoot.rotation.set(0, 0, 0);
 
     if (isWaving && !isMoving) {
       rig.leftArm.rotation.set(-0.15, 0, 0.45);
@@ -4027,6 +4204,38 @@ export function updateMochiRig(rig: MochiRig, opts: MochiActorOptions): void {
       const baseSpread = sp === 'penguin' ? 0.58 : 0.42;
       rig.leftArm.rotation.set(-stride * 0.52 + idleSwing, 0, baseSpread);
       rig.rightArm.rotation.set(stride * 0.52 - idleSwing, 0, -baseSpread);
+    }
+  }
+
+  // Update 3D Fishing Rod flex & spinning reel crank
+  if (rig.fishingRodGroup && rig.fishingRodBasePivot && rig.fishingRodMidPivot && rig.fishingRodTipPivot && rig.fishingReelHandle) {
+    rig.fishingRodGroup.visible = isFishingMode;
+    if (isFishingMode) {
+      if (isFishingCelebrate) {
+        rig.fishingRodGroup.position.set(0.32, 0.34, 0.18);
+        rig.fishingRodGroup.rotation.set(0, 0.14, -0.24);
+        rig.fishingRodBasePivot.rotation.set(-0.52 + Math.sin(time * 7) * 0.06, 0, 0);
+        rig.fishingRodMidPivot.rotation.set(0.06, 0, 0);
+        rig.fishingRodTipPivot.rotation.set(0.08, 0, 0);
+        rig.fishingReelHandle.rotation.x = 0;
+      } else if (isFishingReel) {
+        const tugPump = Math.sin(time * 5.4);
+        const flex = 0.26 + fishProg * 0.18 + Math.max(0, Math.sin(time * 11.2)) * 0.16;
+        rig.fishingRodGroup.position.set(0.11, 0.35, 0.27);
+        rig.fishingRodGroup.rotation.set(0, -0.06, 0);
+        rig.fishingRodBasePivot.rotation.set(-0.46 - tugPump * 0.09, 0, 0);
+        rig.fishingRodMidPivot.rotation.set(flex * 0.62, 0, 0);
+        rig.fishingRodTipPivot.rotation.set(flex * 0.96, 0, 0);
+        rig.fishingReelHandle.rotation.x = time * 14.5;
+      } else {
+        const calmSway = Math.sin(time * 2.1);
+        rig.fishingRodGroup.position.set(0.1, 0.33, 0.28);
+        rig.fishingRodGroup.rotation.set(0, -0.04, 0);
+        rig.fishingRodBasePivot.rotation.set(-0.34 + calmSway * 0.03, 0, 0);
+        rig.fishingRodMidPivot.rotation.set(0.07 + calmSway * 0.02, 0, 0);
+        rig.fishingRodTipPivot.rotation.set(0.09 + calmSway * 0.025, 0, 0);
+        rig.fishingReelHandle.rotation.x = 0;
+      }
     }
   }
 
@@ -4262,10 +4471,12 @@ export function updateMochiRig(rig: MochiRig, opts: MochiActorOptions): void {
   }
   rig.leftShoeGroup.position.copy(rig.leftFoot.position);
   rig.rightShoeGroup.position.copy(rig.rightFoot.position);
+  rig.leftShoeGroup.rotation.copy(rig.leftFoot.rotation);
+  rig.rightShoeGroup.rotation.copy(rig.rightFoot.rotation);
 
-  const shadowScale = Math.max(0.42, 1 - jumpZ * 0.42 - hop * 0.95);
+  const shadowScale = isFishingMode ? 0.78 : Math.max(0.42, 1 - jumpZ * 0.42 - hop * 0.95);
   rig.shadowMesh.scale.setScalar(shadowScale);
-  rig.shadowMesh.position.y = isSwimming && !isAirborne ? 0.14 : 0.02;
+  rig.shadowMesh.position.y = isFishingMode ? 0.2 : isSwimming && !isAirborne ? 0.14 : 0.02;
 
   rig.highlightRing.visible = highlighted;
   if (highlighted) {

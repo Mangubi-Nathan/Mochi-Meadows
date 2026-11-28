@@ -390,7 +390,7 @@ export const Hud: React.FC<HudProps> = React.memo(({
             </div>
           )}
 
-          {/* Vitals Bars (Inline 2-col on Landscape Phone to minimize height, stacked on Portrait & Desktop) */}
+          {/* Vitals Bars (Inline on Compact Landscape Phones, Stacked on Larger Landscape Screens) */}
           {isLandscapePhone ? (
             <div className="flex items-center gap-2 pt-0.5">
               <div className="flex items-center gap-1 flex-1 min-w-0">

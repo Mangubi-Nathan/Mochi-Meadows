@@ -58,6 +58,15 @@ export const WORLD_ANCHORS = {
     starlitKelpTrench: { tx: 286, ty: 284 },
     driftwoodDiveLagoon: { tx: 162, ty: 263 },
     sunkenPearlGrotto: { tx: 104, ty: 236 },
+    // Outer Ocean Quadrant Reef Destinations
+    auroraCoralTrench: { tx: 300, ty: 44 },
+    northernWhaleSanctuary: { tx: 138, ty: 48 },
+    westernAbyssalGarden: { tx: 34, ty: 136 },
+    easternShipwreckCove: { tx: 382, ty: 152 },
+    cinderThermalVents: { tx: 272, ty: 372 },
+    starfallSunkenPlaza: { tx: 384, ty: 372 },
+    abyssalGlassArch: { tx: 34, ty: 382 },
+    heartReefVault: { tx: 208, ty: 204 },
   },
   sky: {
     cirrusCastle: { tx: 218, ty: 112 },
@@ -75,6 +84,15 @@ export const WORLD_ANCHORS = {
     deepCanalHub: { tx: 90, ty: 90 },
     seEchoCavern: { tx: 332, ty: 320 },
     crystalConservatory: { tx: 340, ty: 206 },
+    // Outer Perimeter Vaults & Subterranean Ring Arteries
+    northernRootVault: { tx: 210, ty: 48 },
+    northWestSporeBasin: { tx: 48, ty: 54 },
+    northEastPrismSanctum: { tx: 368, ty: 54 },
+    westernCinderWell: { tx: 46, ty: 210 },
+    easternEchoSpire: { tx: 376, ty: 208 },
+    southWestSubterraneanBay: { tx: 54, ty: 368 },
+    southEastEmberCaldera: { tx: 366, ty: 364 },
+    southernDeepGorge: { tx: 206, ty: 384 },
   },
   moonroad: {
     teaHouse: { tx: 210, ty: 202 },
@@ -85,5 +103,14 @@ export const WORLD_ANCHORS = {
     southStairLanding: { tx: 204, ty: 346 },
     westCrescentLanding: { tx: 58, ty: 316 },
     crescentBelvedere: { tx: 96, ty: 206 },
+    // Outer Constellation Waystations & Orbital Bridges
+    zenithAstralObservatory: { tx: 210, ty: 44 },
+    northWestCometBridge: { tx: 62, ty: 58 },
+    northEastAuroraPromenade: { tx: 356, ty: 58 },
+    westernStarlightWharf: { tx: 42, ty: 204 },
+    southWestLullabyIsle: { tx: 52, ty: 368 },
+    southEastStarfallPier: { tx: 360, ty: 352 },
+    twilightBazaar: { tx: 298, ty: 294 },
+    lullabyBellArch: { tx: 122, ty: 296 },
   },
 } as const;

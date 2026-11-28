@@ -1323,7 +1323,7 @@ export function applyCritterWingShader(
   mat: THREE.MeshStandardMaterial,
   uniforms: SharedWorldShaderUniforms
 ): void {
-  mat.customProgramCacheKey = () => 'mochi_critter_wing_v1';
+  mat.customProgramCacheKey = () => 'mochi_critter_wing_v2';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
 
@@ -1341,15 +1341,20 @@ export function applyCritterWingShader(
         #include <begin_vertex>
         #ifdef USE_INSTANCING
           vec3 cOrigin = (modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xyz;
+          float instScale = length(instanceMatrix[0].xyz);
         #else
           vec3 cOrigin = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+          float instScale = 1.0;
         #endif
-        float cPhase = cOrigin.x * 2.7 + cOrigin.z * 3.9;
+        float isBird = smoothstep(1.22, 1.42, instScale);
+        float cPhase = dot(cOrigin.xz, vec2(0.36, 0.48)) + instScale * 7.3;
         float wingSpan = abs(transformed.x);
-        float flapGate = smoothstep(-0.35, 0.35, sin(uTime * 1.35 + cPhase * 1.7));
-        float flap = sin(uTime * 18.0 + cPhase) * mix(0.28, 1.0, flapGate);
-        transformed.y += flap * wingSpan * 0.92 + 0.05 * wingSpan * (1.0 - flapGate);
-        transformed.x *= (1.0 - abs(flap) * 0.18 * smoothstep(0.04, 0.35, wingSpan));
+        float flapGate = smoothstep(-0.25, 0.45, sin(uTime * mix(1.45, 0.85, isBird) + cPhase * 1.4));
+        float flapFreq = mix(17.5, 8.4, isBird);
+        float flap = sin(uTime * flapFreq + cPhase) * mix(mix(0.28, 0.08, isBird), 1.0, flapGate);
+        float soarArc = isBird * (1.0 - flapGate) * 0.14 * wingSpan;
+        transformed.y += flap * wingSpan * mix(0.92, 0.78, isBird) + 0.04 * wingSpan * (1.0 - flapGate) + soarArc;
+        transformed.x *= (1.0 - abs(flap) * 0.16 * smoothstep(0.04, 0.35, wingSpan));
         `
       );
   };

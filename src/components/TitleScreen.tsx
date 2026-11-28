@@ -173,11 +173,9 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           const treeScale = Math.max(0.55, u / 800);
           csLitTree(ctx, treeX, treeY, treeScale, 0, activeSeason);
 
-          // Adapt character placement so portrait, landscape phone, tablet, and desktop frame the cast cleanly
+          // Frame cast cleanly for compact landscape phones, tablets, and widescreen desktops
           const charScaleBase = isLandscapePhone
             ? Math.max(2.6, u * 0.0082)
-            : isPhone
-            ? Math.max(2.8, u * 0.0088)
             : Math.max(3.2, u * 0.009);
           const heroScale = isLandscapePhone
             ? Math.max(3.4, u * 0.0108)
@@ -185,8 +183,6 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
           const xs = isLandscapePhone
             ? [W * 0.09, W * 0.21, W * 0.34, W * 0.46]
-            : isPhone && W < H
-            ? [W * 0.14, W * 0.35, W * 0.56, W * 0.81]
             : [W * 0.18, W * 0.38, W * 0.54, W * 0.76];
           const baseY = isLandscapePhone ? H * 0.86 : H * 0.85;
 
@@ -354,7 +350,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
         className={`min-h-full w-full flex ${
           isLandscapePhone
             ? 'flex-row items-center justify-between px-4 sm:px-6 py-2 gap-4'
-            : 'flex-col items-center justify-center px-3 sm:px-6 py-4 sm:pb-24 gap-3 sm:gap-4'
+            : 'flex-col items-center justify-center px-3 sm:px-6 py-3 sm:pb-12 gap-3 sm:gap-4'
         }`}
       >
 
